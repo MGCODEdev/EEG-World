@@ -2755,10 +2755,11 @@ def portal_data():
     member = db.execute("SELECT * FROM members WHERE id=?", (current_user.member_id,)).fetchone()
 
     if request.method == 'POST':
+        newsletter_optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
         db.execute("""UPDATE members SET
             name=?, email=?, phone=?,
             address_street=?, address_zip=?, address_city=?,
-            iban=?, bic=?, account_holder=?,
+            iban=?, bic=?, account_holder=?, newsletter_optout=?,
             updated_at=datetime('now')
             WHERE id=?""", (
             request.form.get('name', member['name']),
@@ -2770,6 +2771,7 @@ def portal_data():
             request.form.get('iban', member['iban']),
             request.form.get('bic', member['bic']),
             request.form.get('account_holder', member['account_holder']),
+            newsletter_optout,
             current_user.member_id))
         db.commit()
         audit_log('portal_data_update', f'Eigene Stammdaten aktualisiert')
