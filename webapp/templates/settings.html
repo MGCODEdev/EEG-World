@@ -44,30 +44,30 @@
             </div>
             <div class="row g-3 mt-2">
                 <div class="col-md-3">
-                    <label class="form-label">SMTP TLS</label>
+                    <label class="form-label">TLS-Verschlüsselung</label>
                     <select name="smtp_tls" class="form-select">
                         <option value="true" {% if smtp.get('smtp_tls', 'true') in ['true', '1', 'yes', 'on'] %}selected{% endif %}>Aktiv (STARTTLS)</option>
                         <option value="false" {% if smtp.get('smtp_tls') in ['false', '0', 'no', 'off'] %}selected{% endif %}>Inaktiv</option>
                     </select>
                 </div>
                 <div class="col-md-9">
-                    <label class="form-label">MAIL_FROM_ADDRESS</label>
+                    <label class="form-label">Absenderadresse für E-Mails</label>
                     <input type="email" name="mail_from_address" class="form-control" value="{{ smtp.get('mail_from_address', smtp.get('smtp_from', '')) }}">
                 </div>
             </div>
             <div class="row g-3 mt-2">
                 <div class="col-md-6">
-                    <label class="form-label">MAIL_FROM_NAME</label>
+                    <label class="form-label">Absendername</label>
                     <input type="text" name="mail_from_name" class="form-control" value="{{ smtp.get('mail_from_name', org_name) }}">
                 </div>
                 <div class="col-md-6">
-                    <label class="form-label">MAIL_REPLY_TO</label>
+                    <label class="form-label">Antwortadresse</label>
                     <input type="email" name="mail_reply_to" class="form-control" value="{{ smtp.get('mail_reply_to', smtp.get('mail_from_address', smtp.get('smtp_from', ''))) }}">
                 </div>
             </div>
             <div class="row g-3 mt-2">
                 <div class="col-md-6">
-                    <label class="form-label">MAIL_REPLY_TO_NAME</label>
+                    <label class="form-label">Antwortname</label>
                     <input type="text" name="mail_reply_to_name" class="form-control" value="{{ smtp.get('mail_reply_to_name', org_name) }}">
                 </div>
             </div>
