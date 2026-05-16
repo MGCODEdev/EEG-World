@@ -76,6 +76,10 @@ def utc_now_string():
     return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 
+def form_switch_enabled(name):
+    return '1' in request.form.getlist(name)
+
+
 def to_local_datetime(value):
     if not value:
         return None
@@ -953,7 +957,7 @@ def members_list():
 def member_new():
     if request.method == 'POST':
         db = get_db()
-        newsletter_optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
+        newsletter_optout = 0 if form_switch_enabled('newsletter_enabled') else 1
         db.execute("""INSERT INTO members (name, email, phone, address_street, address_zip, address_city,
                       einspeiser_zp, einspeiser_ab, bezug_zp, bezug_ab, teilnahme,
                       iban, bic, account_holder, newsletter_optout, updated_at)
@@ -983,7 +987,7 @@ def member_new():
 def member_edit(id):
     db = get_db()
     if request.method == 'POST':
-        newsletter_optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
+        newsletter_optout = 0 if form_switch_enabled('newsletter_enabled') else 1
         db.execute("""UPDATE members SET name=?, email=?, phone=?, address_street=?, address_zip=?,
                       address_city=?, einspeiser_zp=?, einspeiser_ab=?, bezug_zp=?,
                       bezug_ab=?, teilnahme=?, active=?, iban=?, bic=?, account_holder=?,
@@ -2755,7 +2759,7 @@ def portal_data():
     member = db.execute("SELECT * FROM members WHERE id=?", (current_user.member_id,)).fetchone()
 
     if request.method == 'POST':
-        newsletter_optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
+        newsletter_optout = 0 if form_switch_enabled('newsletter_enabled') else 1
         db.execute("""UPDATE members SET
             name=?, email=?, phone=?,
             address_street=?, address_zip=?, address_city=?,
@@ -2825,7 +2829,7 @@ def portal_newsletter_toggle():
         flash('Kein Mitglied zugeordnet.', 'warning')
         return redirect(url_for('portal_data'))
     if 'newsletter_enabled' in request.form:
-        optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
+        optout = 0 if form_switch_enabled('newsletter_enabled') else 1
     else:
         optout = 1 if request.form.get('optout') == '1' else 0
     db.execute("UPDATE members SET newsletter_optout=? WHERE id=?", (optout, current_user.member_id))
