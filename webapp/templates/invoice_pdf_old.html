@@ -558,8 +558,8 @@
     
     <div class="legal-footer">
         <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · {{ public_cfg['org_address'] if public_cfg is defined else org_address }} · {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}</p>
-        <p>Ansprechperson: bitte konfigurieren · Kontakt: {{ public_cfg['org_email'] if public_cfg is defined else org_email }}</p>
-        <p>Bankkonto: bitte konfigurieren</p>
+        <p>Kontakt: {{ public_cfg['org_email'] if public_cfg is defined else org_email }}</p>
+        {% if public_cfg is defined and public_cfg['payment_iban'] %}<p>Bankkonto: {{ public_cfg['payment_iban'] }}</p>{% endif %}
         <p>Grundlage: Messdaten des Netzbetreibers (EDA CR_MSG ConsumptionRecord 01.41) · Aufteilungsschlüssel: dynamisch</p>
     </div>
 
@@ -708,7 +708,7 @@
         <h4>Was ist die {{ public_cfg['org_name'] if public_cfg is defined else org_name }}?</h4>
         <p>
             Die Erneuerbare-Energie-Gemeinschaft ist ein eingetragener Verein ({{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}), 
-            gegründet am 22.10.2025 mit Sitz in Ort bitte konfigurieren. Ziel der EEG ist es, lokal erzeugte 
+            mit Sitz in {{ public_cfg['org_address'] if public_cfg is defined else org_address }}. Ziel der EEG ist es, lokal erzeugte 
             erneuerbare Energie direkt zwischen den Mitgliedern zu teilen – ohne Umweg über den Großhandel.
         </p>
         <p>
@@ -786,9 +786,9 @@
     </div>
     
     <div class="legal-footer" style="margin-top: 15px;">
-        <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · Verein {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }} · Sitz: Ort bitte konfigurieren</p>
-        <p>Ansprechperson: bitte konfigurieren · Team: bitte konfigurieren</p>
-        <p>Zustellanschrift: {{ public_cfg['org_address'] if public_cfg is defined else org_address }}, {{ public_cfg['org_address'] if public_cfg is defined else org_address }}, Österreich</p>
+        <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · Verein {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }} · {{ public_cfg['org_address'] if public_cfg is defined else org_address }}</p>
+        <p>Kontakt: {{ public_cfg['org_email'] if public_cfg is defined else org_email }}</p>
+        <p>Zustellanschrift: {{ public_cfg['org_address'] if public_cfg is defined else org_address }}</p>
         <p style="margin-top: 4px;">Erstellt am {{ invoice['created_at']|localdate }} · Diese Abrechnung wurde maschinell erstellt und ist ohne Unterschrift gültig.</p>
     </div>
 </body>

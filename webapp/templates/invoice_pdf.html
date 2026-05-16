@@ -717,7 +717,7 @@
 
 <div class="doc-footer">
     <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · {{ public_cfg['org_address'] if public_cfg is defined else org_address }} · {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}</p>
-    <p>Ansprechperson: bitte konfigurieren · {{ public_cfg['org_email'] if public_cfg is defined else org_email }} · Bankkonto: bitte konfigurieren</p>
+    <p>Kontakt: {{ public_cfg['org_email'] if public_cfg is defined else org_email }}{% if public_cfg is defined and public_cfg['payment_iban'] %} · Bankkonto: {{ public_cfg['payment_iban'] }}{% endif %}</p>
     <p>Datengrundlage: Messdaten Netzbetreiber (EDA CR_MSG ConsumptionRecord 01.41) · Aufteilungsschlüssel: dynamisch</p>
 </div>
 
@@ -1231,7 +1231,7 @@
 </div>
 
 <div class="doc-footer">
-    <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · Verein {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }} · Sitz: Ort bitte konfigurieren</p>
+    <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · Verein {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }} · {{ public_cfg['org_address'] if public_cfg is defined else org_address }}</p>
     <p>Vergleichspreise: Haushaltsstrompreis Ø Österreich 2026 (E-Control); OeMAG-Marktpreis Q1/2026.</p>
     <p>Erstellt am {{ invoice['created_at']|localdate }} · Maschinell erstellt, ohne Unterschrift gültig.</p>
 </div>

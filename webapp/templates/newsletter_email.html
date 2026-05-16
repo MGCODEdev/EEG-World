@@ -9,7 +9,7 @@
         <!-- LOGO HEADER -->
         <tr>
           <td style="padding:30px 42px 20px 42px;border-bottom:1px solid #e9e3d7;">
-            <a href="https://example.org/" target="_blank" style="text-decoration:none;">
+            <a href="{{ public_cfg['org_website'] if public_cfg is defined else org_website }}" target="_blank" style="text-decoration:none;">
               <img src="{{ logo_url }}" width="320" alt="{{ public_cfg['org_name'] if public_cfg is defined else org_name }}" style="display:block;width:320px;max-width:100%;height:auto;border:0;">
             </a>
           </td>
@@ -30,7 +30,7 @@
         </td></tr>
         <!-- FOOTER -->
         <tr><td style="padding:28px 42px;background:#f4efe4;color:#6b6257;font-size:12px;line-height:1.6;">
-          {{ public_cfg['org_name'] if public_cfg is defined else org_name }} · <a href="https://example.org/" style="color:#0b2637;text-decoration:underline;">example.org</a><br>
+          {{ public_cfg['org_name'] if public_cfg is defined else org_name }} · <a href="{{ public_cfg['org_website'] if public_cfg is defined else org_website }}" style="color:#0b2637;text-decoration:underline;">{{ public_cfg['org_website'] if public_cfg is defined else org_website }}</a><br>
           <a href="{{ unsubscribe_url }}" style="color:#6b6257;text-decoration:underline;">Newsletter abbestellen</a>
         </td></tr>
       </table>
