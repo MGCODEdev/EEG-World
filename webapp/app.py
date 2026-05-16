@@ -119,13 +119,28 @@ def format_local_date(value, fmt='%d.%m.%Y'):
 
 @app.context_processor
 def inject_template_globals():
-    return {
-        'now': local_now(),
+    public_cfg = {
         'org_name': DEFAULT_ORG_NAME,
         'org_email': DEFAULT_ORG_EMAIL,
         'org_website': DEFAULT_ORG_WEBSITE,
         'org_address': DEFAULT_ORG_ADDRESS,
         'org_legal': DEFAULT_ORG_LEGAL,
+        'payment_bic': '',
+        'payment_iban': '',
+        'payment_recipient': DEFAULT_ORG_NAME,
+    }
+    try:
+        public_cfg.update(get_public_config(get_db()))
+    except Exception:
+        pass
+    return {
+        'now': local_now(),
+        'public_cfg': public_cfg,
+        'org_name': public_cfg['org_name'],
+        'org_email': public_cfg['org_email'],
+        'org_website': public_cfg['org_website'],
+        'org_address': public_cfg['org_address'],
+        'org_legal': public_cfg['org_legal'],
     }
 
 
