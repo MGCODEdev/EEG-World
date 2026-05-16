@@ -953,10 +953,11 @@ def members_list():
 def member_new():
     if request.method == 'POST':
         db = get_db()
+        newsletter_optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
         db.execute("""INSERT INTO members (name, email, phone, address_street, address_zip, address_city,
                       einspeiser_zp, einspeiser_ab, bezug_zp, bezug_ab, teilnahme,
-                      iban, bic, account_holder, updated_at)
-                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                      iban, bic, account_holder, newsletter_optout, updated_at)
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
                    (request.form['name'], request.form.get('email'),
                     request.form.get('phone'),
                     request.form.get('address_street'), request.form.get('address_zip'),
@@ -968,7 +969,8 @@ def member_new():
                     float(request.form.get('teilnahme', 1.0)),
                     request.form.get('iban') or None,
                     request.form.get('bic') or None,
-                    request.form.get('account_holder') or None))
+                    request.form.get('account_holder') or None,
+                    newsletter_optout))
         db.commit()
         audit_log('member_create', f'Mitglied angelegt: {request.form["name"]}')
         flash('Mitglied angelegt.', 'success')
@@ -981,9 +983,11 @@ def member_new():
 def member_edit(id):
     db = get_db()
     if request.method == 'POST':
+        newsletter_optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
         db.execute("""UPDATE members SET name=?, email=?, phone=?, address_street=?, address_zip=?,
                       address_city=?, einspeiser_zp=?, einspeiser_ab=?, bezug_zp=?,
                       bezug_ab=?, teilnahme=?, active=?, iban=?, bic=?, account_holder=?,
+                      newsletter_optout=?,
                       updated_at=datetime('now')
                       WHERE id=?""",
                    (request.form['name'], request.form.get('email'),
@@ -999,6 +1003,7 @@ def member_edit(id):
                     request.form.get('iban') or None,
                     request.form.get('bic') or None,
                     request.form.get('account_holder') or None,
+                    newsletter_optout,
                     id))
         db.commit()
         audit_log('member_edit', f'Mitglied bearbeitet: {request.form["name"]} (ID {id})')
