@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Audit-Log{% endblock %}
+{% block extra_css %}
+<style>
+    .audit-badge { font-size: .75rem; font-weight: 600; padding: .25em .6em; border-radius: .25rem; }
+    .badge-login { background: #28a745; color: #fff; }
+    .badge-login_failed { background: #dc3545; color: #fff; }
+    .badge-logout { background: #6c757d; color: #fff; }
+    .badge-page_view { background: #e9ecef; color: #495057; }
+    .badge-import { background: #17a2b8; color: #fff; }
+    .badge-member_create, .badge-member_edit { background: #2b7a78; color: #fff; }
+    .badge-member_delete { background: #fd7e14; color: #fff; }
+    .badge-price_create, .badge-price_delete { background: #6f42c1; color: #fff; }
+    .badge-invoice_create, .badge-invoice_send, .badge-invoice_send_all { background: #0d6efd; color: #fff; }
+    .badge-pdf_download { background: #20c997; color: #fff; }
+    .badge-pdf_access_denied { background: #dc3545; color: #fff; }
+    .badge-payment_paid, .badge-payment_unpaid { background: #ffc107; color: #212529; }
+    .badge-user_create, .badge-user_delete, .badge-user_role_change, .badge-user_reinvite { background: #e83e8c; color: #fff; }
+    .badge-contract_upload, .badge-contract_download, .badge-contract_delete { background: #fd7e14; color: #fff; }
+    .badge-invite_accept { background: #28a745; color: #fff; }
+    .badge-password_change { background: #6610f2; color: #fff; }
+    .badge-settings_update { background: #795548; color: #fff; }
+    .badge-backup_download, .badge-backup_restore, .badge-backup_restore_failed { background: #607d8b; color: #fff; }
+    .badge-portal_data_update { background: #009688; color: #fff; }
+    .audit-stat { text-align: center; padding: 1rem; }
+    .audit-stat .num { font-size: 1.8rem; font-weight: 700; color: #17252a; }
+    .audit-stat .lbl { font-size: .75rem; color: #6c757d; text-transform: uppercase; }
+    .audit-detail { max-width: 400px; word-break: break-word; font-size: .85rem; }
+    .audit-ip { font-family: monospace; font-size: .8rem; color: #6c757d; }
+    .audit-time { white-space: nowrap; font-size: .85rem; }
+</style>
+{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-journal-text"></i> Audit-Log</h2>
+
+<!-- Statistiken -->
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body audit-stat">
+                <div class="num">{{ stats.total_entries }}</div>
+                <div class="lbl">Einträge gesamt</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body audit-stat">
+                <div class="num">{{ stats.today_entries }}</div>
+                <div class="lbl">Einträge heute</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-body audit-stat">
+                <div class="num">{{ stats.active_users }}</div>
+                <div class="lbl">Aktive Benutzer heute</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filter -->
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-funnel"></i> Filter</strong></div>
+    <div class="card-body">
+        <form method="GET" class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Aktion</label>
+                <select name="action" class="form-select form-select-sm">
+                    <option value="">— Alle —</option>
+                    {% for a in action_list %}
+                    <option value="{{ a }}" {% if a == action_filter %}selected{% endif %}>{{ a }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Benutzer</label>
+                <input type="text" name="user" class="form-control form-control-sm" value="{{ user_filter }}" placeholder="Name...">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Von</label>
+                <input type="date" name="date_from" class="form-control form-control-sm" value="{{ date_from }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Bis</label>
+                <input type="date" name="date_to" class="form-control form-control-sm" value="{{ date_to }}">
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-search"></i> Filtern</button>
+                <a href="{{ url_for('admin_audit') }}" class="btn btn-sm btn-outline-secondary">Zurücksetzen</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Log-Tabelle -->
+<div class="card">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <strong><i class="bi bi-list-ul"></i> Protokoll</strong>
+        <span class="text-muted" style="font-size:.85rem;">{{ total }} Ergebnis{{ 'se' if total != 1 else '' }}</span>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+                <thead>
+                    <tr>
+                        <th style="width:150px;">Zeitpunkt</th>
+                        <th style="width:120px;">Benutzer</th>
+                        <th style="width:160px;">Aktion</th>
+                        <th>Detail</th>
+                        <th style="width:120px;">IP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for log in logs %}
+                <tr>
+                    <td class="audit-time">
+                        <span title="{{ log['timestamp'] }} UTC">{{ log['timestamp_display'] }}</span>
+                    </td>
+                    <td>
+                        {% if log['username'] %}
+                        <strong>{{ log['username'] }}</strong>
+                        {% else %}
+                        <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% set action = log['action'] %}
+                        {% set label_map = {
+                            'login': 'Anmeldung',
+                            'login_failed': 'Login fehlgeschlagen',
+                            'logout': 'Abmeldung',
+                            'page_view': 'Seitenaufruf',
+                            'password_change': 'Passwort geändert',
+                            'import': 'Datenimport',
+                            'member_create': 'Mitglied angelegt',
+                            'member_edit': 'Mitglied bearbeitet',
+                            'member_delete': 'Mitglied deaktiviert',
+                            'price_create': 'Preis angelegt',
+                            'price_delete': 'Preis gelöscht',
+                            'invoice_create': 'Abrechnung erstellt',
+                            'invoice_send': 'E-Mail gesendet',
+                            'invoice_send_all': 'Alle E-Mails gesendet',
+                            'pdf_download': 'PDF heruntergeladen',
+                            'pdf_access_denied': 'PDF-Zugriff verweigert',
+                            'payment_paid': 'Zahlung gebucht',
+                            'payment_unpaid': 'Zahlung storniert',
+                            'user_create': 'Benutzer angelegt',
+                            'user_delete': 'Benutzer gelöscht',
+                            'user_role_change': 'Rolle geändert',
+                            'user_reinvite': 'Einladung erneuert',
+                            'contract_upload': 'Vertrag hochgeladen',
+                            'contract_download': 'Vertrag heruntergeladen',
+                            'contract_delete': 'Vertrag gelöscht',
+                            'invite_accept': 'Einladung angenommen',
+                            'settings_update': 'Einstellungen geändert',
+                            'backup_download': 'Backup heruntergeladen',
+                            'backup_restore': 'Backup wiederhergestellt',
+                            'backup_restore_failed': 'Backup fehlgeschlagen',
+                            'portal_data_update': 'Stammdaten aktualisiert',
+                        } %}
+                        <span class="audit-badge badge-{{ action }}">
+                            {% if action == 'login' %}<i class="bi bi-box-arrow-in-right"></i>
+                            {% elif action == 'login_failed' %}<i class="bi bi-x-circle"></i>
+                            {% elif action == 'logout' %}<i class="bi bi-box-arrow-right"></i>
+                            {% elif action == 'page_view' %}<i class="bi bi-eye"></i>
+                            {% elif action == 'password_change' %}<i class="bi bi-key"></i>
+                            {% elif action == 'import' %}<i class="bi bi-upload"></i>
+                            {% elif action in ('member_create','member_edit','member_delete') %}<i class="bi bi-person"></i>
+                            {% elif action in ('price_create','price_delete') %}<i class="bi bi-currency-euro"></i>
+                            {% elif action in ('invoice_create','invoice_send','invoice_send_all') %}<i class="bi bi-receipt"></i>
+                            {% elif action == 'pdf_download' %}<i class="bi bi-file-earmark-pdf"></i>
+                            {% elif action == 'pdf_access_denied' %}<i class="bi bi-shield-exclamation"></i>
+                            {% elif action in ('payment_paid','payment_unpaid') %}<i class="bi bi-bank"></i>
+                            {% elif action in ('user_create','user_delete','user_role_change','user_reinvite') %}<i class="bi bi-person-gear"></i>
+                            {% elif action in ('contract_upload','contract_download','contract_delete') %}<i class="bi bi-file-earmark-text"></i>
+                            {% elif action == 'invite_accept' %}<i class="bi bi-check-circle"></i>
+                            {% elif action in ('settings_update',) %}<i class="bi bi-gear"></i>
+                            {% elif action in ('backup_download','backup_restore','backup_restore_failed') %}<i class="bi bi-archive"></i>
+                            {% elif action == 'portal_data_update' %}<i class="bi bi-pencil"></i>
+                            {% else %}<i class="bi bi-dot"></i>
+                            {% endif %}
+                            {{ label_map.get(action, action) }}
+                        </span>
+                    </td>
+                    <td class="audit-detail">{{ log['detail'] or '—' }}</td>
+                    <td class="audit-ip">{{ log['ip'] or '—' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-center text-muted py-4">Keine Einträge gefunden</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% if total_pages > 1 %}
+    <div class="card-footer bg-white d-flex justify-content-center">
+        <nav>
+            <ul class="pagination pagination-sm mb-0">
+                {% if page > 1 %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('admin_audit', page=page-1, action=action_filter, user=user_filter, date_from=date_from, date_to=date_to) }}">&laquo;</a></li>
+                {% endif %}
+                {% for p in range(1, total_pages + 1) %}
+                {% if p == page %}
+                <li class="page-item active"><span class="page-link">{{ p }}</span></li>
+                {% elif p <= 3 or p > total_pages - 3 or (p >= page - 2 and p <= page + 2) %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('admin_audit', page=p, action=action_filter, user=user_filter, date_from=date_from, date_to=date_to) }}">{{ p }}</a></li>
+                {% elif p == 4 or p == total_pages - 3 %}
+                <li class="page-item disabled"><span class="page-link">…</span></li>
+                {% endif %}
+                {% endfor %}
+                {% if page < total_pages %}
+                <li class="page-item"><a class="page-link" href="{{ url_for('admin_audit', page=page+1, action=action_filter, user=user_filter, date_from=date_from, date_to=date_to) }}">&raquo;</a></li>
+                {% endif %}
+            </ul>
+        </nav>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

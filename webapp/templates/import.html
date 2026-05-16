@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Import{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-upload"></i> Daten-Import</h2>
+
+{% set files_sort = files_sort if files_sort is defined else 'imported_at' %}
+{% set files_dir = files_dir if files_dir is defined else 'asc' %}
+{% set values_sort = values_sort if values_sort is defined else 'imported_at' %}
+{% set values_dir = values_dir if values_dir is defined else 'asc' %}
+{% set files_next_dir = 'desc' if files_dir == 'asc' else 'asc' %}
+{% set values_next_dir = 'desc' if values_dir == 'asc' else 'asc' %}
+
+<div class="card mb-4">
+    <div class="card-header">EDA Excel-Dateien hochladen</div>
+    <div class="card-body">
+        <form method="post" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="mb-3">
+                <label class="form-label">Excel-Dateien (*.xlsx)</label>
+                <input type="file" name="files" class="form-control" multiple accept=".xlsx" required>
+                <div class="form-text">EDA Energiedatenreport-Dateien im Format RC*_YYYY-MM-DDThh_mm-*.xlsx</div>
+            </div>
+            <div class="form-check mb-3">
+                <input type="checkbox" name="overwrite" value="1" class="form-check-input" id="overwrite">
+                <label class="form-check-label" for="overwrite">
+                    <i class="bi bi-exclamation-triangle text-warning"></i>
+                    Bestehende Daten überschreiben bei Überschneidung
+                </label>
+            </div>
+            <button type="submit" class="btn btn-success"><i class="bi bi-upload"></i> Importieren</button>
+        </form>
+    </div>
+</div>
+
+{% if results is defined and results %}
+<div class="card mb-4">
+    <div class="card-header">Import-Ergebnis</div>
+    <div class="card-body">
+        <table class="table table-sm align-middle">
+            <thead>
+                <tr>
+                    <th>Datei</th>
+                    <th class="text-end">Importierte Werte</th>
+                    <th class="text-end">Überschrieben</th>
+                    <th>Status</th>
+                    <th>Importiert am</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for r in results %}
+            <tr>
+                <td><small>{{ r.filename }}</small></td>
+                <td class="text-end">{{ "{:,.0f}".format(r.records) }}</td>
+                <td class="text-end">{{ "{:,.0f}".format(r.overwritten) }}</td>
+                <td>
+                    {% if r.status == 'success' %}
+                    <span class="badge bg-success">Erfolgreich</span>
+                    {% else %}
+                    <span class="badge bg-danger" title="{{ r.error or '' }}">Fehler</span>
+                    {% endif %}
+                </td>
+                <td><small>{{ r.imported_at|localdatetime if r.imported_at else '—' }}</small></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if import_values is defined and import_values %}
+<div class="card mb-4">
+    <div class="card-header">Importierte Werte (Historie)</div>
+    <div class="card-body">
+        <table class="table table-sm align-middle">
+            <thead>
+                <tr>
+                    <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='filename', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Datei</a></th>
+                    <th class="text-end"><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='records_imported', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Importierte Werte</a></th>
+                    <th class="text-end">Überschrieben</th>
+                    <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='status', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Status</a></th>
+                    <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='imported_at', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Importiert am</a></th>
+                    <th>Importiert von</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for v in import_values %}
+            <tr>
+                <td><small>{{ v['filename'] }}</small></td>
+                <td class="text-end">{{ "{:,.0f}".format(v['records_imported'] or 0) }}</td>
+                <td class="text-end">{{ "{:,.0f}".format(v['records_overwritten'] or 0) }}</td>
+                <td>
+                    {% if v['status'] == 'success' %}
+                    <span class="badge bg-success">Erfolgreich</span>
+                    {% elif v['status'] == 'error' %}
+                    <span class="badge bg-danger">Fehler</span>
+                    {% else %}
+                    <span class="badge bg-secondary">{{ v['status'] }}</span>
+                    {% endif %}
+                </td>
+                <td><small>{{ v['imported_at']|localdatetime }}</small></td>
+                <td><small>{{ v['imported_by'] or 'system' }}</small></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+{% if imports is defined and imports %}
+<div class="card">
+    <div class="card-header">Vorhandene Importe</div>
+    <div class="card-body">
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', files_sort='source_file', files_dir=files_next_dir, values_sort=values_sort, values_dir=values_dir) }}">Datei</a></th>
+                    <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', files_sort='period_start', files_dir=files_next_dir, values_sort=values_sort, values_dir=values_dir) }}">Zeitraum</a></th>
+                    <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', files_sort='imported_at', files_dir=files_next_dir, values_sort=values_sort, values_dir=values_dir) }}">Importiert am</a></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for imp in imports %}
+            <tr>
+                <td><small>{{ imp['source_file'] }}</small></td>
+                <td>{{ imp['period_start'][:10] }} – {{ imp['period_end'][:10] }}</td>
+                <td><small>{{ imp['imported_at']|localdatetime }}</small></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

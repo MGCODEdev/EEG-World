@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Benutzerverwaltung{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-person-gear"></i> Benutzerverwaltung</h2>
+
+<!-- Neuen Benutzer anlegen -->
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-person-plus"></i> Neuen Benutzer anlegen</strong></div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('admin_user_create') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-5">
+                    <label class="form-label">Mitglied</label>
+                    <select name="member_id" class="form-select" required>
+                        <option value="">— Mitglied wählen —</option>
+                        {% for m in members %}
+                        <option value="{{ m['id'] }}">{{ m['name'] }} {% if m['email'] %}({{ m['email'] }}){% endif %}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Rolle</label>
+                    <select name="role" class="form-select">
+                        <option value="member" selected>Teilnehmer</option>
+                        <option value="admin">Administrator</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus"></i> Anlegen & Einladungslink</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Bestehende Benutzer -->
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-people"></i> Alle Benutzer</strong></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Benutzername</th>
+                        <th>Mitglied</th>
+                        <th>Rolle</th>
+                        <th>Einladung</th>
+                        <th>Erstellt</th>
+                        <th class="text-end">Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for u in users %}
+                <tr>
+                    <td>
+                        <i class="bi {% if u['is_admin'] %}bi-shield-check text-warning{% else %}bi-person text-muted{% endif %}"></i>
+                        <strong>{{ u['username'] }}</strong>
+                        {% if u['email'] %}<br><small class="text-muted">{{ u['email'] }}</small>{% endif %}
+                    </td>
+                    <td>{{ u['member_name'] or '—' }}</td>
+                    <td>
+                        {% if u['role'] == 'admin' %}
+                        <span class="badge bg-warning text-dark">Admin</span>
+                        {% else %}
+                        <span class="badge bg-info">Teilnehmer</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if u['invite_token'] %}
+                        <span class="badge bg-secondary">Offen</span>
+                        {% else %}
+                        <span class="badge bg-success">Aktiv</span>
+                        {% endif %}
+                    </td>
+                    <td><small>{{ u['created_at']|localdate if u['created_at'] else '—' }}</small></td>
+                    <td class="text-end">
+                        <form method="POST" action="{{ url_for('admin_user_reinvite', id=u['id']) }}" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-primary" title="Neuen Einladungslink"><i class="bi bi-link-45deg"></i></button>
+                        </form>
+                        <form method="POST" action="{{ url_for('admin_user_toggle_role', id=u['id']) }}" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-warning" title="Rolle umschalten"><i class="bi bi-arrow-repeat"></i></button>
+                        </form>
+                        {% if u['id'] != current_user.id %}
+                        <form method="POST" action="{{ url_for('admin_user_delete', id=u['id']) }}" class="d-inline"
+                              onsubmit="return confirm('Benutzer wirklich löschen?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Löschen"><i class="bi bi-trash"></i></button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Verträge hochladen -->
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-file-earmark-text"></i> Vertrag hochladen</strong></div>
+    <div class="card-body">
+        <form method="POST" action="{{ url_for('admin_contract_upload') }}" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label">Mitglied</label>
+                    <select name="member_id" class="form-select" required>
+                        <option value="">— Mitglied wählen —</option>
+                        {% for m in members %}
+                        <option value="{{ m['id'] }}">{{ m['name'] }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Vertragstyp</label>
+                    <select name="type" class="form-select" required>
+                        <option value="bezieher">Bezieher-Vertrag</option>
+                        <option value="einspeiser">Einspeiser-Vertrag</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">Datei (PDF)</label>
+                    <input type="file" name="file" class="form-control" accept=".pdf,.doc,.docx" required>
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-upload"></i> Hochladen</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Verträge-Übersicht -->
+{% set contracts = [] %}
+{% for m in members %}
+{% set member_contracts = [] %}
+{% endfor %}
+
+<div class="card">
+    <div class="card-header bg-white"><strong><i class="bi bi-archive"></i> Hochgeladene Verträge</strong></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0" id="contracts-table">
+                <thead>
+                    <tr>
+                        <th>Mitglied</th>
+                        <th>Typ</th>
+                        <th>Datei</th>
+                        <th>Hochgeladen</th>
+                        <th class="text-end">Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody id="contracts-body">
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+{% block extra_js %}
+<script>
+// Verträge laden
+fetch('{{ url_for("api_contracts") }}')
+    .then(r => r.json())
+    .then(data => {
+        const tbody = document.getElementById('contracts-body');
+        if (!data.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">Keine Verträge vorhanden</td></tr>';
+            return;
+        }
+        data.forEach(c => {
+            const typeLabel = c.type === 'bezieher' ? '<span class="badge bg-primary">Bezieher</span>' : '<span class="badge bg-warning text-dark">Einspeiser</span>';
+            tbody.innerHTML += `<tr>
+                <td>${c.member_name}</td>
+                <td>${typeLabel}</td>
+                <td><i class="bi bi-file-earmark-pdf"></i> ${c.filename}</td>
+                <td><small>${c.uploaded_at}</small></td>
+                <td class="text-end">
+                    <a href="/contracts/${c.id}/download" class="btn btn-sm btn-outline-primary"><i class="bi bi-download"></i></a>
+                    <form method="POST" action="/contracts/${c.id}/delete" class="d-inline" onsubmit="return confirm('Vertrag löschen?')">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button>
+                    </form>
+                </td>
+            </tr>`;
+        });
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-graph-up"></i> Reports & Auswertungen</h2>
+
+<!-- Gesamtübersicht -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <h6 class="text-muted">Gesamtverbrauch</h6>
+                <h3>{{ "{:,.0f}".format(total_consumption) }} <small class="text-muted">kWh</small></h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <h6 class="text-muted">Gesamterzeugung</h6>
+                <h3>{{ "{:,.0f}".format(total_generation) }} <small class="text-muted">kWh</small></h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <h6 class="text-muted">Eigendeckung (gehandelt)</h6>
+                <h3 class="text-success">{{ "{:,.0f}".format(total_eigendeckung) }} <small class="text-muted">kWh</small></h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <h6 class="text-muted">Netzüberschuss</h6>
+                <h3 class="text-warning">{{ "{:,.0f}".format(total_surplus) }} <small class="text-muted">kWh</small></h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Autarkiegrad -->
+<div class="card mb-4">
+    <div class="card-body">
+        <h5>Autarkiegrad der Gemeinschaft</h5>
+        {% set autarkie = (total_eigendeckung / total_consumption * 100) if total_consumption > 0 else 0 %}
+        {% set eigenverbrauch = (total_eigendeckung / total_generation * 100) if total_generation > 0 else 0 %}
+        <div class="row">
+            <div class="col-md-6">
+                <label>Autarkie (Eigendeckung / Verbrauch): <strong>{{ "%.1f"|format(autarkie) }}%</strong></label>
+                <div class="progress" style="height: 25px;">
+                    <div class="progress-bar bg-success" style="width: {{ autarkie }}%">{{ "%.1f"|format(autarkie) }}%</div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <label>Eigenverbrauch (Eigendeckung / Erzeugung): <strong>{{ "%.1f"|format(eigenverbrauch) }}%</strong></label>
+                <div class="progress" style="height: 25px;">
+                    <div class="progress-bar bg-info" style="width: {{ eigenverbrauch }}%">{{ "%.1f"|format(eigenverbrauch) }}%</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Monatliche Übersicht -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-calendar3"></i> Monatliche Übersicht</div>
+    <div class="card-body table-responsive">
+        <table class="table table-sm">
+            <thead>
+                <tr>
+                    <th>Monat</th>
+                    <th class="text-end">Verbrauch kWh</th>
+                    <th class="text-end">Erzeugung kWh</th>
+                    <th class="text-end">Eigendeckung kWh</th>
+                    <th class="text-end">Überschuss kWh</th>
+                    <th class="text-end">Autarkie %</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for row in monthly %}
+            {% set m_autarkie = (row['eigendeckung'] / row['verbrauch'] * 100) if row['verbrauch'] > 0 else 0 %}
+            <tr>
+                <td><strong>{{ row['monat'][:7] }}</strong></td>
+                <td class="text-end">{{ "{:,.1f}".format(row['verbrauch']) }} kWh</td>
+                <td class="text-end">{{ "{:,.1f}".format(row['erzeugung']) }} kWh</td>
+                <td class="text-end text-success">{{ "{:,.1f}".format(row['eigendeckung']) }} kWh</td>
+                <td class="text-end text-warning">{{ "{:,.1f}".format(row['ueberschuss']) }} kWh</td>
+                <td class="text-end">{{ "%.1f"|format(m_autarkie) }}%</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Verbraucher-Ranking -->
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-lightning"></i> Verbraucher</div>
+            <div class="card-body table-responsive">
+                <table class="table table-sm">
+                    <thead><tr><th>Mitglied</th><th class="text-end">Verbrauch</th><th class="text-end">Eigendeckung</th><th class="text-end">%</th></tr></thead>
+                    <tbody>
+                    {% for m in members_consumption %}
+                    {% set pct = (m['eigendeckung'] / m['verbrauch'] * 100) if m['verbrauch'] > 0 else 0 %}
+                    <tr>
+                        <td>{{ m['name'] }}</td>
+                        <td class="text-end">{{ "{:,.0f}".format(m['verbrauch']) }} kWh</td>
+                        <td class="text-end text-success">{{ "{:,.0f}".format(m['eigendeckung']) }} kWh</td>
+                        <td class="text-end">{{ "%.1f"|format(pct) }}%</td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-sun"></i> Erzeuger</div>
+            <div class="card-body table-responsive">
+                <table class="table table-sm">
+                    <thead><tr><th>Mitglied</th><th class="text-end">Erzeugung</th><th class="text-end">Überschuss</th><th class="text-end">Geliefert</th></tr></thead>
+                    <tbody>
+                    {% for m in members_generation %}
+                    {% set delivered = m['erzeugung'] - m['ueberschuss'] %}
+                    <tr>
+                        <td>{{ m['name'] }}</td>
+                        <td class="text-end">{{ "{:,.0f}".format(m['erzeugung']) }} kWh</td>
+                        <td class="text-end text-warning">{{ "{:,.0f}".format(m['ueberschuss']) }} kWh</td>
+                        <td class="text-end text-success">{{ "{:,.0f}".format(delivered) }} kWh</td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Datenqualität -->
+<div class="card">
+    <div class="card-header"><i class="bi bi-shield-check"></i> Datenqualität</div>
+    <div class="card-body">
+        <div class="row">
+        {% for q in quality %}
+        <div class="col-md-4">
+            <div class="d-flex justify-content-between">
+                <span>
+                    {% if q['quality'] == 'L1' %}<span class="badge bg-success">L1</span> Echtwerte
+                    {% elif q['quality'] == 'L2' %}<span class="badge bg-warning text-dark">L2</span> Ersatzwerte
+                    {% else %}<span class="badge bg-danger">L3</span> Nicht belastbar{% endif %}
+                </span>
+                <strong>{{ "%.1f"|format(q['pct']) }}%</strong>
+            </div>
+            <div class="progress mt-1" style="height: 8px;">
+                <div class="progress-bar {% if q['quality'] == 'L1' %}bg-success{% elif q['quality'] == 'L2' %}bg-warning{% else %}bg-danger{% endif %}"
+                     style="width: {{ q['pct'] }}%"></div>
+            </div>
+            <small class="text-muted">{{ "{:,.0f}".format(q['cnt']) }} Messwerte</small>
+        </div>
+        {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}

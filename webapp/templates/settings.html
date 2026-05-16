@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-gear"></i> Einstellungen</h2>
+
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-envelope"></i> E-Mail Konfiguration (SMTP)</div>
+    <div class="card-body">
+        {% if smtp_configured %}
+        <div class="alert alert-success mb-3"><i class="bi bi-check-circle"></i> SMTP ist konfiguriert und einsatzbereit.</div>
+        {% else %}
+        <div class="alert alert-warning mb-3">
+            <i class="bi bi-exclamation-triangle"></i> SMTP ist noch nicht vollständig konfiguriert. Bitte Passwort eingeben.
+        </div>
+        {% endif %}
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">SMTP-Server</label>
+                    <input type="text" name="smtp_host" class="form-control" value="{{ smtp.get('smtp_host', 'mail.your-server.de') }}">
+                    <small class="text-muted">Hetzner: mail.your-server.de</small>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Port</label>
+                    <input type="number" name="smtp_port" class="form-control" value="{{ smtp.get('smtp_port', '587') }}">
+                    <small class="text-muted">587 (STARTTLS)</small>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Absender-Adresse</label>
+                    <input type="email" name="smtp_from" class="form-control" value="{{ smtp.get('smtp_from', '') }}">
+                </div>
+            </div>
+            <div class="row g-3 mt-2">
+                <div class="col-md-6">
+                    <label class="form-label">Benutzername</label>
+                    <input type="text" name="smtp_user" class="form-control" value="{{ smtp.get('smtp_user', '') }}">
+                    <small class="text-muted">Vollständige E-Mail-Adresse</small>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Passwort</label>
+                    <input type="password" name="smtp_pass" class="form-control" value="" placeholder="{% if smtp.get('smtp_pass') %}Gespeichertes Passwort beibehalten{% else %}SMTP-Passwort eingeben{% endif %}">
+                </div>
+            </div>
+            <div class="row g-3 mt-2">
+                <div class="col-md-3">
+                    <label class="form-label">SMTP TLS</label>
+                    <select name="smtp_tls" class="form-select">
+                        <option value="true" {% if smtp.get('smtp_tls', 'true') in ['true', '1', 'yes', 'on'] %}selected{% endif %}>Aktiv (STARTTLS)</option>
+                        <option value="false" {% if smtp.get('smtp_tls') in ['false', '0', 'no', 'off'] %}selected{% endif %}>Inaktiv</option>
+                    </select>
+                </div>
+                <div class="col-md-9">
+                    <label class="form-label">MAIL_FROM_ADDRESS</label>
+                    <input type="email" name="mail_from_address" class="form-control" value="{{ smtp.get('mail_from_address', smtp.get('smtp_from', '')) }}">
+                </div>
+            </div>
+            <div class="row g-3 mt-2">
+                <div class="col-md-6">
+                    <label class="form-label">MAIL_FROM_NAME</label>
+                    <input type="text" name="mail_from_name" class="form-control" value="{{ smtp.get('mail_from_name', org_name) }}">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">MAIL_REPLY_TO</label>
+                    <input type="email" name="mail_reply_to" class="form-control" value="{{ smtp.get('mail_reply_to', smtp.get('mail_from_address', smtp.get('smtp_from', ''))) }}">
+                </div>
+            </div>
+            <div class="row g-3 mt-2">
+                <div class="col-md-6">
+                    <label class="form-label">MAIL_REPLY_TO_NAME</label>
+                    <input type="text" name="mail_reply_to_name" class="form-control" value="{{ smtp.get('mail_reply_to_name', org_name) }}">
+                </div>
+            </div>
+            <hr class="my-4">
+            <h5><i class="bi bi-building"></i> Organisation</h5>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Name</label>
+                    <input type="text" name="org_name" class="form-control" value="{{ smtp.get('org_name', org_name) }}">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Kontakt-E-Mail</label>
+                    <input type="email" name="org_email" class="form-control" value="{{ smtp.get('org_email', org_email) }}">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Website</label>
+                    <input type="url" name="org_website" class="form-control" value="{{ smtp.get('org_website', org_website) }}">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Vereins-/Rechtsdaten</label>
+                    <input type="text" name="org_legal" class="form-control" value="{{ smtp.get('org_legal', org_legal) }}">
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Adresse</label>
+                    <input type="text" name="org_address" class="form-control" value="{{ smtp.get('org_address', org_address) }}">
+                </div>
+            </div>
+            <hr class="my-4">
+            <h5><i class="bi bi-bank"></i> Zahlungskonto</h5>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Empfänger</label>
+                    <input type="text" name="payment_recipient" class="form-control" value="{{ smtp.get('payment_recipient', org_name) }}">
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label">IBAN</label>
+                    <input type="text" name="payment_iban" class="form-control font-monospace" value="{{ smtp.get('payment_iban', '') }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">BIC</label>
+                    <input type="text" name="payment_bic" class="form-control font-monospace" value="{{ smtp.get('payment_bic', '') }}">
+                </div>
+            </div>
+            <hr class="my-4">
+            <h5><i class="bi bi-pencil-square"></i> E-Mail Vorlage</h5>
+            <p class="text-muted small">Verfügbare Platzhalter: <code>{name}</code> = Mitgliedsname, <code>{zeitraum_von}</code> = Beginn, <code>{zeitraum_bis}</code> = Ende</p>
+            <div class="mb-3">
+                <label class="form-label">Betreff</label>
+                <input type="text" name="email_subject" class="form-control" value="{{ smtp.get('email_subject', '') }}">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">E-Mail Text</label>
+                <textarea name="email_body" class="form-control font-monospace" rows="18" style="font-size: 0.85rem;">{{ smtp.get('email_body', '') }}</textarea>
+            </div>
+            <div class="mt-3">
+                <button type="submit" class="btn btn-primary"><i class="bi bi-save"></i> Alle Einstellungen speichern</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Datenbank</div>
+    <div class="card-body">
+        <table class="table table-sm mb-3">
+            <tr><td>Pfad</td><td><code>{{ db_path }}</code></td></tr>
+        </table>
+        <div class="d-flex gap-2 align-items-center">
+            <a href="{{ url_for('backup_download') }}" class="btn btn-outline-success">
+                <i class="bi bi-download"></i> Backup herunterladen (ZIP)
+            </a>
+            <form method="post" action="{{ url_for('backup_restore') }}" enctype="multipart/form-data" class="d-flex gap-2 align-items-center">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="file" name="backup_file" accept=".zip" class="form-control form-control-sm" style="max-width: 250px;" required>
+                <button type="submit" class="btn btn-outline-danger" onclick="return confirm('ACHTUNG: Alle aktuellen Daten werden überschrieben! Fortfahren?')">
+                    <i class="bi bi-upload"></i> Wiederherstellen
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">Passwort ändern</div>
+    <div class="card-body">
+        <a href="{{ url_for('change_password') }}" class="btn btn-outline-primary">
+            <i class="bi bi-key"></i> Admin-Passwort ändern
+        </a>
+    </div>
+</div>
+{% endblock %}

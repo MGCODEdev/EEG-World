@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Meine Verträge{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-file-earmark-text"></i> Meine Verträge</h2>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Typ</th>
+                        <th>Dateiname</th>
+                        <th>Hochgeladen am</th>
+                        <th class="text-end">Download</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for c in contracts %}
+                <tr>
+                    <td>
+                        {% if c['type'] == 'bezieher' %}
+                        <span class="badge bg-primary"><i class="bi bi-plug"></i> Bezieher-Vertrag</span>
+                        {% else %}
+                        <span class="badge bg-warning text-dark"><i class="bi bi-sun"></i> Einspeiser-Vertrag</span>
+                        {% endif %}
+                    </td>
+                    <td><i class="bi bi-file-earmark-pdf"></i> {{ c['filename'] }}</td>
+                    <td>{{ c['uploaded_at']|localdate if c['uploaded_at'] else '—' }}</td>
+                    <td class="text-end">
+                        <a href="{{ url_for('contract_download', id=c['id']) }}" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-download"></i> Herunterladen
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4" class="text-center text-muted py-4">
+                    <i class="bi bi-inbox" style="font-size:2rem;"></i><br>
+                    Noch keine Verträge vorhanden.<br>
+                    <small>Ihre Verträge werden vom Administrator hochgeladen.</small>
+                </td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

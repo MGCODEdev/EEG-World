@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Newsletter{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-envelope-paper"></i> Newsletter</h2>
+    <a href="{{ url_for('newsletter_new') }}" class="btn btn-success"><i class="bi bi-plus-lg"></i> Neuer Newsletter</a>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Betreff</th>
+                    <th>Erstellt</th>
+                    <th>Versendet</th>
+                    <th class="text-end">Empfänger</th>
+                    <th class="text-end">Aktionen</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for nl in newsletters %}
+            <tr>
+                <td><strong>{{ nl['subject'] }}</strong></td>
+                <td><small>{{ nl['created_at']|localdatetime }}</small><br><small class="text-muted">von {{ nl['created_by'] or 'system' }}</small></td>
+                <td>
+                    {% if nl['sent_at'] %}
+                    <span class="badge bg-success"><i class="bi bi-check-lg"></i> {{ nl['sent_at']|localdatetime }}</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Entwurf</span>
+                    {% endif %}
+                </td>
+                <td class="text-end">{{ nl['recipients_count'] or 0 }}</td>
+                <td class="text-end text-nowrap">
+                    <a href="{{ url_for('newsletter_preview', id=nl['id']) }}" class="btn btn-sm btn-outline-info" title="Vorschau" target="_blank"><i class="bi bi-eye"></i></a>
+                    {% if not nl['sent_at'] %}
+                    <a href="{{ url_for('newsletter_edit', id=nl['id']) }}" class="btn btn-sm btn-outline-primary" title="Bearbeiten"><i class="bi bi-pencil"></i></a>
+                    <button type="button" class="btn btn-sm btn-outline-warning" title="Test-E-Mail senden"
+                            data-bs-toggle="modal" data-bs-target="#testModal{{ nl['id'] }}">
+                        <i class="bi bi-envelope-at"></i>
+                    </button>
+                    <form method="post" action="{{ url_for('newsletter_send', id=nl['id']) }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-sm btn-outline-success" title="An alle versenden"
+                                onclick="return confirm('Newsletter an alle aktiven Mitglieder versenden?')">
+                            <i class="bi bi-send"></i>
+                        </button>
+                    </form>
+                    {% endif %}
+                    <form method="post" action="{{ url_for('newsletter_delete', id=nl['id']) }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Löschen"
+                                onclick="return confirm('Newsletter wirklich löschen?')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-4">Noch keine Newsletter erstellt.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+
+<!-- Test-E-Mail Modals -->
+{% for nl in newsletters %}
+{% if not nl['sent_at'] %}
+<div class="modal fade" id="testModal{{ nl['id'] }}" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" action="{{ url_for('newsletter_test', id=nl['id']) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-envelope-at"></i> Test-E-Mail senden</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">Der Newsletter <strong>„{{ nl['subject'] }}"</strong> wird als Test an die unten angegebene Adresse gesendet. Betreff wird mit [TEST] markiert.</p>
+                    <div class="mb-3">
+                        <label class="form-label">E-Mail-Adresse</label>
+                        <input type="email" name="test_email" class="form-control" required
+                               placeholder="deine@email.at" value="{{ current_user.email or '' }}">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                    <button type="submit" class="btn btn-warning"><i class="bi bi-send"></i> Test senden</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endfor %}
+{% endblock %}

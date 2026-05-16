@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Überweisungen{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-bank"></i> Überweisungen & Forderungen</h2>
+    <div>
+        <span class="badge bg-danger me-2">{{ payments|selectattr('paid', 'equalto', false)|selectattr('net_total', 'gt', 0)|list|length }} offen (Forderungen)</span>
+        <span class="badge bg-success me-2">{{ payments|selectattr('paid')|list|length }} gebucht</span>
+        <span class="badge bg-info">{{ payments|selectattr('paid', 'equalto', false)|selectattr('net_total', 'lt', 0)|list|length }} offen (Gutschriften)</span>
+    </div>
+</div>
+
+<!-- Offene Forderungen (Mitglied muss zahlen) -->
+<div class="card mb-4">
+    <div class="card-header bg-danger text-white">
+        <i class="bi bi-exclamation-circle"></i> Offene Forderungen (Mitglied → EEG)
+    </div>
+    <div class="card-body table-responsive p-0">
+        <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Mitglied</th>
+                    <th>Zeitraum</th>
+                    <th class="text-end">Betrag</th>
+                    <th>IBAN / Verwendungszweck</th>
+                    <th class="text-center">Aktion</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% set ns = namespace(total=0) %}
+            {% for p in payments if not p['paid'] and p['net_total'] > 0 %}
+            {% set ns.total = ns.total + p['net_total'] %}
+            <tr>
+                <td><strong>{{ p['member_name'] }}</strong></td>
+                <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
+                <td class="text-end"><strong class="text-danger">{{ "%.2f"|format(p['net_total']) }} €</strong></td>
+                <td>
+                    <small class="text-muted">EEG-Abr. {{ p['invoice_id'] }}/{{ p['period_from'][:4] }} – {{ p['member_name'] }}</small>
+                </td>
+                <td class="text-center">
+                    <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
+                        <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                        <button type="submit" class="btn btn-sm btn-success" title="Als gebucht markieren">
+                            <i class="bi bi-check-lg"></i> Gebucht
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-3">Keine offenen Forderungen 🎉</td></tr>
+            {% endfor %}
+            </tbody>
+            {% if ns.total > 0 %}
+            <tfoot class="table-light">
+                <tr>
+                    <td colspan="2"><strong>Gesamt offene Forderungen</strong></td>
+                    <td class="text-end"><strong class="text-danger">{{ "%.2f"|format(ns.total) }} €</strong></td>
+                    <td colspan="2"></td>
+                </tr>
+            </tfoot>
+            {% endif %}
+        </table>
+    </div>
+</div>
+
+<!-- Offene Gutschriften (EEG muss an Mitglied zahlen) -->
+<div class="card mb-4">
+    <div class="card-header bg-info text-white">
+        <i class="bi bi-arrow-right-circle"></i> Offene Gutschriften (EEG → Mitglied)
+    </div>
+    <div class="card-body table-responsive p-0">
+        <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Mitglied</th>
+                    <th>Zeitraum</th>
+                    <th class="text-end">Gutschrift</th>
+                    <th>Bankverbindung</th>
+                    <th class="text-center">Aktion</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% set ns2 = namespace(total=0) %}
+            {% for p in payments if not p['paid'] and p['net_total'] < 0 %}
+            {% set ns2.total = ns2.total + p['net_total'] %}
+            <tr>
+                <td><strong>{{ p['member_name'] }}</strong></td>
+                <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
+                <td class="text-end"><strong class="text-success">{{ "%.2f"|format(p['net_total']|abs) }} €</strong></td>
+                <td>
+                    {% if p['iban'] %}
+                    <small>{{ p['account_holder'] or p['member_name'] }}<br>
+                    <span class="font-monospace">{{ p['iban'] }}</span></small>
+                    {% else %}
+                    <small class="text-danger">⚠ Keine IBAN hinterlegt</small>
+                    {% endif %}
+                </td>
+                <td class="text-center">
+                    <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
+                        <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                        <button type="submit" class="btn btn-sm btn-success" title="Als überwiesen markieren">
+                            <i class="bi bi-check-lg"></i> Überwiesen
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-3">Keine offenen Gutschriften</td></tr>
+            {% endfor %}
+            </tbody>
+            {% if ns2.total < 0 %}
+            <tfoot class="table-light">
+                <tr>
+                    <td colspan="2"><strong>Gesamt offene Gutschriften</strong></td>
+                    <td class="text-end"><strong class="text-success">{{ "%.2f"|format(ns2.total|abs) }} €</strong></td>
+                    <td colspan="2"></td>
+                </tr>
+            </tfoot>
+            {% endif %}
+        </table>
+    </div>
+</div>
+
+<!-- Bereits gebuchte Zahlungen -->
+<div class="card">
+    <div class="card-header bg-success text-white">
+        <i class="bi bi-check-circle"></i> Gebuchte Zahlungen
+    </div>
+    <div class="card-body table-responsive p-0">
+        <table class="table table-sm table-hover mb-0">
+            <thead class="table-light">
+                <tr>
+                    <th>Mitglied</th>
+                    <th>Zeitraum</th>
+                    <th class="text-end">Betrag</th>
+                    <th>Gebucht am</th>
+                    <th class="text-center">Aktion</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in payments if p['paid'] %}
+            <tr>
+                <td>{{ p['member_name'] }}</td>
+                <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
+                <td class="text-end">
+                    {% if p['net_total'] > 0 %}
+                    <span class="text-muted">+{{ "%.2f"|format(p['net_total']) }} €</span>
+                    {% elif p['net_total'] < 0 %}
+                    <span class="text-muted">−{{ "%.2f"|format(p['net_total']|abs) }} €</span>
+                    {% else %}
+                    <span class="text-muted">0,00 €</span>
+                    {% endif %}
+                </td>
+                <td><small>{{ p['paid_at']|localdatetime if p['paid_at'] else '–' }}</small></td>
+                <td class="text-center">
+                    <form method="post" action="{{ url_for('payment_mark_unpaid') }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
+                        <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                        <button type="submit" class="btn btn-sm btn-outline-warning" title="Zurücksetzen" onclick="return confirm('Zahlung wirklich auf offen zurücksetzen?')">
+                            <i class="bi bi-arrow-counterclockwise"></i>
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-3">Noch keine Zahlungen gebucht</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

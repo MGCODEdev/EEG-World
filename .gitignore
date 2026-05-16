@@ -1,0 +1,40 @@
+# Runtime databases and backups
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.zip
+backups/
+
+# Personal/imported/exported business data
+data/
+contracts/
+webapp/invoices/
+*.xlsx
+*.xls
+*.csv
+*.pdf
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+instance/
+
+# Logs and caches
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local tooling
+.venv/
+venv/
+.idea/
+.vscode/
+*.swp
+*.swo
+

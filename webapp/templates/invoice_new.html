@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Neue Abrechnung{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-receipt"></i> Neue Abrechnung erstellen</h2>
+
+<div class="card">
+    <div class="card-body">
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Zeitraum von</label>
+                    <input type="date" name="period_from" class="form-control" required
+                           value="{{ suggested_from }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Zeitraum bis</label>
+                    <input type="date" name="period_to" class="form-control" required
+                           value="{{ suggested_to }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Schnellauswahl</label>
+                    <select class="form-select" id="quarter-select">
+                        <option value="">Quartal wählen...</option>
+                        <option value="2026-01-01|2026-03-31">Q1/2026 (Jan–Mär)</option>
+                        <option value="2026-04-01|2026-06-30">Q2/2026 (Apr–Jun)</option>
+                        <option value="2025-10-01|2025-12-31">Q4/2025 (Okt–Dez)</option>
+                        <option value="2025-07-01|2025-09-30">Q3/2025 (Jul–Sep)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="alert alert-info mt-3">
+                <i class="bi bi-info-circle"></i>
+                Die Abrechnung berechnet automatisch:
+                <ul class="mb-0 mt-1">
+                    <li><strong>Verbraucher:</strong> Eigendeckung (G.03) × Verbrauchspreis</li>
+                    <li><strong>Erzeuger:</strong> Lieferung an EEG (G.01T − P.01T) × Erzeugungspreis</li>
+                    <li>Preise werden aus der Preistabelle für den Zeitraum geladen</li>
+                </ul>
+            </div>
+
+            <button type="submit" class="btn btn-success btn-lg mt-3">
+                <i class="bi bi-calculator"></i> Abrechnung berechnen
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+document.getElementById('quarter-select').addEventListener('change', function() {
+    if (this.value) {
+        const [from, to] = this.value.split('|');
+        document.querySelector('input[name="period_from"]').value = from;
+        document.querySelector('input[name="period_to"]').value = to;
+    }
+});
+</script>
+{% endblock %}

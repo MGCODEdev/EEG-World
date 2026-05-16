@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Preise{% endblock %}
+{% block extra_css %}
+<style>
+    .price-warn { background: #fff3cd; border-left: 4px solid #ffc107; padding: .5rem .75rem; border-radius: .25rem; font-size: .85rem; }
+    .price-row.has-invoice { background: #fffbe6; }
+    .edit-form .form-control { font-size: .85rem; padding: .25rem .5rem; }
+    .edit-form .btn { font-size: .8rem; }
+</style>
+{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-currency-euro"></i> Preise verwalten</h2>
+
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong>Neuen Preis anlegen (pro Quartal)</strong></div>
+    <div class="card-body">
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-2">
+                    <label class="form-label">Gültig von</label>
+                    <input type="date" name="valid_from" class="form-control" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Gültig bis</label>
+                    <input type="date" name="valid_to" class="form-control" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Verbrauch (ct/kWh)</label>
+                    <input type="number" name="price_consumption" class="form-control" step="0.1" value="10.0" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Erzeugung (ct/kWh)</label>
+                    <input type="number" name="price_generation" class="form-control" step="0.1" value="8.0" required>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Beschreibung</label>
+                    <input type="text" name="description" class="form-control" placeholder="z.B. Q1/2026">
+                </div>
+                <div class="col-md-2">
+                    <button type="submit" class="btn btn-success w-100"><i class="bi bi-plus-lg"></i> Anlegen</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header bg-white"><strong>Preishistorie</strong></div>
+    <div class="card-body p-0">
+        {% if prices %}
+        <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Zeitraum</th>
+                    <th class="text-end">Verbrauch</th>
+                    <th class="text-end">Erzeugung</th>
+                    <th class="text-end">Marge</th>
+                    <th>Beschreibung</th>
+                    <th>Status</th>
+                    <th class="text-end">Aktionen</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in prices %}
+            {% set has_invoice = p['id'] in invoices_for_prices %}
+            <tr class="price-row {% if has_invoice %}has-invoice{% endif %}" id="row-{{ p['id'] }}">
+                <td>{{ p['valid_from'] }} – {{ p['valid_to'] }}</td>
+                <td class="text-end"><strong>{{ "%.1f"|format(p['price_consumption']) }}</strong> ct/kWh</td>
+                <td class="text-end"><strong>{{ "%.1f"|format(p['price_generation']) }}</strong> ct/kWh</td>
+                <td class="text-end text-success">{{ "%.1f"|format(p['price_consumption'] - p['price_generation']) }} ct/kWh</td>
+                <td>{{ p['description'] or '—' }}</td>
+                <td>
+                    {% if has_invoice %}
+                    <span class="badge bg-warning text-dark" title="Abrechnung #{{ invoices_for_prices[p['id']]['id'] }} existiert">
+                        <i class="bi bi-exclamation-triangle"></i> Abrechnung #{{ invoices_for_prices[p['id']]['id'] }}
+                    </span>
+                    {% else %}
+                    <span class="badge bg-light text-muted">Keine Abrechnung</span>
+                    {% endif %}
+                </td>
+                <td class="text-end text-nowrap">
+                    <button class="btn btn-sm btn-outline-primary" onclick="openEdit({{ p['id'] }})" title="Bearbeiten">
+                        <i class="bi bi-pencil"></i>
+                    </button>
+                    <form method="post" action="{{ url_for('price_duplicate', id=p['id']) }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-sm btn-outline-info" title="In nächste Periode kopieren">
+                            <i class="bi bi-copy"></i>
+                        </button>
+                    </form>
+                    <form method="post" action="{{ url_for('price_delete', id=p['id']) }}" class="d-inline"
+                          onsubmit="return confirmDelete({{ p['id'] }}, {{ 'true' if has_invoice else 'false' }})">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Löschen">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            <!-- Edit-Zeile (versteckt) -->
+            <tr id="edit-{{ p['id'] }}" style="display:none;" class="table-light">
+                <td colspan="7">
+                    {% if has_invoice %}
+                    <div class="price-warn mb-2">
+                        <i class="bi bi-exclamation-triangle-fill text-warning"></i>
+                        <strong>Achtung:</strong> Für diesen Zeitraum existiert bereits <strong>Abrechnung #{{ invoices_for_prices[p['id']]['id'] }}</strong>.
+                        Bei Preisänderungen muss eine neue Abrechnung erstellt werden!
+                    </div>
+                    {% endif %}
+                    <form method="post" action="{{ url_for('price_edit', id=p['id']) }}" class="edit-form"
+                          onsubmit="return confirmEdit({{ p['id'] }}, {{ 'true' if has_invoice else 'false' }})">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-2">
+                                <label class="form-label small">Gültig von</label>
+                                <input type="date" name="valid_from" class="form-control" value="{{ p['valid_from'] }}" required>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">Gültig bis</label>
+                                <input type="date" name="valid_to" class="form-control" value="{{ p['valid_to'] }}" required>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">Verbrauch (ct/kWh)</label>
+                                <input type="number" name="price_consumption" class="form-control" step="0.1" value="{{ p['price_consumption'] }}" required>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">Erzeugung (ct/kWh)</label>
+                                <input type="number" name="price_generation" class="form-control" step="0.1" value="{{ p['price_generation'] }}" required>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small">Beschreibung</label>
+                                <input type="text" name="description" class="form-control" value="{{ p['description'] or '' }}">
+                            </div>
+                            <div class="col-md-2">
+                                <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-check-lg"></i> Speichern</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="closeEdit({{ p['id'] }})"><i class="bi bi-x"></i></button>
+                            </div>
+                        </div>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div class="p-3 text-muted">Noch keine Preise angelegt. Standardpreise: 10 ct/kWh Verbrauch, 8 ct/kWh Erzeugung.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+function openEdit(id) {
+    document.getElementById('edit-' + id).style.display = '';
+    document.getElementById('row-' + id).classList.add('table-active');
+}
+function closeEdit(id) {
+    document.getElementById('edit-' + id).style.display = 'none';
+    document.getElementById('row-' + id).classList.remove('table-active');
+}
+function confirmEdit(id, hasInvoice) {
+    if (hasInvoice) {
+        return confirm('ACHTUNG: Für diesen Zeitraum existiert bereits eine Abrechnung!\n\n' +
+            'Bei Preisänderungen muss anschließend eine neue Abrechnung erstellt werden.\n\n' +
+            'Möchten Sie den Preis wirklich ändern?');
+    }
+    return confirm('Preis wirklich ändern?');
+}
+function confirmDelete(id, hasInvoice) {
+    if (hasInvoice) {
+        return confirm('ACHTUNG: Für diesen Preis existiert bereits eine Abrechnung!\n\n' +
+            'Das Löschen kann zu Inkonsistenzen führen.\n\n' +
+            'Wirklich löschen?');
+    }
+    return confirm('Diesen Preis wirklich löschen?');
+}
+</script>
+{% endblock %}

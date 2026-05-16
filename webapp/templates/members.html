@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Mitglieder{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-people"></i> Mitglieder</h2>
+    <a href="{{ url_for('member_new') }}" class="btn btn-success"><i class="bi bi-plus-lg"></i> Neues Mitglied</a>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Typ</th>
+                    <th class="text-center"><i class="bi bi-envelope"></i></th>
+                    <th class="text-center"><i class="bi bi-bank"></i></th>
+                    <th>Adresse</th>
+                    <th>TF</th>
+                    <th>Status</th>
+                    <th class="text-end">Aktionen</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for m in members %}
+            {% set is_consumer = m['bezug_zp'] and m['bezug_zp'] != '' %}
+            {% set is_generator = m['einspeiser_zp'] and m['einspeiser_zp'] != '' %}
+            <tr class="{{ 'table-secondary' if not m['active'] }}">
+                <td><strong>{{ m['name'] }}</strong></td>
+                <td class="text-nowrap">
+                    {% if is_consumer and is_generator %}
+                    <span class="badge bg-info" title="Bezug-ZP: {{ m['bezug_zp'][-12:] }}"><i class="bi bi-plug"></i> Bezieher</span>
+                    <span class="badge bg-warning text-dark" title="Einspeiser-ZP: {{ m['einspeiser_zp'][-12:] }}"><i class="bi bi-sun"></i> Erzeuger</span>
+                    {% elif is_consumer %}
+                    <span class="badge bg-info" title="Bezug-ZP: {{ m['bezug_zp'][-12:] }}"><i class="bi bi-plug"></i> Bezieher</span>
+                    {% elif is_generator %}
+                    <span class="badge bg-warning text-dark" title="Einspeiser-ZP: {{ m['einspeiser_zp'][-12:] }}"><i class="bi bi-sun"></i> Erzeuger</span>
+                    {% else %}
+                    <span class="badge bg-secondary"><i class="bi bi-dash"></i> Kein ZP</span>
+                    {% endif %}
+                </td>
+                <td class="text-center">
+                    {% if m['email'] %}
+                    <a href="mailto:{{ m['email'] }}" class="text-success" title="{{ m['email'] }} — Klicken zum Senden" data-bs-toggle="tooltip">
+                        <i class="bi bi-envelope-fill fs-5"></i>
+                    </a>
+                    {% else %}
+                    <span class="text-muted"><i class="bi bi-envelope fs-5"></i></span>
+                    {% endif %}
+                </td>
+                <td class="text-center">
+                    {% if m['iban'] %}
+                    <span class="text-success" role="button" title="IBAN: {{ m['iban'] }}{% if m['bic'] %}&#10;BIC: {{ m['bic'] }}{% endif %}{% if m['account_holder'] %}&#10;Inhaber: {{ m['account_holder'] }}{% endif %}" data-bs-toggle="tooltip" data-bs-html="true">
+                        <i class="bi bi-bank2 fs-5"></i>
+                    </span>
+                    {% else %}
+                    <span class="text-muted"><i class="bi bi-bank2 fs-5"></i></span>
+                    {% endif %}
+                </td>
+                <td><small>{{ m['address_street'] or '' }}{% if m['address_zip'] %}, {{ m['address_zip'] }}{% endif %} {{ m['address_city'] or '' }}</small></td>
+                <td>{{ "%.0f"|format(m['teilnahme']*100) }}%</td>
+                <td>
+                    {% if m['active'] %}
+                    <span class="badge bg-success">Aktiv</span>
+                    {% else %}
+                    <span class="badge bg-secondary">Inaktiv</span>
+                    {% endif %}
+                </td>
+                <td class="text-end">
+                    <a href="{{ url_for('member_edit', id=m['id']) }}" class="btn btn-sm btn-outline-primary" title="Bearbeiten"><i class="bi bi-pencil"></i></a>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+    <div class="card-footer bg-white text-muted small">
+        {{ members|length }} Mitglieder insgesamt ·
+        {{ members|selectattr('active')|list|length }} aktiv ·
+        {{ members|selectattr('einspeiser_zp')|list|length }} Erzeuger
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.map(function(el) { return new bootstrap.Tooltip(el); });
+});
+</script>
+{% endblock %}

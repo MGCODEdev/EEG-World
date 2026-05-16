@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h2 class="mb-4"><i class="bi bi-speedometer2"></i> Dashboard</h2>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Mitglieder</h6>
+                <h2>{{ stats.members }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Messwerte</h6>
+                <h2>{{ "{:,.0f}".format(stats.measurements) }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Import-Batches</h6>
+                <h2>{{ stats.batches }}</h2>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body">
+                <h6 class="text-muted">Abrechnungen</h6>
+                <h2>{{ stats.invoices }}</h2>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% set mon_next = 'desc' if mon_dir == 'asc' else 'asc' %}
+{% set imp_next = 'desc' if imp_dir == 'asc' else 'asc' %}
+<div class="row g-3">
+    <div class="col-md-7">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-graph-up"></i> Gehandelte Energie pro Monat (Eigendeckung)</div>
+            <div class="card-body">
+                {% if stats.monthly %}
+                <table class="table table-sm table-hover">
+                    <thead>
+                        <tr>
+                            <th><a class="link-dark text-decoration-none" href="{{ url_for('dashboard', mon_sort='period_start', mon_dir=mon_next, imp_sort=imp_sort, imp_dir=imp_dir) }}">Monat {% if mon_sort == 'period_start' %}<i class="bi bi-arrow-{{ 'up' if mon_dir == 'asc' else 'down' }}"></i>{% endif %}</a></th>
+                            <th class="text-end"><a class="link-dark text-decoration-none" href="{{ url_for('dashboard', mon_sort='kwh', mon_dir=mon_next, imp_sort=imp_sort, imp_dir=imp_dir) }}">kWh gehandelt {% if mon_sort == 'kwh' %}<i class="bi bi-arrow-{{ 'up' if mon_dir == 'asc' else 'down' }}"></i>{% endif %}</a></th>
+                            <th class="text-end">Messwerte</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in stats.monthly %}
+                    <tr title="Zeitraum: {{ row['period_start'][:10] }} – {{ row['period_start'][:8] }}28">
+                        <td>{{ row['period_start'][:7] }}</td>
+                        <td class="text-end">{{ "%.1f"|format(row['kwh']) }} kWh</td>
+                        <td class="text-end text-muted"><small>{{ "{:,.0f}".format(row['cnt']) }}</small></td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="text-muted">Noch keine Daten importiert.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-5">
+        <div class="card">
+            <div class="card-header"><i class="bi bi-clock-history"></i> Importe</div>
+            <div class="card-body">
+                {% if stats.last_imports %}
+                <table class="table table-sm table-hover">
+                    <thead>
+                        <tr>
+                            <th><a class="link-dark text-decoration-none" href="{{ url_for('dashboard', imp_sort='source_file', imp_dir=imp_next, mon_sort=mon_sort, mon_dir=mon_dir) }}">Datei {% if imp_sort == 'source_file' %}<i class="bi bi-arrow-{{ 'up' if imp_dir == 'asc' else 'down' }}"></i>{% endif %}</a></th>
+                            <th><a class="link-dark text-decoration-none" href="{{ url_for('dashboard', imp_sort='period_start', imp_dir=imp_next, mon_sort=mon_sort, mon_dir=mon_dir) }}">Zeitraum {% if imp_sort == 'period_start' %}<i class="bi bi-arrow-{{ 'up' if imp_dir == 'asc' else 'down' }}"></i>{% endif %}</a></th>
+                            <th><a class="link-dark text-decoration-none" href="{{ url_for('dashboard', imp_sort='imported_at', imp_dir=imp_next, mon_sort=mon_sort, mon_dir=mon_dir) }}">Importiert {% if imp_sort == 'imported_at' %}<i class="bi bi-arrow-{{ 'up' if imp_dir == 'asc' else 'down' }}"></i>{% endif %}</a></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for imp in stats.last_imports %}
+                    <tr title="Datei: {{ imp['source_file'] }}&#10;Zeitraum: {{ imp['period_start'][:10] }} – {{ imp['period_end'][:10] }}&#10;Importiert: {{ imp['imported_at']|localdatetime }}">
+                        <td><small>{{ imp['source_file'][:28] }}</small></td>
+                        <td><small>{{ imp['period_start'][:7] }}</small></td>
+                        <td><small>{{ imp['imported_at']|localdatetime }}</small></td>
+                    </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <p class="text-muted">Noch keine Importe.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

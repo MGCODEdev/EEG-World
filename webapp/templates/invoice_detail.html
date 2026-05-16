@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Abrechnung #{{ invoice['id'] }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-receipt"></i> Abrechnung #{{ invoice['id'] }}</h2>
+    <div>
+        <form method="post" action="{{ url_for('invoice_regenerate', id=invoice['id']) }}" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-warning"
+                    onclick="return confirm('Abrechnung wirklich neu berechnen?\n\nDie bestehenden Positionen werden gelöscht und mit aktuellen Preisen neu berechnet.\n\nBereits versendete E-Mails werden NICHT zurückgezogen!')">
+                <i class="bi bi-arrow-clockwise"></i> Neu berechnen
+            </button>
+        </form>
+        <form method="post" action="{{ url_for('invoice_send', id=invoice['id']) }}" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-primary" onclick="return confirm('Abrechnung per E-Mail an alle Mitglieder senden?')">
+                <i class="bi bi-envelope"></i> Per E-Mail versenden
+            </button>
+        </form>
+        {% if invoice['status'] == 'draft' %}
+        <form method="post" action="{{ url_for('invoice_finalize', id=invoice['id']) }}" class="d-inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-success ms-1"
+                    onclick="return confirm('Abrechnung als finalisiert/versendet markieren?')">
+                <i class="bi bi-check2-circle"></i> Als versendet markieren
+            </button>
+        </form>
+        {% endif %}
+        <a href="{{ url_for('invoices_list') }}" class="btn btn-outline-secondary ms-2">Zurück</a>
+    </div>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Zeitraum</h6>
+                <strong>{{ invoice['period_from'] }} – {{ invoice['period_to'] }}</strong>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Gehandelt</h6>
+                <h4>{{ "%.1f"|format(invoice['total_kwh_traded'] or 0) }} <small class="text-muted">kWh</small></h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Einnahmen</h6>
+                <h4 class="text-success">{{ "%.2f"|format(invoice['total_income'] or 0) }} €</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">Ausgaben</h6>
+                <h4 class="text-danger">{{ "%.2f"|format(invoice['total_expense'] or 0) }} €</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stat-card">
+            <div class="card-body">
+                <h6 class="text-muted">EEG-Marge</h6>
+                <h4>{{ "%.2f"|format(invoice['total_margin'] or 0) }} €</h4>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Abrechnungspositionen pro Mitglied -->
+<div class="card mb-4">
+    <div class="card-header"><i class="bi bi-people"></i> Abrechnungen je Mitglied</div>
+    <div class="card-body table-responsive">
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>Mitglied</th>
+                    <th class="text-end">Bezug kWh</th>
+                    <th class="text-end">Bezug €</th>
+                    <th class="text-end">Einspeisung kWh</th>
+                    <th class="text-end">Gutschrift €</th>
+                    <th class="text-end"><strong>Netto €</strong></th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for m in member_rows %}
+            <tr{% if m['email_sent'] %} style="background-color: rgba(255, 193, 7, 0.15);"{% endif %}>
+                <td>
+                    {{ m['member_name'] }}
+                    {% if m['email_sent'] %}<i class="bi bi-envelope-check text-success ms-1" title="E-Mail versendet"></i>{% endif %}
+                </td>
+                <td class="text-end">{% if m['cons_kwh'] %}{{ "%.3f"|format(m['cons_kwh']) }}{% else %}–{% endif %}</td>
+                <td class="text-end text-danger">{% if m['cons_eur'] %}{{ "%.2f"|format(m['cons_eur']) }} €{% else %}–{% endif %}</td>
+                <td class="text-end">{% if m['gen_kwh'] %}{{ "%.3f"|format(m['gen_kwh']) }}{% else %}–{% endif %}</td>
+                <td class="text-end text-success">{% if m['gen_eur'] %}{{ "%.2f"|format(m['gen_eur']) }} €{% else %}–{% endif %}</td>
+                <td class="text-end">
+                    {% if m['net_eur'] > 0 %}
+                    <strong class="text-danger">{{ "%.2f"|format(m['net_eur']) }} €</strong>
+                    <small class="text-muted">(zahlt)</small>
+                    {% elif m['net_eur'] < 0 %}
+                    <strong class="text-success">{{ "%.2f"|format(m['net_eur']|abs) }} €</strong>
+                    <small class="text-muted">(erhält)</small>
+                    {% else %}
+                    <span class="text-muted">0,00 €</span>
+                    {% endif %}
+                </td>
+                <td class="text-nowrap">
+                    <a href="{{ url_for('invoice_pdf', id=invoice['id'], member_id=m['member_id']) }}" class="btn btn-sm btn-outline-secondary" title="PDF"><i class="bi bi-file-pdf"></i></a>
+                    <form method="post" action="{{ url_for('invoice_send_single', id=invoice['id'], member_id=m['member_id']) }}" class="d-inline">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-sm btn-outline-primary" title="E-Mail senden" onclick="return confirm('Abrechnung an {{ m['member_name'] }} senden?')"><i class="bi bi-envelope"></i></button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+            <tfoot>
+                <tr class="table-light">
+                    <td><strong>Summe</strong></td>
+                    <td class="text-end"><strong>{{ "%.1f"|format(member_rows|sum(attribute='cons_kwh')) }} kWh</strong></td>
+                    <td class="text-end text-danger"><strong>{{ "%.2f"|format(member_rows|sum(attribute='cons_eur')) }} €</strong></td>
+                    <td class="text-end"><strong>{{ "%.1f"|format(member_rows|sum(attribute='gen_kwh')) }} kWh</strong></td>
+                    <td class="text-end text-success"><strong>{{ "%.2f"|format(member_rows|sum(attribute='gen_eur')) }} €</strong></td>
+                    <td class="text-end"><strong>{{ "%.2f"|format(invoice['total_margin'] or 0) }} € Marge</strong></td>
+                    <td></td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</div>
+
+<!-- E-Mail Log -->
+{% if emails %}
+<div class="card">
+    <div class="card-header"><i class="bi bi-envelope"></i> E-Mail Versand-Protokoll</div>
+    <div class="card-body table-responsive">
+        <table class="table table-sm">
+            <thead><tr><th>Mitglied</th><th>Empfänger</th><th>Status</th><th>Fehler</th><th>Zeitpunkt</th></tr></thead>
+            <tbody>
+            {% for e in emails %}
+            <tr>
+                <td>{{ e['member_name'] or '–' }}</td>
+                <td>{{ e['recipient_email'] }}</td>
+                <td>
+                    {% if e['status'] == 'sent' %}<span class="badge bg-success">Gesendet</span>
+                    {% else %}<span class="badge bg-danger">Fehlgeschlagen</span>{% endif %}
+                </td>
+                <td><small class="text-danger">{{ e['error_message'] or '' }}</small></td>
+                <td><small>{{ e['sent_at']|localdatetime }}</small></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

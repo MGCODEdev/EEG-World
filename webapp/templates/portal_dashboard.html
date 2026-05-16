@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Meine Übersicht{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-house"></i> Meine Übersicht</h2>
+
+{% if not member %}
+<div class="alert alert-warning">Ihrem Konto ist noch kein Mitglied zugeordnet. Bitte kontaktieren Sie den Administrator.</div>
+{% else %}
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="row align-items-center">
+            <div class="col-md-6">
+                <h5 class="mb-1" style="color:#17252a;">{{ member['name'] }}</h5>
+                <p class="text-muted mb-0">
+                    {% if member['address_street'] %}{{ member['address_street'] }}, {% endif %}
+                    {{ member['address_zip'] or '' }} {{ member['address_city'] or '' }}
+                </p>
+                {% if member['email'] %}<small class="text-muted"><i class="bi bi-envelope"></i> {{ member['email'] }}</small>{% endif %}
+            </div>
+            <div class="col-md-6 text-md-end">
+                <a href="{{ url_for('portal_data') }}" class="btn btn-outline-primary btn-sm"><i class="bi bi-pencil"></i> Daten bearbeiten</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if stats %}
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <div class="stat-value">{{ "%.1f"|format(stats['total_consumption_kwh']) }}</div>
+                <div class="stat-label">kWh Bezug</div>
+            </div>
+        </div>
+    </div>
+    {% if stats['total_generation_kwh'] > 0 %}
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <div class="stat-value">{{ "%.1f"|format(stats['total_generation_kwh']) }}</div>
+                <div class="stat-label">kWh Einspeisung</div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <div class="stat-value">{{ "%.1f"|format(stats['co2_saved_kg']) }}</div>
+                <div class="stat-label">kg CO₂ vermieden</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card h-100">
+            <div class="card-body text-center">
+                <div class="stat-value {% if stats['net_total'] > 0 %}text-danger{% elif stats['net_total'] < 0 %}text-success{% endif %}">
+                    {% if stats['net_total'] > 0 %}{{ "%.2f"|format(stats['net_total']) }} €{% elif stats['net_total'] < 0 %}−{{ "%.2f"|format(stats['net_total']|abs) }} €{% else %}0,00 €{% endif %}
+                </div>
+                <div class="stat-label">{% if stats['net_total'] >= 0 %}Letzte Rechnung{% else %}Letztes Guthaben{% endif %}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Monatlicher Verlauf -->
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-bar-chart"></i> Monatlicher Bezug (letzte Abrechnung)</strong></div>
+    <div class="card-body">
+        {% set max_kwh = stats['monthly_max'] if stats['monthly_max'] > 0 else 1 %}
+        {% for month in stats['monthly_data'] %}
+        <div class="d-flex align-items-center mb-1">
+            <span style="width:60px;font-size:.8rem;text-align:right;padding-right:8px;color:#666;">{{ month['label'] }}</span>
+            <div class="flex-grow-1" style="background:#f0f0f0;border-radius:4px;height:20px;overflow:hidden;">
+                <div style="width:{{ (month['consumption'] / max_kwh * 100)|round(1) }}%;height:100%;background:linear-gradient(90deg,#2b7a78,#3aafa9);border-radius:4px;"></div>
+            </div>
+            <span style="width:65px;font-size:.8rem;padding-left:8px;font-weight:600;">{{ "%.1f"|format(month['consumption']) }} kWh</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+{% if stats.get('invoice_id') %}
+<a href="{{ url_for('invoice_pdf', id=stats['invoice_id'], member_id=member['id']) }}" class="btn btn-primary mb-3">
+    <i class="bi bi-file-earmark-pdf"></i> Letzte Abrechnung als PDF
+</a>
+{% endif %}
+{% endif %}
+
+<!-- Abrechnungsliste -->
+<div class="card">
+    <div class="card-header bg-white"><strong><i class="bi bi-receipt"></i> Alle Abrechnungen</strong></div>
+    <div class="card-body p-0">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr><th>Zeitraum</th><th>Status</th><th class="text-end">Aktion</th></tr>
+            </thead>
+            <tbody>
+            {% for inv in invoices %}
+            <tr>
+                <td>{{ inv['period_from'] }} – {{ inv['period_to'] }}</td>
+                <td><span class="badge bg-{% if inv['status'] == 'sent' %}success{% elif inv['status'] == 'finalized' %}primary{% else %}secondary{% endif %}">{{ inv['status'] }}</span></td>
+                <td class="text-end">
+                    <a href="{{ url_for('invoice_pdf', id=inv['id'], member_id=member['id']) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-download"></i> PDF</a>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="3" class="text-center text-muted py-3">Noch keine Abrechnungen vorhanden</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

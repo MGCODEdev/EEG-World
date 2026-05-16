@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Abrechnungen{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-receipt"></i> Abrechnungen</h2>
+    <a href="{{ url_for('invoice_new') }}" class="btn btn-success"><i class="bi bi-plus-lg"></i> Neue Abrechnung</a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        {% if invoices %}
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Zeitraum</th>
+                    <th class="text-end">kWh gehandelt</th>
+                    <th class="text-end">Einnahmen</th>
+                    <th class="text-end">Ausgaben</th>
+                    <th class="text-end">Marge</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for inv in invoices %}
+            <tr>
+                <td>{{ inv['id'] }}</td>
+                <td>{{ inv['period_from'] }} – {{ inv['period_to'] }}</td>
+                <td class="text-end">{{ "%.1f"|format(inv['total_kwh_traded'] or 0) }} kWh</td>
+                <td class="text-end text-success">{{ "%.2f"|format(inv['total_income'] or 0) }} €</td>
+                <td class="text-end text-danger">{{ "%.2f"|format(inv['total_expense'] or 0) }} €</td>
+                <td class="text-end"><strong>{{ "%.2f"|format(inv['total_margin'] or 0) }} €</strong></td>
+                <td>
+                    {% if inv['status'] == 'sent' %}
+                    <span class="badge bg-success">Versendet</span>
+                    {% elif inv['status'] == 'finalized' %}
+                    <span class="badge bg-primary">Finalisiert</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Entwurf</span>
+                    {% endif %}
+                </td>
+                <td><a href="{{ url_for('invoice_detail', id=inv['id']) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i></a></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted">Noch keine Abrechnungen erstellt.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

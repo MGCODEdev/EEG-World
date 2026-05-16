@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Mitglied bearbeiten' if member else 'Neues Mitglied' }}{% endblock %}
+{% block extra_css %}
+<style>
+    .validation-msg { font-size: .8rem; margin-top: .25rem; }
+    .field-ok { border-color: #28a745 !important; }
+    .field-err { border-color: #dc3545 !important; }
+</style>
+{% endblock %}
+{% block content %}
+<h2 class="mb-4">
+    <i class="bi bi-person"></i>
+    {{ 'Mitglied bearbeiten' if member else 'Neues Mitglied' }}
+    {% if member %}
+    <small class="text-muted fs-6 ms-2">
+        {% if member['bezug_zp'] and member['einspeiser_zp'] %}
+        <span class="badge bg-info"><i class="bi bi-plug"></i> Bezieher</span>
+        <span class="badge bg-warning text-dark"><i class="bi bi-sun"></i> Erzeuger</span>
+        {% elif member['bezug_zp'] %}
+        <span class="badge bg-info"><i class="bi bi-plug"></i> Bezieher</span>
+        {% elif member['einspeiser_zp'] %}
+        <span class="badge bg-warning text-dark"><i class="bi bi-sun"></i> Erzeuger</span>
+        {% endif %}
+    </small>
+    {% endif %}
+</h2>
+
+<div class="card">
+    <div class="card-body">
+        <form method="post" id="memberForm" onsubmit="return validateAndConfirm()">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <h6 class="text-muted mb-3"><i class="bi bi-person-vcard"></i> Stammdaten</h6>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Name *</label>
+                    <input type="text" name="name" class="form-control" required
+                           value="{{ member['name'] if member else '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">E-Mail</label>
+                    <input type="email" name="email" id="email" class="form-control"
+                           value="{{ member['email'] if member and member['email'] else '' }}"
+                           oninput="validateEmail(this)">
+                    <div id="email-msg" class="validation-msg"></div>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Telefon</label>
+                    <input type="text" name="phone" class="form-control"
+                           value="{{ member['phone'] if member and member['phone'] else '' }}">
+                </div>
+            </div>
+
+            <div class="row g-3 mt-2">
+                <div class="col-md-6">
+                    <label class="form-label">Straße</label>
+                    <input type="text" name="address_street" class="form-control"
+                           value="{{ member['address_street'] if member and member['address_street'] else '' }}">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">PLZ</label>
+                    <input type="text" name="address_zip" class="form-control" pattern="\d{4,5}" maxlength="5"
+                           title="4-5 stellige Postleitzahl"
+                           value="{{ member['address_zip'] if member and member['address_zip'] else '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Ort</label>
+                    <input type="text" name="address_city" class="form-control"
+                           value="{{ member['address_city'] if member and member['address_city'] else '' }}">
+                </div>
+            </div>
+
+            <hr class="my-4">
+            <h6 class="text-muted mb-3"><i class="bi bi-lightning"></i> Zählpunkte</h6>
+
+            <div class="row g-3">
+                <div class="col-md-8">
+                    <label class="form-label">Bezug-Zählpunkt (Verbrauch) <span class="badge bg-info">Bezieher</span></label>
+                    <input type="text" name="bezug_zp" class="form-control font-monospace"
+                           placeholder="AT00 0000 0000 0000 0000"
+                           value="{{ member['bezug_zp'] if member and member['bezug_zp'] else '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Bezug ab</label>
+                    <input type="date" name="bezug_ab" class="form-control"
+                           value="{{ member['bezug_ab'] if member and member['bezug_ab'] else '' }}">
+                </div>
+            </div>
+
+            <div class="row g-3 mt-1">
+                <div class="col-md-8">
+                    <label class="form-label">Einspeiser-Zählpunkt (Erzeugung) <span class="badge bg-warning text-dark">Erzeuger</span></label>
+                    <input type="text" name="einspeiser_zp" class="form-control font-monospace"
+                           placeholder="AT00 0000 0000 0000 0000 (optional)"
+                           value="{{ member['einspeiser_zp'] if member and member['einspeiser_zp'] else '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Einspeiser ab</label>
+                    <input type="date" name="einspeiser_ab" class="form-control"
+                           value="{{ member['einspeiser_ab'] if member and member['einspeiser_ab'] else '' }}">
+                </div>
+            </div>
+
+            <div class="row g-3 mt-2">
+                <div class="col-md-3">
+                    <label class="form-label">Teilnahmefaktor</label>
+                    <div class="input-group">
+                        <input type="number" name="teilnahme" class="form-control" step="0.01" min="0" max="1"
+                               value="{{ member['teilnahme'] if member else '1.0' }}">
+                        <span class="input-group-text">= {{ "%.0f"|format((member['teilnahme'] if member else 1.0)*100) }}%</span>
+                    </div>
+                </div>
+                {% if member %}
+                <div class="col-md-3">
+                    <label class="form-label">Status</label>
+                    <div class="form-check form-switch mt-2">
+                        <input type="checkbox" name="active" class="form-check-input" id="active"
+                               {{ 'checked' if member['active'] }}>
+                        <label class="form-check-label" for="active">Aktiv</label>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <hr class="my-4">
+            <h6 class="text-muted mb-3"><i class="bi bi-bank"></i> Kontodaten (für Gutschriften)</h6>
+
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label">Kontoinhaber</label>
+                    <input type="text" name="account_holder" class="form-control"
+                           placeholder="Falls abweichend vom Namen"
+                           value="{{ member['account_holder'] if member and member['account_holder'] else '' }}">
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label">IBAN</label>
+                    <input type="text" name="iban" id="iban" class="form-control font-monospace"
+                           placeholder="AT00 0000 0000 0000 0000" maxlength="34"
+                           value="{{ member['iban'] if member and member['iban'] else '' }}"
+                           oninput="validateIBAN(this)">
+                    <div id="iban-msg" class="validation-msg"></div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">BIC</label>
+                    <input type="text" name="bic" id="bic" class="form-control font-monospace"
+                           placeholder="XXXXXXXX" maxlength="11"
+                           value="{{ member['bic'] if member and member['bic'] else '' }}"
+                           oninput="validateBIC(this)">
+                    <div id="bic-msg" class="validation-msg"></div>
+                </div>
+            </div>
+
+            <div class="mt-4 d-flex align-items-center">
+                <button type="submit" class="btn btn-success"><i class="bi bi-check-lg"></i> Speichern</button>
+                <a href="{{ url_for('members_list') }}" class="btn btn-outline-secondary ms-2">Abbrechen</a>
+                {% if member %}
+                <form method="post" action="{{ url_for('member_delete', id=member['id']) }}" class="d-inline ms-auto">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline-danger"
+                            onclick="return confirm('Mitglied \u0022{{ member.name }}\u0022 wirklich deaktivieren?\n\nDas Mitglied wird nicht gelöscht, sondern nur als inaktiv markiert.')">
+                        <i class="bi bi-trash"></i> Deaktivieren
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+// E-Mail Validierung
+function validateEmail(input) {
+    const msg = document.getElementById('email-msg');
+    const val = input.value.trim();
+    if (!val) { input.classList.remove('field-ok', 'field-err'); msg.textContent = ''; return true; }
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (re.test(val)) {
+        input.classList.add('field-ok'); input.classList.remove('field-err');
+        msg.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> Gültige E-Mail</span>';
+        return true;
+    } else {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Ungültiges E-Mail-Format</span>';
+        return false;
+    }
+}
+
+// IBAN Validierung (Prüfsumme + Länge)
+function validateIBAN(input) {
+    const msg = document.getElementById('iban-msg');
+    let val = input.value.replace(/\s/g, '').toUpperCase();
+    if (!val) { input.classList.remove('field-ok', 'field-err'); msg.textContent = ''; return true; }
+
+    // Mindestlänge prüfen
+    if (val.length < 15) {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> IBAN zu kurz</span>';
+        return false;
+    }
+    // Format: 2 Buchstaben + 2 Ziffern + Rest
+    if (!/^[A-Z]{2}\d{2}[A-Z0-9]+$/.test(val)) {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> Ungültiges IBAN-Format (z.B. AT12 3456 ...)</span>';
+        return false;
+    }
+    // AT-IBAN muss 20 Zeichen haben
+    if (val.startsWith('AT') && val.length !== 20) {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> AT-IBAN muss 20 Zeichen haben (aktuell: ' + val.length + ')</span>';
+        return false;
+    }
+    // DE-IBAN muss 22 Zeichen haben
+    if (val.startsWith('DE') && val.length !== 22) {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> DE-IBAN muss 22 Zeichen haben (aktuell: ' + val.length + ')</span>';
+        return false;
+    }
+    // LT-IBAN muss 20 Zeichen haben
+    if (val.startsWith('LT') && val.length !== 20) {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> LT-IBAN muss 20 Zeichen haben (aktuell: ' + val.length + ')</span>';
+        return false;
+    }
+    // IBAN Prüfsumme (Modulo 97)
+    const rearranged = val.slice(4) + val.slice(0, 4);
+    let numeric = '';
+    for (let i = 0; i < rearranged.length; i++) {
+        const c = rearranged.charCodeAt(i);
+        if (c >= 65 && c <= 90) numeric += (c - 55).toString();
+        else numeric += rearranged[i];
+    }
+    // BigInt modulo
+    let remainder = 0;
+    for (let i = 0; i < numeric.length; i++) {
+        remainder = (remainder * 10 + parseInt(numeric[i])) % 97;
+    }
+    if (remainder === 1) {
+        input.classList.add('field-ok'); input.classList.remove('field-err');
+        msg.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> IBAN gültig (' + val.slice(0,2) + ')</span>';
+        return true;
+    } else {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> IBAN Prüfsumme ungültig</span>';
+        return false;
+    }
+}
+
+// BIC Validierung
+function validateBIC(input) {
+    const msg = document.getElementById('bic-msg');
+    const val = input.value.trim().toUpperCase();
+    if (!val) { input.classList.remove('field-ok', 'field-err'); msg.textContent = ''; return true; }
+    // BIC: 8 oder 11 Zeichen, Format: AAAA CC LL (BBB)
+    const re = /^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/;
+    if (re.test(val) && (val.length === 8 || val.length === 11)) {
+        input.classList.add('field-ok'); input.classList.remove('field-err');
+        msg.innerHTML = '<span class="text-success"><i class="bi bi-check-circle"></i> BIC gültig</span>';
+        return true;
+    } else {
+        input.classList.add('field-err'); input.classList.remove('field-ok');
+        msg.innerHTML = '<span class="text-danger"><i class="bi bi-x-circle"></i> BIC ungültig (8 oder 11 Zeichen, z.B. {{ public_cfg['payment_bic'] if public_cfg is defined else '' }})</span>';
+        return false;
+    }
+}
+
+// Formular absenden mit Sicherheitsabfrage
+function validateAndConfirm() {
+    const emailOk = validateEmail(document.getElementById('email'));
+    const ibanOk = validateIBAN(document.getElementById('iban'));
+    const bicOk = validateBIC(document.getElementById('bic'));
+
+    if (!emailOk || !ibanOk || !bicOk) {
+        alert('Bitte korrigieren Sie die markierten Felder (E-Mail, IBAN oder BIC).');
+        return false;
+    }
+
+    {% if member %}
+    return confirm('Änderungen an "{{ member["name"] }}" wirklich speichern?');
+    {% else %}
+    return confirm('Neues Mitglied anlegen?');
+    {% endif %}
+}
+
+// Initial-Validierung bei Seitenlade
+document.addEventListener('DOMContentLoaded', function() {
+    const email = document.getElementById('email');
+    const iban = document.getElementById('iban');
+    const bic = document.getElementById('bic');
+    if (email.value) validateEmail(email);
+    if (iban.value) validateIBAN(iban);
+    if (bic.value) validateBIC(bic);
+});
+</script>
+{% endblock %}

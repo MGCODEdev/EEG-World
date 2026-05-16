@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Newsletter bearbeiten' if newsletter else 'Neuer Newsletter' }}{% endblock %}
+{% block extra_css %}
+<style>
+    .editor-toolbar { border: 1px solid #dee2e6; border-bottom: none; border-radius: .375rem .375rem 0 0; padding: 6px 10px; background: #f8f9fa; }
+    .editor-toolbar button { border: none; background: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 1rem; color: #333; }
+    .editor-toolbar button:hover { background: #dee2e6; }
+    .editor-area { border: 1px solid #dee2e6; border-radius: 0 0 .375rem .375rem; min-height: 350px; padding: 16px; outline: none; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; }
+    .editor-area:focus { border-color: #3aafa9; box-shadow: 0 0 0 .2rem rgba(58,175,169,.15); }
+    .preview-box { border: 1px solid #dee2e6; border-radius: .375rem; padding: 20px; background: #fff; min-height: 200px; }
+</style>
+{% endblock %}
+{% block content %}
+<h2 class="mb-4">
+    <i class="bi bi-envelope-paper"></i>
+    {{ 'Newsletter bearbeiten' if newsletter else 'Neuer Newsletter' }}
+</h2>
+
+<form method="post" id="nlForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <div class="mb-3">
+        <label class="form-label">Betreff *</label>
+        <input type="text" name="subject" class="form-control" required
+               value="{{ subject }}" placeholder="z.B. EEG Neuigkeiten – Mai 2026">
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Inhalt (HTML) *</label>
+        <div class="editor-toolbar">
+            <button type="button" onclick="execCmd('bold')" title="Fett"><i class="bi bi-type-bold"></i></button>
+            <button type="button" onclick="execCmd('italic')" title="Kursiv"><i class="bi bi-type-italic"></i></button>
+            <button type="button" onclick="execCmd('underline')" title="Unterstrichen"><i class="bi bi-type-underline"></i></button>
+            <span class="mx-1">|</span>
+            <button type="button" onclick="execCmd('insertUnorderedList')" title="Liste"><i class="bi bi-list-ul"></i></button>
+            <button type="button" onclick="execCmd('insertOrderedList')" title="Nummerierte Liste"><i class="bi bi-list-ol"></i></button>
+            <span class="mx-1">|</span>
+            <button type="button" onclick="insertHeading()" title="Überschrift"><i class="bi bi-type-h2"></i></button>
+            <button type="button" onclick="insertLink()" title="Link einfügen"><i class="bi bi-link-45deg"></i></button>
+            <button type="button" onclick="insertImage()" title="Bild-URL einfügen"><i class="bi bi-image"></i></button>
+            <span class="mx-1">|</span>
+            <button type="button" onclick="execCmd('justifyLeft')" title="Linksbündig"><i class="bi bi-text-left"></i></button>
+            <button type="button" onclick="execCmd('justifyCenter')" title="Zentriert"><i class="bi bi-text-center"></i></button>
+            <span class="mx-1">|</span>
+            <button type="button" onclick="insertColor()" title="Textfarbe"><i class="bi bi-palette"></i></button>
+            <button type="button" onclick="toggleSource()" title="HTML-Quelltext" class="ms-2"><i class="bi bi-code-slash"></i></button>
+        </div>
+        <div contenteditable="true" class="editor-area" id="editor">{{ body_html|safe }}</div>
+        <textarea name="body_html" id="body_html_field" class="d-none">{{ body_html }}</textarea>
+    </div>
+
+    <div class="mb-3">
+        <a class="btn btn-sm btn-outline-info" data-bs-toggle="collapse" href="#previewCollapse">
+            <i class="bi bi-eye"></i> Vorschau
+        </a>
+        <div class="collapse mt-2" id="previewCollapse">
+            <div class="preview-box" id="previewBox"></div>
+        </div>
+    </div>
+
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-success" onclick="return submitForm()">
+            <i class="bi bi-check-lg"></i> Speichern
+        </button>
+        <a href="{{ url_for('newsletter_list') }}" class="btn btn-outline-secondary">Abbrechen</a>
+    </div>
+</form>
+{% endblock %}
+{% block extra_js %}
+<script>
+const editor = document.getElementById('editor');
+const hiddenField = document.getElementById('body_html_field');
+const previewBox = document.getElementById('previewBox');
+
+function execCmd(cmd, val) {
+    document.execCommand(cmd, false, val || null);
+    editor.focus();
+    updatePreview();
+}
+
+function insertHeading() {
+    document.execCommand('formatBlock', false, 'h3');
+    editor.focus();
+}
+
+function insertLink() {
+    const url = prompt('URL eingeben:', 'https://');
+    if (url) document.execCommand('createLink', false, url);
+    editor.focus();
+}
+
+function insertImage() {
+    const url = prompt('Bild-URL eingeben:', 'https://');
+    if (url) document.execCommand('insertImage', false, url);
+    editor.focus();
+}
+
+function insertColor() {
+    const color = prompt('Farbe (hex):', '#2b7a78');
+    if (color) document.execCommand('foreColor', false, color);
+    editor.focus();
+}
+
+let sourceMode = false;
+function toggleSource() {
+    if (sourceMode) {
+        editor.innerHTML = editor.innerText;
+        editor.contentEditable = 'true';
+    } else {
+        editor.innerText = editor.innerHTML;
+        editor.contentEditable = 'true';
+    }
+    sourceMode = !sourceMode;
+}
+
+function updatePreview() {
+    previewBox.innerHTML = editor.innerHTML;
+}
+
+function submitForm() {
+    if (sourceMode) {
+        editor.innerHTML = editor.innerText;
+        sourceMode = false;
+    }
+    hiddenField.value = editor.innerHTML;
+    if (!hiddenField.value.trim() || !document.querySelector('[name=subject]').value.trim()) {
+        alert('Betreff und Inhalt sind erforderlich.');
+        return false;
+    }
+    return true;
+}
+
+editor.addEventListener('input', updatePreview);
+document.addEventListener('DOMContentLoaded', updatePreview);
+</script>
+{% endblock %}

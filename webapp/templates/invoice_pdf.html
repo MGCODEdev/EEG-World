@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        @page {
+            size: A4;
+            margin: 20mm 18mm 24mm 18mm;
+            @bottom-center {
+                content: "Seite " counter(page) " von " counter(pages);
+                font-size: 7.5pt;
+                color: #999;
+                font-family: Arial, sans-serif;
+            }
+        }
+        @page :first {
+            @bottom-center {
+                content: "{{ public_cfg['org_name'] if public_cfg is defined else org_name }} · {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }} · Seite " counter(page) " von " counter(pages);
+                font-size: 7.5pt;
+                color: #888;
+            }
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: Arial, sans-serif;
+            font-size: 9pt;
+            color: #222;
+            line-height: 1.5;
+        }
+
+        .page-break { page-break-before: always; }
+
+        /* ===== HEADER ===== */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 10px;
+            border-bottom: 2.5px solid #2b7a78;
+            margin-bottom: 18px;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .header-left img {
+            width: 56px;
+            height: 56px;
+            border-radius: 5px;
+        }
+        .header-left .brand h1 {
+            font-size: 12pt;
+            color: #17252a;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+            display: inline;
+            margin-right: 6px;
+        }
+        .header-left .brand p {
+            font-size: 7.5pt;
+            color: #666;
+            display: inline;
+        }
+        .header-right {
+            text-align: right;
+        }
+        .header-right h2 {
+            font-size: 11pt;
+            color: #2b7a78;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+        .header-right .doc-nr {
+            font-size: 8pt;
+            color: #666;
+            margin-top: 2px;
+        }
+
+        /* ===== ADDRESS BLOCK ===== */
+        .address-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .address-to {
+            min-width: 55%;
+        }
+        .address-to .sender-line {
+            font-size: 6.5pt;
+            color: #999;
+            border-bottom: 0.5pt solid #ddd;
+            padding-bottom: 2px;
+            margin-bottom: 5px;
+        }
+        .address-to .name {
+            font-size: 10.5pt;
+            font-weight: 700;
+            color: #17252a;
+        }
+        .address-to .street, .address-to .city {
+            font-size: 9pt;
+            color: #333;
+        }
+        .meta-table {
+            text-align: right;
+            font-size: 8.5pt;
+            color: #444;
+        }
+        .meta-table td { padding: 2px 0; }
+        .meta-table .lbl {
+            font-weight: 700;
+            padding-right: 10px;
+            text-align: right;
+            white-space: nowrap;
+            color: #17252a;
+        }
+
+        /* ===== SUBJECT ===== */
+        .subject {
+            font-size: 10.5pt;
+            font-weight: 700;
+            color: #17252a;
+            padding: 8px 0;
+            border-bottom: 1px solid #e8e8e8;
+            margin-bottom: 10px;
+        }
+
+        /* ===== INTRO TEXT ===== */
+        .intro {
+            font-size: 9pt;
+            color: #444;
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+
+        /* ===== ZÄHLPUNKT INFO ===== */
+        .zp-box {
+            background: #f7fafa;
+            border: 1px solid #d4eeec;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-size: 7.5pt;
+            color: #444;
+            margin-bottom: 14px;
+        }
+        .zp-box .zp-lbl { font-weight: 700; color: #2b7a78; }
+        .zp-box code {
+            font-family: 'Courier New', monospace;
+            font-size: 7pt;
+            background: #e8f5f3;
+            padding: 1px 4px;
+            border-radius: 2px;
+        }
+
+        /* ===== POSITIONS TABLE ===== */
+        table.pos {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 14px;
+            font-size: 8.5pt;
+        }
+        table.pos thead th {
+            background: #17252a;
+            color: #fff;
+            padding: 7px 8px;
+            font-size: 7.5pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+        table.pos thead th.r { text-align: right; }
+        table.pos tbody td {
+            padding: 7px 8px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+        table.pos tbody td.r {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+        table.pos tbody td .sub {
+            display: block;
+            font-size: 7pt;
+            color: #888;
+            margin-top: 1px;
+        }
+        table.pos tbody tr:nth-child(even) { background: #fafcfc; }
+        table.pos tfoot td {
+            padding: 9px 8px;
+            font-weight: 700;
+            border-top: 2.5px solid #2b7a78;
+            font-size: 10pt;
+        }
+        table.pos tfoot td.r { text-align: right; }
+
+        /* ===== PAYMENT BOX ===== */
+        .pay-box {
+            border-radius: 6px;
+            padding: 14px 16px;
+            margin: 16px 0;
+        }
+        .pay-box.debit {
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe8e8 100%);
+            border: 1.5px solid #e53935;
+        }
+        .pay-box.credit {
+            background: linear-gradient(135deg, #f0fdf4 0%, #e8f5e9 100%);
+            border: 1.5px solid #2e7d32;
+        }
+        .pay-box .pay-layout {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        .pay-box .amount {
+            font-size: 14pt;
+            font-weight: 800;
+            margin-bottom: 6px;
+        }
+        .pay-box .amount.debit-color { color: #c62828; }
+        .pay-box .amount.credit-color { color: #2e7d32; }
+        .pay-box .pay-details {
+            font-size: 8pt;
+            color: #444;
+        }
+        .pay-box .pay-details table td { padding: 2px 0; }
+        .pay-box .pay-details .lbl { font-weight: 700; padding-right: 10px; color: #333; }
+        .pay-box .qr { text-align: center; flex-shrink: 0; margin-left: 14px; }
+        .pay-box .qr img { width: 80px; height: 80px; }
+        .pay-box .qr .qr-txt { font-size: 6pt; color: #888; margin-top: 3px; }
+
+        /* ===== LEGAL ===== */
+        .legal {
+            font-size: 7.5pt;
+            color: #666;
+            margin-top: 14px;
+            line-height: 1.5;
+        }
+        .legal strong { color: #444; }
+
+        /* ===== FOOTER ===== */
+        .doc-footer {
+            margin-top: 18px;
+            padding-top: 8px;
+            border-top: 0.5pt solid #ddd;
+            font-size: 7pt;
+            color: #888;
+            line-height: 1.5;
+        }
+        .doc-footer p { margin-bottom: 1px; }
+
+        /* ===== SECTION TITLE (Anlagen) ===== */
+        .section-title {
+            font-size: 13pt;
+            font-weight: 800;
+            color: #17252a;
+            margin-bottom: 6px;
+            padding-bottom: 6px;
+            border-bottom: 2.5px solid #2b7a78;
+        }
+        .section-subtitle {
+            font-size: 9pt;
+            color: #666;
+            margin-bottom: 18px;
+        }
+
+        /* ===== STAT BOXES ===== */
+        .stats-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+        .stat-card {
+            flex: 1;
+            background: #f7fafa;
+            border: 1px solid #d4eeec;
+            border-radius: 6px;
+            padding: 10px 8px;
+            text-align: center;
+        }
+        .stat-card.accent {
+            background: #e8f5f3;
+            border-color: #2b7a78;
+        }
+        .stat-card .val {
+            font-size: 15pt;
+            font-weight: 800;
+            color: #2b7a78;
+        }
+        .stat-card .lbl {
+            font-size: 7pt;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-top: 2px;
+        }
+
+        /* ===== BAR CHART ===== */
+        .chart-block { margin-bottom: 18px; }
+        .chart-block h3 {
+            font-size: 9.5pt;
+            font-weight: 700;
+            color: #17252a;
+            margin-bottom: 8px;
+            padding-left: 2px;
+        }
+        .bar-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 3px;
+        }
+        .bar-row .b-label {
+            width: 38px;
+            font-size: 7.5pt;
+            text-align: right;
+            padding-right: 6px;
+            color: #555;
+            flex-shrink: 0;
+        }
+        .bar-row .b-label.wide {
+            width: 130px;
+            font-size: 7pt;
+            text-overflow: ellipsis;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        .bar-row .b-track {
+            flex: 1;
+            height: 14px;
+            background: #f0f0f0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .bar-row .b-fill {
+            height: 100%;
+            border-radius: 3px;
+        }
+        .bar-row .b-fill.cons { background: linear-gradient(90deg, #2b7a78, #3aafa9); }
+        .bar-row .b-fill.gen { background: linear-gradient(90deg, #ff8f00, #ffb74d); }
+        .bar-row .b-val {
+            width: 75px;
+            font-size: 7.5pt;
+            padding-left: 6px;
+            font-weight: 700;
+            color: #333;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        /* ===== MONTHLY TABLE ===== */
+        table.monthly {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8pt;
+            margin-bottom: 14px;
+        }
+        table.monthly thead th {
+            background: #f7fafa;
+            padding: 5px 7px;
+            text-align: left;
+            font-weight: 700;
+            font-size: 7.5pt;
+            border-bottom: 1.5px solid #2b7a78;
+            color: #17252a;
+        }
+        table.monthly thead th.r { text-align: right; }
+        table.monthly tbody td {
+            padding: 4px 7px;
+            border-bottom: 0.5px solid #eee;
+        }
+        table.monthly tbody td.r { text-align: right; font-variant-numeric: tabular-nums; }
+        table.monthly tfoot td {
+            font-weight: 700;
+            border-top: 2px solid #17252a;
+            padding: 5px 7px;
+        }
+        table.monthly tfoot td.r { text-align: right; }
+
+        /* ===== PIE CHART ===== */
+        .pie-section {
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .pie-chart { flex-shrink: 0; }
+        .pie-legend {
+            font-size: 7.5pt;
+            color: #333;
+            line-height: 1.8;
+        }
+        .pie-legend .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .pie-legend .pie-val {
+            float: right;
+            font-weight: 700;
+            margin-left: 10px;
+            white-space: nowrap;
+        }
+
+        /* ===== INFO BLOCK ===== */
+        .info-block {
+            margin-bottom: 14px;
+            padding: 10px 14px;
+            background: #f7fafa;
+            border-left: 3px solid #2b7a78;
+            border-radius: 0 4px 4px 0;
+        }
+        .info-block h4 {
+            font-size: 9pt;
+            font-weight: 700;
+            color: #2b7a78;
+            margin-bottom: 3px;
+        }
+        .info-block p {
+            font-size: 8pt;
+            color: #444;
+            line-height: 1.6;
+            margin-bottom: 2px;
+        }
+
+        /* ===== COMMUNITY TABLE ===== */
+        table.community {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8.5pt;
+            margin-bottom: 14px;
+        }
+        table.community td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #eee;
+        }
+        table.community td:first-child { font-weight: 600; color: #333; }
+        table.community td.r { text-align: right; font-weight: 700; color: #2b7a78; white-space: nowrap; }
+
+        /* ===== PRICE TABLE ===== */
+        .price-block { margin-bottom: 16px; }
+        .price-block h3 {
+            font-size: 9.5pt;
+            font-weight: 700;
+            color: #17252a;
+            margin-bottom: 6px;
+        }
+        .price-block table {
+            width: 50%;
+            border-collapse: collapse;
+            font-size: 8.5pt;
+        }
+        .price-block table td { padding: 3px 8px; border-bottom: 0.5px solid #eee; }
+        .price-block table td.r { text-align: right; font-weight: 700; color: #2b7a78; }
+        .price-block table tr:last-child td {
+            font-weight: 700;
+            border-top: 1.5px solid #17252a;
+            padding-top: 5px;
+            font-size: 9pt;
+        }
+
+        /* ===== TRANSPARENCY NOTE ===== */
+        .note-box {
+            padding: 10px 14px;
+            border-radius: 4px;
+            font-size: 7.5pt;
+            color: #555;
+            line-height: 1.5;
+            margin-bottom: 14px;
+        }
+        .note-box.warn {
+            background: #fffde7;
+            border: 1px solid #ffd600;
+        }
+        .note-box.info {
+            background: #e8f5f3;
+            border: 1px solid #2b7a78;
+        }
+        .note-box strong { color: #333; }
+
+        /* ===== SAVINGS ===== */
+        .savings-hero {
+            background: linear-gradient(135deg, #e8f5f3 0%, #d4eeec 100%);
+            border: 2.5px solid #2b7a78;
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 18px;
+        }
+        .savings-hero .big {
+            font-size: 26pt;
+            font-weight: 800;
+            color: #2b7a78;
+        }
+        .savings-hero .sub {
+            font-size: 9pt;
+            color: #555;
+            margin-top: 3px;
+        }
+
+        table.savings {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8.5pt;
+            margin-bottom: 14px;
+        }
+        table.savings thead th {
+            background: #17252a;
+            color: #fff;
+            padding: 6px 8px;
+            font-size: 7.5pt;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        table.savings thead th.r { text-align: right; }
+        table.savings tbody td {
+            padding: 7px 8px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }
+        table.savings tbody td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        table.savings tbody td .explain {
+            display: block;
+            font-size: 7pt;
+            color: #888;
+            margin-top: 2px;
+        }
+        table.savings tfoot td {
+            padding: 8px 8px;
+            font-weight: 700;
+        }
+        table.savings tfoot tr.sub td {
+            border-top: 1.5px solid #999;
+            background: #f7fafa;
+        }
+        table.savings tfoot tr.total td {
+            border-top: 2.5px solid #2b7a78;
+            background: #e8f5f3;
+            font-size: 10pt;
+            color: #17252a;
+        }
+        table.savings tfoot td.r { text-align: right; }
+
+        .benefits-list {
+            columns: 2;
+            column-gap: 20px;
+            font-size: 8pt;
+            color: #333;
+            line-height: 2;
+            margin-top: 10px;
+        }
+        .benefits-list .item {
+            break-inside: avoid;
+        }
+        .benefits-list .check {
+            color: #2b7a78;
+            font-weight: 700;
+            margin-right: 3px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     SEITE 1: ABRECHNUNG
+     ════════════════════════════════════════════════════════════════════════ -->
+
+<div class="header">
+    <div class="header-left">
+        <img src="{{ logo_b64 }}" alt="EEG">
+        <div class="brand">
+            <h1>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</h1>
+            <p>Erneuerbare-Energie-Gemeinschaft · {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}</p>
+        </div>
+    </div>
+    <div class="header-right">
+        <h2>Abrechnung</h2>
+        <div class="doc-nr">Nr. {{ invoice['id'] }} / {{ invoice['created_at']|localdatetime('%Y') }}</div>
+    </div>
+</div>
+
+<div class="address-row">
+    <div class="address-to">
+        <div class="sender-line">{{ public_cfg['org_name'] if public_cfg is defined else org_name }} · {{ public_cfg['org_address'] if public_cfg is defined else org_address }}</div>
+        <div class="name">{{ member['name'] }}</div>
+        {% if member['address_street'] %}<div class="street">{{ member['address_street'] }}</div>{% endif %}
+        {% if member['address_zip'] or member['address_city'] %}<div class="city">{{ member['address_zip'] or '' }} {{ member['address_city'] or '' }}</div>{% endif %}
+    </div>
+    <div class="meta-table">
+        <table>
+            <tr><td class="lbl">Datum:</td><td>{{ invoice['created_at']|localdate }}</td></tr>
+            <tr><td class="lbl">Zeitraum:</td><td>{{ invoice['period_from'] }} – {{ invoice['period_to'] }}</td></tr>
+            <tr><td class="lbl">Mitglieds-Nr.:</td><td>{{ member['id'] }}</td></tr>
+        </table>
+    </div>
+</div>
+
+<div class="subject">
+    Energieabrechnung für den Zeitraum {{ invoice['period_from'] }} bis {{ invoice['period_to'] }}
+</div>
+
+<p class="intro">
+    Sehr geehrte/r {{ member['name'] }},<br>
+    nachfolgend Ihre Abrechnung des innergemeinschaftlichen Energieaustauschs gemäß § 16c ElWOG 2010 i.V.m. EAG.
+</p>
+
+<div class="zp-box">
+    <span class="zp-lbl">Bezugs-ZP:</span> <code>{{ member['bezug_zp'] or '—' }}</code>
+    {% if member['einspeiser_zp'] %}
+    &nbsp;&middot;&nbsp; <span class="zp-lbl">Einspeise-ZP:</span> <code>{{ member['einspeiser_zp'] }}</code>
+    {% endif %}
+</div>
+
+<!-- Positionen -->
+<table class="pos">
+    <thead>
+        <tr>
+            <th style="width:30px">Pos.</th>
+            <th>Beschreibung</th>
+            <th class="r">Menge (kWh)</th>
+            <th class="r">Preis (ct/kWh)</th>
+            <th class="r">Betrag (€)</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% set ns = namespace(pos=0) %}
+    {% for item in items %}
+    {% set ns.pos = ns.pos + 1 %}
+    <tr>
+        <td>{{ ns.pos }}</td>
+        <td>
+            {% if item['type'] == 'consumption' %}
+            Bezug aus Energiegemeinschaft
+            <span class="sub">Eigendeckung gem. MeterCode G.03 (EDA CR_MSG)</span>
+            {% else %}
+            Gutschrift Einspeisung
+            <span class="sub">Lieferung gem. MeterCode G.01T − P.01T (EDA CR_MSG)</span>
+            {% endif %}
+        </td>
+        <td class="r">{{ "%.3f"|format(item['kwh']) }}</td>
+        <td class="r">{{ "%.2f"|format(item['price_per_kwh']) }}</td>
+        <td class="r">{% if item['type'] == 'generation' %}−{% endif %}{{ "%.2f"|format(item['amount_eur']) }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <td colspan="4">{% if net_total >= 0 %}Netto-Rechnungsbetrag{% else %}Netto-Gutschrift{% endif %}</td>
+            <td class="r">{% if net_total < 0 %}−{% endif %}{{ "%.2f"|format(net_total|abs) }} €</td>
+        </tr>
+    </tfoot>
+</table>
+
+<!-- Zahlungsinfo -->
+{% if net_total > 0 %}
+<div class="pay-box debit">
+    <div class="pay-layout">
+        <div>
+            <div class="amount debit-color">Zahlungsbetrag: {{ "%.2f"|format(net_total) }} €</div>
+            <div class="pay-details">
+                <table>
+                    <tr><td class="lbl">Empfänger:</td><td>EEG-Konto ({{ public_cfg['org_name'] if public_cfg is defined else org_name }})</td></tr>
+                    <tr><td class="lbl">IBAN:</td><td style="font-family:'Courier New',monospace">{{ public_cfg['payment_iban'] if public_cfg is defined else '' }}</td></tr>
+                    <tr><td class="lbl">BIC:</td><td style="font-family:'Courier New',monospace">{{ public_cfg['payment_bic'] if public_cfg is defined else '' }}</td></tr>
+                    <tr><td class="lbl">Bank:</td><td>Bitte konfigurieren</td></tr>
+                    <tr><td class="lbl">Verwendungszweck:</td><td>EEG-Abr. {{ invoice['id'] }}/{{ invoice['created_at']|localdatetime('%Y') }} – {{ member['name'] }}</td></tr>
+                    <tr><td class="lbl">Zahlungsziel:</td><td>14 Tage nach Rechnungsdatum</td></tr>
+                </table>
+            </div>
+        </div>
+        {% if qr_data_uri %}
+        <div class="qr">
+            <img src="{{ qr_data_uri }}" alt="QR">
+            <div class="qr-txt">QR-Code scannen<br>für Überweisung</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% elif net_total < 0 %}
+<div class="pay-box credit">
+    <div class="amount credit-color">Guthaben: {{ "%.2f"|format(net_total|abs) }} €</div>
+    <div class="pay-details">
+        <p style="margin: 4px 0 8px 0; font-size: 8.5pt;">
+            Ihr Guthaben wird in den kommenden Tagen auf Ihr hinterlegtes Konto ausbezahlt.
+        </p>
+        <table>
+            {% if member['iban'] %}
+            <tr><td class="lbl">Kontoinhaber:</td><td>{{ member['account_holder'] or member['name'] }}</td></tr>
+            <tr><td class="lbl">IBAN:</td><td style="font-family:'Courier New',monospace">{{ member['iban'] }}</td></tr>
+            {% if member['bic'] %}<tr><td class="lbl">BIC:</td><td style="font-family:'Courier New',monospace">{{ member['bic'] }}</td></tr>{% endif %}
+            {% else %}
+            <tr><td colspan="2" style="color:#c62828;font-weight:600;">
+                ⚠ Keine Kontodaten hinterlegt – bitte melden an {{ public_cfg['org_email'] if public_cfg is defined else org_email }}
+            </td></tr>
+            {% endif %}
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="pay-box credit">
+    <div class="amount credit-color">Saldo: 0,00 € – Keine Zahlung erforderlich</div>
+</div>
+{% endif %}
+
+<div class="legal">
+    <strong>Steuerliche Hinweise:</strong>
+    Umsatzsteuerbefreit – Kleinunternehmer gem. § 6 Abs 1 Z 27 UStG 1994 (Endbetrag).
+    Elektrizitätsabgabebefreit gem. § 2 Z 3 ElAbgG.
+    Die {{ public_cfg['org_name'] if public_cfg is defined else org_name }} ist ein Verein ({{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}) ohne Gewinnerzielungsabsicht gem. § 79 Abs 2 EAG.
+</div>
+
+<div class="doc-footer">
+    <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · {{ public_cfg['org_address'] if public_cfg is defined else org_address }} · {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}</p>
+    <p>Ansprechperson: bitte konfigurieren · {{ public_cfg['org_email'] if public_cfg is defined else org_email }} · Bankkonto: bitte konfigurieren</p>
+    <p>Datengrundlage: Messdaten Netzbetreiber (EDA CR_MSG ConsumptionRecord 01.41) · Aufteilungsschlüssel: dynamisch</p>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     SEITE 2: VERBRAUCHSDETAIL (Anlage 1)
+     ════════════════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+
+<div class="header">
+    <div class="header-left">
+        <img src="{{ logo_b64 }}" alt="EEG">
+        <div class="brand">
+            <h1>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</h1>
+            <p>Verbrauchsdetail · {{ member['name'] }}</p>
+        </div>
+    </div>
+    <div class="header-right">
+        <h2>Anlage 1</h2>
+        <div class="doc-nr">zu Abrechnung {{ invoice['id'] }}/{{ invoice['created_at']|localdatetime('%Y') }}</div>
+    </div>
+</div>
+
+<h2 class="section-title">Ihre Verbrauchsdaten im Detail</h2>
+<p class="section-subtitle">Zeitraum: {{ invoice['period_from'] }} – {{ invoice['period_to'] }}</p>
+
+<div class="stats-row">
+    <div class="stat-card accent">
+        <div class="val">{{ "%.1f"|format(member_stats['total_consumption_kwh']) }}</div>
+        <div class="lbl">kWh Bezug</div>
+    </div>
+    {% if member_stats['total_generation_kwh'] > 0 %}
+    <div class="stat-card">
+        <div class="val">{{ "%.1f"|format(member_stats['total_generation_kwh']) }}</div>
+        <div class="lbl">kWh Einspeisung</div>
+    </div>
+    {% endif %}
+    <div class="stat-card">
+        <div class="val">{{ "%.1f"|format(member_stats['co2_saved_kg']) }}</div>
+        <div class="lbl">kg CO₂ vermieden</div>
+    </div>
+    <div class="stat-card">
+        <div class="val">{{ "%.0f"|format(member_stats['self_sufficiency_pct']) }}%</div>
+        <div class="lbl">Eigendeckung</div>
+    </div>
+</div>
+
+<!-- Tortendiagramm: Monatlicher Bezug -->
+{% if pie_monthly_svg %}
+<div class="chart-block">
+    <h3>Monatliche Verteilung Ihres Bezugs</h3>
+    <div class="pie-section">
+        <div class="pie-chart">{{ pie_monthly_svg|safe }}</div>
+        <div class="pie-legend">
+            {% for m in pie_monthly_data %}
+            {% if m['value'] > 0 %}
+            <div><span class="dot" style="background:{{ pie_monthly_colors[loop.index0 % pie_monthly_colors|length] }}"></span>{{ m['label'] }}<span class="pie-val">{{ "%.1f"|format(m['value']) }}&nbsp;kWh</span></div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Balkendiagramm: Bezug -->
+<div class="chart-block">
+    <h3>Monatlicher Verlauf – Bezug aus EEG (kWh)</h3>
+    {% set max_kwh = member_stats['monthly_max'] if member_stats['monthly_max'] > 0 else 1 %}
+    {% for month in member_stats['monthly_data'] %}
+    <div class="bar-row">
+        <div class="b-label">{{ month['label'] }}</div>
+        <div class="b-track">
+            <div class="b-fill cons" style="width:{{ (month['consumption'] / max_kwh * 100)|round(1) }}%"></div>
+        </div>
+        <div class="b-val">{{ "%.1f"|format(month['consumption']) }}&nbsp;kWh</div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if member_stats['total_generation_kwh'] > 0 %}
+<div class="chart-block">
+    <h3>Monatlicher Verlauf – Einspeisung (kWh)</h3>
+    {% set max_gen = member_stats['monthly_gen_max'] if member_stats['monthly_gen_max'] > 0 else 1 %}
+    {% for month in member_stats['monthly_data'] %}
+    <div class="bar-row">
+        <div class="b-label">{{ month['label'] }}</div>
+        <div class="b-track">
+            <div class="b-fill gen" style="width:{{ (month['generation'] / max_gen * 100)|round(1) }}%"></div>
+        </div>
+        <div class="b-val">{{ "%.1f"|format(month['generation']) }}&nbsp;kWh</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Monatstabelle -->
+<div class="chart-block">
+    <h3>Monatliche Aufstellung</h3>
+    <table class="monthly">
+        <thead>
+            <tr>
+                <th>Monat</th>
+                <th class="r">Bezug (kWh)</th>
+                {% if member_stats['total_generation_kwh'] > 0 %}<th class="r">Einspeisung (kWh)</th>{% endif %}
+                <th class="r">Betrag (€)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set sum_ns = namespace(cons=0, gen=0, eur=0) %}
+            {% for month in member_stats['monthly_data'] %}
+            <tr>
+                <td>{{ month['label'] }}</td>
+                <td class="r">{{ "%.2f"|format(month['consumption']) }}</td>
+                {% if member_stats['total_generation_kwh'] > 0 %}<td class="r">{{ "%.2f"|format(month['generation']) }}</td>{% endif %}
+                <td class="r">{{ "%.2f"|format(month['net_eur']) }}</td>
+            </tr>
+            {% set sum_ns.cons = sum_ns.cons + month['consumption'] %}
+            {% set sum_ns.gen = sum_ns.gen + month['generation'] %}
+            {% set sum_ns.eur = sum_ns.eur + month['net_eur'] %}
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr>
+                <td>Gesamt</td>
+                <td class="r">{{ "%.2f"|format(sum_ns.cons) }}</td>
+                {% if member_stats['total_generation_kwh'] > 0 %}<td class="r">{{ "%.2f"|format(sum_ns.gen) }}</td>{% endif %}
+                <td class="r">{{ "%.2f"|format(sum_ns.eur) }} €</td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+<div class="doc-footer">
+    <p>Datenquelle: Viertelstundenwerte des Netzbetreibers (Smart Meter) via EDA-Plattform.</p>
+    <p>Eigendeckung = tatsächlich aus der EEG bezogene Energiemenge (G.03, EDA ConsumptionRecord 01.41).</p>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     SEITE 2b: LIEFERDETAIL (nur für Einspeiser)
+     ════════════════════════════════════════════════════════════════════════ -->
+{% if member_stats['total_generation_kwh'] > 0 %}
+<div class="page-break"></div>
+
+<div class="header">
+    <div class="header-left">
+        <img src="{{ logo_b64 }}" alt="EEG">
+        <div class="brand">
+            <h1>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</h1>
+            <p>Lieferdetail · {{ member['name'] }}</p>
+        </div>
+    </div>
+    <div class="header-right">
+        <h2>Anlage 1b</h2>
+        <div class="doc-nr">zu Abrechnung {{ invoice['id'] }}/{{ invoice['created_at']|localdatetime('%Y') }}</div>
+    </div>
+</div>
+
+<h2 class="section-title">Ihre Einspeisung im Detail</h2>
+<p class="section-subtitle">Zeitraum: {{ invoice['period_from'] }} – {{ invoice['period_to'] }}</p>
+
+<div class="stats-row">
+    <div class="stat-card accent">
+        <div class="val">{{ "%.1f"|format(member_stats['total_generation_kwh']) }}</div>
+        <div class="lbl">kWh Einspeisung</div>
+    </div>
+    <div class="stat-card">
+        <div class="val">{{ "%.2f"|format(member_stats['total_generation_kwh'] * community_stats['price_gen'] / 100) }}</div>
+        <div class="lbl">€ Vergütung</div>
+    </div>
+    <div class="stat-card">
+        <div class="val">{{ "%.1f"|format(member_stats['total_generation_kwh'] * 0.227) }}</div>
+        <div class="lbl">kg CO₂ vermieden</div>
+    </div>
+</div>
+
+<!-- Balkendiagramm: Einspeisung monatlich -->
+<div class="chart-block">
+    <h3>Monatlicher Verlauf – Ihre Einspeisung in die EEG (kWh)</h3>
+    {% set max_gen_p = member_stats['monthly_gen_max'] if member_stats['monthly_gen_max'] > 0 else 1 %}
+    {% for month in member_stats['monthly_data'] %}
+    <div class="bar-row">
+        <div class="b-label">{{ month['label'] }}</div>
+        <div class="b-track">
+            <div class="b-fill gen" style="width:{{ (month['generation'] / max_gen_p * 100)|round(1) }}%"></div>
+        </div>
+        <div class="b-val">{{ "%.1f"|format(month['generation']) }}&nbsp;kWh</div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Monatstabelle Einspeisung -->
+<div class="chart-block">
+    <h3>Monatliche Einspeise-Aufstellung</h3>
+    <table class="monthly">
+        <thead>
+            <tr>
+                <th>Monat</th>
+                <th class="r">Einspeisung (kWh)</th>
+                <th class="r">Vergütung (ct/kWh)</th>
+                <th class="r">Gutschrift (€)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set gen_ns = namespace(total_kwh=0, total_eur=0) %}
+            {% for month in member_stats['monthly_data'] %}
+            {% if month['generation'] > 0 %}
+            <tr>
+                <td>{{ month['label'] }}</td>
+                <td class="r">{{ "%.2f"|format(month['generation']) }}</td>
+                <td class="r">{{ "%.2f"|format(community_stats['price_gen']) }}</td>
+                <td class="r">{{ "%.2f"|format(month['generation'] * community_stats['price_gen'] / 100) }}</td>
+            </tr>
+            {% set gen_ns.total_kwh = gen_ns.total_kwh + month['generation'] %}
+            {% set gen_ns.total_eur = gen_ns.total_eur + month['generation'] * community_stats['price_gen'] / 100 %}
+            {% endif %}
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr>
+                <td>Gesamt</td>
+                <td class="r">{{ "%.2f"|format(gen_ns.total_kwh) }}</td>
+                <td class="r"></td>
+                <td class="r">{{ "%.2f"|format(gen_ns.total_eur) }} €</td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+<div class="info-block">
+    <h4>Informationen zu Ihrer Einspeisung</h4>
+    <p>Ihre PV-Anlage speist über den Zählpunkt <code style="font-family:'Courier New',monospace;font-size:7pt;background:#e8f5f3;padding:1px 4px;border-radius:2px;">{{ member['einspeiser_zp'] }}</code> in die Energiegemeinschaft ein.</p>
+    <p>Die Vergütung beträgt {{ "%.2f"|format(community_stats['price_gen']) }} ct/kWh und wird nach Zahlungseingang der Bezieher auf Ihr Konto überwiesen.</p>
+    {% if member['iban'] %}
+    <p><strong>Auszahlungskonto:</strong> {{ member['account_holder'] or member['name'] }}, IBAN {{ member['iban'] }}</p>
+    {% endif %}
+</div>
+
+<div class="doc-footer">
+    <p>Datenquelle: Viertelstundenwerte des Netzbetreibers via EDA-Plattform (G.01T − P.01T).</p>
+    <p>Einspeisung = Netto-Liefermenge in die Energiegemeinschaft nach Abzug des Eigenverbrauchs.</p>
+</div>
+{% endif %}
+
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     SEITE 3: EEG TRANSPARENZ & GEMEINSCHAFT (Anlage 2)
+     ════════════════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+
+<div class="header">
+    <div class="header-left">
+        <img src="{{ logo_b64 }}" alt="EEG">
+        <div class="brand">
+            <h1>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</h1>
+            <p>Transparenzbericht · {{ invoice['period_from'] }} – {{ invoice['period_to'] }}</p>
+        </div>
+    </div>
+    <div class="header-right">
+        <h2>Anlage 2</h2>
+        <div class="doc-nr">zu Abrechnung {{ invoice['id'] }}/{{ invoice['created_at']|localdatetime('%Y') }}</div>
+    </div>
+</div>
+
+<h2 class="section-title">Informationen zur Energiegemeinschaft</h2>
+<p class="section-subtitle">Kennzahlen und Transparenz gemäß § 79 Abs 2 EAG</p>
+
+<div class="info-block">
+    <h4>Was ist die {{ public_cfg['org_name'] if public_cfg is defined else org_name }}?</h4>
+    <p>Ein eingetragener Verein ({{ public_cfg['org_legal'] if public_cfg is defined else org_legal }}) ohne Gewinnerzielungsabsicht gem. § 79 Abs 2 EAG.
+    Kleinunternehmerregelung gem. § 6 Abs 1 Z 27 UStG. Rechtsgrundlage: EAG §§ 79–88, § 16c ElWOG 2010.</p>
+</div>
+
+<!-- Gemeinschafts-Kennzahlen -->
+<div class="chart-block">
+    <h3>Kennzahlen der Gemeinschaft</h3>
+    <table class="community">
+        <tr><td>Aktive Mitglieder (Verbraucher)</td><td class="r">{{ community_stats['member_count'] }}</td></tr>
+        <tr><td>Aktive Erzeuger (PV-Anlagen)</td><td class="r">{{ community_stats['generator_count'] }}</td></tr>
+        <tr><td>Gesamte Energiemenge gehandelt</td><td class="r">{{ "%.1f"|format(community_stats['total_traded_kwh']) }}&nbsp;kWh</td></tr>
+        <tr><td>Gesamte Erzeugung</td><td class="r">{{ "%.1f"|format(community_stats['total_generated_kwh']) }}&nbsp;kWh</td></tr>
+        <tr><td>Durchschnittlicher Eigendeckungsgrad</td><td class="r">{{ "%.1f"|format(community_stats['avg_self_sufficiency']) }} %</td></tr>
+        <tr><td>CO₂-Einsparung gesamt</td><td class="r">{{ "%.0f"|format(community_stats['total_co2_saved_kg']) }} kg</td></tr>
+        <tr><td>Entspricht Bäumen (Jahresbindung)</td><td class="r">≈ {{ community_stats['trees_equivalent'] }}</td></tr>
+    </table>
+</div>
+
+<!-- Balkendiagramm: Energieverteilung Bezug -->
+<div class="chart-block">
+    <h3>Energieverteilung – Bezug nach Mitgliedern</h3>
+    <p style="font-size:7.5pt;color:#555;margin-bottom:6px;">{{ community_stats['member_count'] }} Mitglieder beziehen insgesamt <strong>{{ "%.1f"|format(community_stats['total_traded_kwh']) }}&nbsp;kWh</strong> aus der EEG.</p>
+    {% set max_comm = community_stats['max_consumption'] if community_stats['max_consumption'] > 0 else 1 %}
+    {% for m in community_stats['member_consumption'] %}
+    <div class="bar-row">
+        <div class="b-label wide">{{ m['name'] }}</div>
+        <div class="b-track">
+            <div class="b-fill cons" style="width:{{ (m['kwh'] / max_comm * 100)|round(1) }}%"></div>
+        </div>
+        <div class="b-val">{{ "%.0f"|format(m['kwh']) }}&nbsp;kWh</div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Tortendiagramm: Bezug-Verteilung -->
+{% if pie_consumption_svg %}
+<div class="chart-block">
+    <h3>Anteil am Gesamtbezug</h3>
+    <div class="pie-section">
+        <div class="pie-chart">{{ pie_consumption_svg|safe }}</div>
+        <div class="pie-legend">
+            {% for m in pie_consumption_data %}
+            {% if m['value'] > 0 %}
+            <div><span class="dot" style="background:{{ pie_colors[loop.index0 % pie_colors|length] }}"></span>{{ m['label'] }}<span class="pie-val">{{ "%.0f"|format(m['value']) }}&nbsp;kWh</span></div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Balkendiagramm: Erzeugung -->
+{% if community_stats.get('member_generation') %}
+<div class="chart-block">
+    <h3>Erzeugung – Wer produziert den Strom?</h3>
+    <p style="font-size:7.5pt;color:#555;margin-bottom:6px;">{{ community_stats['generator_count'] }} Mitglieder mit PV-Anlagen speisen insgesamt <strong>{{ "%.1f"|format(community_stats['total_generated_kwh']) }}&nbsp;kWh</strong> ein.</p>
+    {% set max_gen_comm = community_stats['max_generation'] if community_stats.get('max_generation', 0) > 0 else 1 %}
+    {% for m in community_stats['member_generation'] %}
+    <div class="bar-row">
+        <div class="b-label wide">{{ m['name'] }}</div>
+        <div class="b-track">
+            <div class="b-fill gen" style="width:{{ (m['kwh'] / max_gen_comm * 100)|round(1) }}%"></div>
+        </div>
+        <div class="b-val">{{ "%.0f"|format(m['kwh']) }}&nbsp;kWh</div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Tortendiagramm: Erzeugung -->
+{% if pie_generation_svg %}
+<div class="chart-block">
+    <h3>Anteil an der Gesamterzeugung</h3>
+    <div class="pie-section">
+        <div class="pie-chart">{{ pie_generation_svg|safe }}</div>
+        <div class="pie-legend">
+            {% for m in pie_generation_data %}
+            {% if m['value'] > 0 %}
+            <div><span class="dot" style="background:{{ pie_gen_colors[loop.index0 % pie_gen_colors|length] }}"></span>{{ m['label'] }}<span class="pie-val">{{ "%.0f"|format(m['value']) }}&nbsp;kWh</span></div>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+
+<!-- Preiszusammensetzung -->
+<div class="price-block">
+    <h3>Preiszusammensetzung</h3>
+    <table>
+        <tr><td>Vergütung an Erzeuger</td><td class="r">{{ "%.2f"|format(community_stats['price_gen']) }} ct/kWh</td></tr>
+        <tr><td>Organisationsbeitrag EEG</td><td class="r">{{ "%.2f"|format(community_stats['price_cons'] - community_stats['price_gen']) }} ct/kWh</td></tr>
+        <tr><td>Bezugspreis für Verbraucher</td><td class="r">{{ "%.2f"|format(community_stats['price_cons']) }} ct/kWh</td></tr>
+    </table>
+</div>
+
+<div class="note-box warn">
+    <strong>Transparenzhinweis gem. § 79 Abs 2 EAG:</strong> Die EEG ist verpflichtet, ihren Mitgliedern
+    Einsicht in die Abrechnungsgrundlagen zu gewähren. Messdaten via EDA-Plattform (CR_MSG ConsumptionRecord 01.41).
+    Fragen: {{ public_cfg['org_email'] if public_cfg is defined else org_email }}
+</div>
+
+<div class="doc-footer">
+    <p>Die dargestellten Daten basieren auf den Messwerten des Netzbetreibers und werden automatisiert verarbeitet.</p>
+    <p>Erstellt am {{ invoice['created_at']|localdate }} · Maschinell erstellt, ohne Unterschrift gültig.</p>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     SEITE 4: IHRE ERSPARNIS (Anlage 3)
+     ════════════════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+
+<div class="header">
+    <div class="header-left">
+        <img src="{{ logo_b64 }}" alt="EEG">
+        <div class="brand">
+            <h1>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</h1>
+            <p>Ersparnisübersicht · {{ member['name'] }}</p>
+        </div>
+    </div>
+    <div class="header-right">
+        <h2>Anlage 3</h2>
+        <div class="doc-nr">zu Abrechnung {{ invoice['id'] }}/{{ invoice['created_at']|localdatetime('%Y') }}</div>
+    </div>
+</div>
+
+<h2 class="section-title">Was Sie durch die EEG-Teilnahme sparen</h2>
+<p class="section-subtitle">Vergleich mit regulärem Strombezug vom Energieversorger (lokale EEG / kleine EEG-Form)</p>
+
+<div class="savings-hero">
+    <div class="big">{{ "%.2f"|format(savings['total_saving']) }} €</div>
+    <div class="sub">Ihre Gesamtersparnis · {{ invoice['period_from'] }} – {{ invoice['period_to'] }}</div>
+</div>
+
+{% if savings['cons_kwh'] > 0 %}
+<div class="info-block">
+    <h4>Ersparnis beim Strombezug ({{ "%.1f"|format(savings['cons_kwh']) }}&nbsp;kWh)</h4>
+    <p>Sie haben <strong>{{ "%.1f"|format(savings['cons_kwh']) }}&nbsp;kWh</strong> aus der Energiegemeinschaft bezogen
+    statt vom Energieversorger.</p>
+</div>
+
+<table class="savings">
+    <thead>
+        <tr><th>Position</th><th class="r">Berechnung</th><th class="r">Ersparnis</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>
+                <strong>Günstigerer Strompreis</strong>
+                <span class="explain">Marktpreis ~{{ "%.0f"|format(savings['market_price_ct']) }} ct vs. EEG {{ "%.0f"|format(savings['eeg_price_ct']) }} ct/kWh – Strom direkt vom Nachbarn</span>
+            </td>
+            <td class="r">{{ "%.1f"|format(savings['cons_kwh']) }}&nbsp;kWh × {{ "%.0f"|format(savings['market_price_ct'] - savings['eeg_price_ct']) }} ct</td>
+            <td class="r"><strong>{{ "%.2f"|format(savings['saving_price']) }} €</strong></td>
+        </tr>
+        <tr>
+            <td>
+                <strong>Befreiung Elektrizitätsabgabe</strong>
+                <span class="explain">Gem. § 2 Z 3 ElAbgG – entfällt für EEG-Strom ({{ "%.1f"|format(savings['elabg_ct']) }} ct/kWh)</span>
+            </td>
+            <td class="r">{{ "%.1f"|format(savings['cons_kwh']) }}&nbsp;kWh × {{ "%.1f"|format(savings['elabg_ct']) }} ct</td>
+            <td class="r"><strong>{{ "%.2f"|format(savings['saving_elabg']) }} €</strong></td>
+        </tr>
+        <tr>
+            <td>
+                <strong>Reduzierte Netzentgelte</strong>
+                <span class="explain">Lokale EEG: {{ "%.0f"|format(savings['netzentgelt_reduction_pct']) }}% Reduktion auf den energieabhängigen Netzentgelt-Anteil (Basis {{ "%.1f"|format(savings['netzentgelt_base_ct']) }} ct/kWh)</span>
+            </td>
+            <td class="r">{{ "%.1f"|format(savings['cons_kwh']) }}&nbsp;kWh × {{ "%.1f"|format(savings['netzentgelt_reduction_ct']) }} ct</td>
+            <td class="r"><strong>{{ "%.2f"|format(savings['saving_netz']) }} €</strong></td>
+        </tr>
+    </tbody>
+    <tfoot>
+        <tr class="sub">
+            <td colspan="2">Summe Bezugsersparnis</td>
+            <td class="r">{{ "%.2f"|format(savings['saving_price'] + savings['saving_elabg'] + savings['saving_netz']) }} €</td>
+        </tr>
+    </tfoot>
+</table>
+{% endif %}
+
+{% if savings['gen_kwh'] > 0 %}
+<div class="info-block">
+    <h4>Mehreinnahmen durch Einspeisung ({{ "%.1f"|format(savings['gen_kwh']) }}&nbsp;kWh)</h4>
+    <p>Sie erhalten <strong>{{ "%.1f"|format(savings['eeg_gen_price_ct']) }} ct/kWh</strong> statt ~{{ "%.1f"|format(savings['market_einspeisetarif_ct']) }} ct am freien Markt.</p>
+</div>
+
+<table class="savings">
+    <thead>
+        <tr><th>Position</th><th class="r">Berechnung</th><th class="r">Mehreinnahme</th></tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>
+                <strong>Höhere Einspeisevergütung</strong>
+                <span class="explain">EEG {{ "%.1f"|format(savings['eeg_gen_price_ct']) }} ct vs. OeMAG-Marktpreis ~{{ "%.1f"|format(savings['market_einspeisetarif_ct']) }} ct/kWh</span>
+            </td>
+            <td class="r">{{ "%.1f"|format(savings['gen_kwh']) }}&nbsp;kWh × {{ "%.1f"|format(savings['eeg_gen_price_ct'] - savings['market_einspeisetarif_ct']) }} ct</td>
+            <td class="r"><strong>{{ "%.2f"|format(savings['saving_generation']) }} €</strong></td>
+        </tr>
+    </tbody>
+    <tfoot>
+        <tr class="sub">
+            <td colspan="2">Summe Einspeise-Mehreinnahmen</td>
+            <td class="r">{{ "%.2f"|format(savings['saving_generation']) }} €</td>
+        </tr>
+    </tfoot>
+</table>
+{% endif %}
+
+<!-- Gesamtsumme -->
+<table class="savings" style="margin-top:10px;">
+    <tfoot>
+        <tr class="total">
+            <td colspan="2">Ihre Gesamtersparnis durch die EEG</td>
+            <td class="r">{{ "%.2f"|format(savings['total_saving']) }} €</td>
+        </tr>
+    </tfoot>
+</table>
+
+<!-- Vorteile -->
+<div class="info-block" style="margin-top: 20px;">
+    <h4>Ihre Vorteile auf einen Blick</h4>
+</div>
+<div class="benefits-list">
+    <div class="item"><span class="check">✓</span> Strom direkt vom Nachbarn – regional & erneuerbar</div>
+    <div class="item"><span class="check">✓</span> Bis zu {{ "%.0f"|format(savings['market_price_ct'] - savings['eeg_price_ct']) }} ct/kWh günstiger als am Markt</div>
+    <div class="item"><span class="check">✓</span> Keine Elektrizitätsabgabe (−{{ "%.1f"|format(savings['elabg_ct']) }} ct/kWh)</div>
+    <div class="item"><span class="check">✓</span> Reduzierte Netzgebühren (−{{ "%.1f"|format(savings['netzentgelt_reduction_ct']) }} ct/kWh)</div>
+    {% if savings['gen_kwh'] > 0 %}
+    <div class="item"><span class="check">✓</span> Faire Einspeisevergütung ({{ "%.1f"|format(savings['eeg_gen_price_ct']) }} ct statt {{ "%.1f"|format(savings['market_einspeisetarif_ct']) }} ct)</div>
+    {% endif %}
+    <div class="item"><span class="check">✓</span> Transparente Abrechnung ohne versteckte Kosten</div>
+    <div class="item"><span class="check">✓</span> Aktiver Beitrag zum Klimaschutz</div>
+    <div class="item"><span class="check">✓</span> Verein ohne Gewinnerzielungsabsicht</div>
+</div>
+
+<div class="note-box info" style="margin-top: 20px;">
+    <strong>So funktioniert's:</strong> In der EEG teilen Nachbarn ihren selbst erzeugten Sonnenstrom.
+    Wer eine PV-Anlage hat, speist überschüssigen Strom ein. Wer Strom braucht, bezieht ihn direkt –
+    günstiger als vom Energieversorger, ohne Börsenzuschläge oder Vertriebsmargen.
+</div>
+
+<div class="doc-footer">
+    <p><strong>{{ public_cfg['org_name'] if public_cfg is defined else org_name }}</strong> · Verein {{ public_cfg['org_legal'] if public_cfg is defined else org_legal }} · Sitz: Ort bitte konfigurieren</p>
+    <p>Vergleichspreise: Haushaltsstrompreis Ø Österreich 2026 (E-Control); OeMAG-Marktpreis Q1/2026.</p>
+    <p>Erstellt am {{ invoice['created_at']|localdate }} · Maschinell erstellt, ohne Unterschrift gültig.</p>
+</div>
+
+</body>
+</html>

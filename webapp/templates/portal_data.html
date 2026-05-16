@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Meine Daten{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-person"></i> Meine Daten</h2>
+
+<div class="card">
+    <div class="card-body">
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-4">
+                    <label class="form-label">Name</label>
+                    <input type="text" name="name" class="form-control" value="{{ member['name'] }}" required>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">E-Mail</label>
+                    <input type="email" name="email" class="form-control" value="{{ member['email'] or '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Telefon</label>
+                    <input type="text" name="phone" class="form-control" value="{{ member['phone'] or '' }}">
+                </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                    <label class="form-label">Straße</label>
+                    <input type="text" name="address_street" class="form-control" value="{{ member['address_street'] or '' }}">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">PLZ</label>
+                    <input type="text" name="address_zip" class="form-control" value="{{ member['address_zip'] or '' }}">
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Ort</label>
+                    <input type="text" name="address_city" class="form-control" value="{{ member['address_city'] or '' }}">
+                </div>
+            </div>
+
+            <hr>
+            <h6 class="text-muted mb-3"><i class="bi bi-bank"></i> Bankdaten (für Gutschriften)</h6>
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-4">
+                    <label class="form-label">Kontoinhaber</label>
+                    <input type="text" name="account_holder" class="form-control" value="{{ member['account_holder'] or '' }}">
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label">IBAN</label>
+                    <input type="text" name="iban" class="form-control" value="{{ member['iban'] or '' }}" placeholder="AT...">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">BIC</label>
+                    <input type="text" name="bic" class="form-control" value="{{ member['bic'] or '' }}">
+                </div>
+            </div>
+
+            <hr>
+            <h6 class="text-muted mb-3"><i class="bi bi-lightning"></i> Zählpunkte (nur Information)</h6>
+
+            <div class="row g-3 mb-4">
+                <div class="col-md-6">
+                    <label class="form-label">Bezugs-ZP</label>
+                    <input type="text" class="form-control" value="{{ member['bezug_zp'] or '—' }}" disabled>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Einspeise-ZP</label>
+                    <input type="text" class="form-control" value="{{ member['einspeiser_zp'] or '—' }}" disabled>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg"></i> Speichern</button>
+            <a href="{{ url_for('portal_dashboard') }}" class="btn btn-outline-secondary ms-2">Abbrechen</a>
+        </form>
+
+        <hr class="my-4">
+        <h6 class="text-muted mb-3"><i class="bi bi-envelope-paper"></i> Newsletter-Einstellungen</h6>
+        <form method="post" action="{{ url_for('portal_newsletter_toggle') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% if member['newsletter_optout'] %}
+            <div class="alert alert-secondary d-flex align-items-center">
+                <i class="bi bi-envelope-x fs-4 me-3 text-muted"></i>
+                <div>
+                    <strong>Newsletter abbestellt.</strong><br>
+                    <small>Sie erhalten keine Newsletter-E-Mails von der EEG.</small>
+                </div>
+            </div>
+            <input type="hidden" name="optout" value="0">
+            <button type="submit" class="btn btn-sm btn-outline-success">
+                <i class="bi bi-envelope-check"></i> Newsletter wieder abonnieren
+            </button>
+            {% else %}
+            <div class="alert alert-success d-flex align-items-center">
+                <i class="bi bi-envelope-check fs-4 me-3 text-success"></i>
+                <div>
+                    <strong>Newsletter aktiv.</strong><br>
+                    <small>Sie erhalten Neuigkeiten per E-Mail von der EEG.</small>
+                </div>
+            </div>
+            <input type="hidden" name="optout" value="1">
+            <button type="submit" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-envelope-x"></i> Newsletter abbestellen
+            </button>
+            {% endif %}
+        </form>
+    </div>
+</div>
+{% endblock %}
