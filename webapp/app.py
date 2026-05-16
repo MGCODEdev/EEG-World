@@ -72,6 +72,10 @@ def local_now():
     return datetime.now(APP_TIMEZONE)
 
 
+def utc_now_string():
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+
 def to_local_datetime(value):
     if not value:
         return None
@@ -141,6 +145,7 @@ def inject_template_globals():
         'org_website': public_cfg['org_website'],
         'org_address': public_cfg['org_address'],
         'org_legal': public_cfg['org_legal'],
+        'timezone_name': getattr(APP_TIMEZONE, 'key', 'Europe/Vienna'),
     }
 
 
@@ -626,8 +631,10 @@ def audit_log(action, detail=None, user_id=None, username=None):
             uid = current_user.id
             uname = current_user.username
         db.execute(
-            "INSERT INTO audit_log (user_id, username, action, detail, ip, url, method) VALUES (?,?,?,?,?,?,?)",
-            (uid, uname, action, detail,
+            """INSERT INTO audit_log
+               (timestamp, user_id, username, action, detail, ip, url, method)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (utc_now_string(), uid, uname, action, detail,
              get_real_ip() if request else None,
              request.url if request else None,
              request.method if request else None))
