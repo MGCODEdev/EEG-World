@@ -1,5 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Meine Daten{% endblock %}
+{% block extra_css %}
+<style>
+    .newsletter-switch {
+        border: 1px solid #e3eceb;
+        border-radius: 8px;
+        padding: 1rem;
+        background: #f8fbfb;
+    }
+    .newsletter-switch .form-check-input {
+        width: 3.2rem;
+        height: 1.6rem;
+        cursor: pointer;
+    }
+    .newsletter-switch .form-check-input:checked {
+        background-color: #2b7a78;
+        border-color: #2b7a78;
+    }
+    .newsletter-switch .form-check-label {
+        cursor: pointer;
+    }
+</style>
+{% endblock %}
 {% block content %}
 <h2 class="page-title"><i class="bi bi-person"></i> Meine Daten</h2>
 
@@ -78,31 +100,31 @@
         <h6 class="text-muted mb-3"><i class="bi bi-envelope-paper"></i> Newsletter-Einstellungen</h6>
         <form method="post" action="{{ url_for('portal_newsletter_toggle') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            {% if member['newsletter_optout'] %}
-            <div class="alert alert-secondary d-flex align-items-center">
-                <i class="bi bi-envelope-x fs-4 me-3 text-muted"></i>
+            <input type="hidden" name="newsletter_enabled" value="0">
+            <div class="newsletter-switch d-flex align-items-center justify-content-between gap-3">
                 <div>
-                    <strong>Newsletter abbestellt.</strong><br>
-                    <small>Sie erhalten keine Newsletter-E-Mails von der EEG.</small>
+                    <strong>Newsletter erhalten</strong><br>
+                    <small class="text-muted">
+                        {% if member['newsletter_optout'] %}
+                        Sie erhalten aktuell keine Newsletter-E-Mails.
+                        {% else %}
+                        Sie erhalten Neuigkeiten per E-Mail.
+                        {% endif %}
+                    </small>
+                </div>
+                <div class="form-check form-switch m-0">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="newsletterEnabled" name="newsletter_enabled" value="1"
+                           {% if not member['newsletter_optout'] %}checked{% endif %}
+                           onchange="this.form.submit()">
+                    <label class="form-check-label visually-hidden" for="newsletterEnabled">Newsletter erhalten</label>
                 </div>
             </div>
-            <input type="hidden" name="optout" value="0">
-            <button type="submit" class="btn btn-sm btn-outline-success">
-                <i class="bi bi-envelope-check"></i> Newsletter wieder abonnieren
-            </button>
-            {% else %}
-            <div class="alert alert-success d-flex align-items-center">
-                <i class="bi bi-envelope-check fs-4 me-3 text-success"></i>
-                <div>
-                    <strong>Newsletter aktiv.</strong><br>
-                    <small>Sie erhalten Neuigkeiten per E-Mail von der EEG.</small>
-                </div>
-            </div>
-            <input type="hidden" name="optout" value="1">
-            <button type="submit" class="btn btn-sm btn-outline-secondary">
-                <i class="bi bi-envelope-x"></i> Newsletter abbestellen
-            </button>
-            {% endif %}
+            <noscript>
+                <button type="submit" class="btn btn-sm btn-primary mt-3">
+                    <i class="bi bi-check-lg"></i> Newsletter-Einstellung speichern
+                </button>
+            </noscript>
         </form>
     </div>
 </div>

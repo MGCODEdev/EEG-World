@@ -2817,7 +2817,10 @@ def portal_newsletter_toggle():
     if not current_user.member_id:
         flash('Kein Mitglied zugeordnet.', 'warning')
         return redirect(url_for('portal_data'))
-    optout = 1 if request.form.get('optout') == '1' else 0
+    if 'newsletter_enabled' in request.form:
+        optout = 0 if request.form.get('newsletter_enabled') == '1' else 1
+    else:
+        optout = 1 if request.form.get('optout') == '1' else 0
     db.execute("UPDATE members SET newsletter_optout=? WHERE id=?", (optout, current_user.member_id))
     db.commit()
     if optout:
@@ -2833,19 +2836,16 @@ def portal_newsletter_toggle():
 def newsletter_unsubscribe(token):
     """Öffentliche Abmeldung per Link aus E-Mail."""
     if not token or len(token) < 16:
-        flash('Ungültiger Abmelde-Link.', 'danger')
-        return redirect(url_for('login'))
+        return render_template('newsletter_unsubscribe.html', status='invalid', member=None), 400
     db = get_db()
     member = db.execute("SELECT id, name FROM members WHERE unsubscribe_token=?", (token,)).fetchone()
     if not member:
-        flash('Ungültiger oder bereits verwendeter Abmelde-Link.', 'warning')
-        return redirect(url_for('login'))
+        return render_template('newsletter_unsubscribe.html', status='invalid', member=None), 404
     db.execute("UPDATE members SET newsletter_optout=1 WHERE id=?", (member['id'],))
     db.commit()
     audit_log('newsletter_optout', f'Newsletter per Link abbestellt: {member["name"]} (ID {member["id"]})',
               user_id=None, username='system')
-    flash(f'Newsletter für {member["name"]} erfolgreich abbestellt.', 'success')
-    return redirect(url_for('login'))
+    return render_template('newsletter_unsubscribe.html', status='success', member=member)
 
 
 # === Newsletter Admin ===

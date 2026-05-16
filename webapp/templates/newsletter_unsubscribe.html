@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Newsletter abbestellen{% endblock %}
+{% block content_noauth %}
+<div class="row justify-content-center" style="min-height:70vh;align-items:center;">
+    <div class="col-md-7 col-lg-5">
+        <div class="card shadow-sm">
+            <div class="card-body text-center p-4">
+                {% if status == 'success' %}
+                <i class="bi bi-envelope-x text-success" style="font-size:3rem;"></i>
+                <h1 class="h4 mt-3">Newsletter abbestellt</h1>
+                <p class="text-muted mb-4">
+                    Für diese Adresse werden keine Newsletter-E-Mails mehr versendet.
+                </p>
+                <a href="{{ url_for('login') }}" class="btn btn-primary">
+                    <i class="bi bi-box-arrow-in-right"></i> Zum Login
+                </a>
+                {% else %}
+                <i class="bi bi-exclamation-triangle text-warning" style="font-size:3rem;"></i>
+                <h1 class="h4 mt-3">Abmeldelink ungültig</h1>
+                <p class="text-muted mb-4">
+                    Der Link ist ungültig oder wurde nicht gefunden. Bitte verwenden Sie den Abmeldelink aus der letzten Newsletter-E-Mail.
+                </p>
+                <a href="{{ url_for('login') }}" class="btn btn-outline-secondary">
+                    <i class="bi bi-box-arrow-in-right"></i> Zum Login
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
