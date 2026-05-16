@@ -478,17 +478,17 @@ def _load_mail_config(db):
 def _validate_mail_config(mail_cfg):
     """Validiert Mail-Konfiguration gemäß RFC/Anwendungsanforderungen."""
     if not mail_cfg.get('smtp_user'):
-        return False, 'SMTP_USERNAME (smtp_user) fehlt.'
+        return False, 'SMTP-Benutzername fehlt.'
     if not mail_cfg.get('smtp_host'):
-        return False, 'SMTP_HOST (smtp_host) fehlt.'
+        return False, 'SMTP-Server fehlt.'
     if not mail_cfg.get('smtp_pass'):
-        return False, 'SMTP_PASSWORD (smtp_pass) fehlt.'
+        return False, 'SMTP-Passwort fehlt.'
     if not mail_cfg.get('from_address'):
-        return False, 'MAIL_FROM_ADDRESS fehlt (mail_from_address/smtp_from).'
+        return False, 'Absenderadresse für E-Mails fehlt.'
     if not _is_valid_email(mail_cfg.get('from_address')):
-        return False, 'MAIL_FROM_ADDRESS ist ungültig.'
+        return False, 'Absenderadresse für E-Mails ist ungültig.'
     if not _is_valid_email(mail_cfg.get('reply_to_address')):
-        return False, 'MAIL_REPLY_TO ist ungültig.'
+        return False, 'Antwortadresse ist ungültig.'
 
     smtp_user = mail_cfg.get('smtp_user').lower()
     from_addr = mail_cfg.get('from_address').lower()
@@ -496,7 +496,7 @@ def _validate_mail_config(mail_cfg):
         smtp_domain = smtp_user.split('@')[-1] if '@' in smtp_user else ''
         from_domain = from_addr.split('@')[-1] if '@' in from_addr else ''
         if not smtp_domain or smtp_domain != from_domain:
-            return False, 'MAIL_FROM_ADDRESS muss SMTP_USERNAME oder eine Alias-Adresse derselben Domain sein.'
+            return False, 'Absenderadresse muss dem SMTP-Benutzernamen oder einer Alias-Adresse derselben Domain entsprechen.'
 
     return True, ''
 
