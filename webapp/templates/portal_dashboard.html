@@ -76,11 +76,29 @@
             <div class="flex-grow-1" style="background:#f0f0f0;border-radius:4px;height:20px;overflow:hidden;">
                 <div style="width:{{ (month['consumption'] / max_kwh * 100)|round(1) }}%;height:100%;background:linear-gradient(90deg,#2b7a78,#3aafa9);border-radius:4px;"></div>
             </div>
-            <span style="width:65px;font-size:.8rem;padding-left:8px;font-weight:600;">{{ "%.1f"|format(month['consumption']) }} kWh</span>
+            <span style="width:90px;font-size:.8rem;padding-left:8px;font-weight:600;white-space:nowrap;">{{ "%.1f"|format(month['consumption']) }} kWh</span>
         </div>
         {% endfor %}
     </div>
 </div>
+
+{% if stats['total_generation_kwh'] > 0 %}
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-bar-chart"></i> Monatliche Einspeisung (letzte Abrechnung)</strong></div>
+    <div class="card-body">
+        {% set max_gen_kwh = stats['monthly_gen_max'] if stats['monthly_gen_max'] > 0 else 1 %}
+        {% for month in stats['monthly_data'] %}
+        <div class="d-flex align-items-center mb-1">
+            <span style="width:60px;font-size:.8rem;text-align:right;padding-right:8px;color:#666;">{{ month['label'] }}</span>
+            <div class="flex-grow-1" style="background:#f0f0f0;border-radius:4px;height:20px;overflow:hidden;">
+                <div style="width:{{ (month['generation'] / max_gen_kwh * 100)|round(1) }}%;height:100%;background:linear-gradient(90deg,#f59e0b,#facc15);border-radius:4px;"></div>
+            </div>
+            <span style="width:90px;font-size:.8rem;padding-left:8px;font-weight:600;white-space:nowrap;">{{ "%.1f"|format(month['generation']) }} kWh</span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
 
 {% if stats.get('invoice_id') %}
 <a href="{{ url_for('invoice_pdf', id=stats['invoice_id'], member_id=member['id']) }}" class="btn btn-primary mb-3">

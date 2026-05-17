@@ -27,7 +27,7 @@
                     </select>
                 </div>
                 <div class="col-md-4">
-                    <button type="submit" class="btn btn-primary"><i class="bi bi-person-plus"></i> Anlegen & Einladungslink</button>
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-envelope-plus"></i> Anlegen & Einladung senden</button>
                 </div>
             </div>
         </form>
@@ -75,10 +75,10 @@
                     </td>
                     <td><small>{{ u['created_at']|localdate if u['created_at'] else '—' }}</small></td>
                     <td class="text-end">
-                        <form method="POST" action="{{ url_for('admin_user_reinvite', id=u['id']) }}" class="d-inline">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button type="submit" class="btn btn-sm btn-outline-primary" title="Neuen Einladungslink"><i class="bi bi-link-45deg"></i></button>
-                        </form>
+                        <button type="button" class="btn btn-sm btn-outline-primary" title="Einladungslink"
+                                data-bs-toggle="modal" data-bs-target="#inviteModal{{ u['id'] }}">
+                            <i class="bi bi-link-45deg"></i>
+                        </button>
                         <form method="POST" action="{{ url_for('admin_user_toggle_role', id=u['id']) }}" class="d-inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-sm btn-outline-warning" title="Rolle umschalten"><i class="bi bi-arrow-repeat"></i></button>
@@ -98,6 +98,45 @@
         </div>
     </div>
 </div>
+
+{% for u in users %}
+<div class="modal fade" id="inviteModal{{ u['id'] }}" tabindex="-1" aria-labelledby="inviteModalLabel{{ u['id'] }}" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="inviteModalLabel{{ u['id'] }}"><i class="bi bi-link-45deg"></i> Einladungslink</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">
+                    Was möchten Sie mit dem Einladungslink für <strong>{{ u['username'] }}</strong> machen?
+                </p>
+                {% if u['email'] %}
+                <p class="text-muted small mb-0">Beim Versand geht die Einladung an {{ u['email'] }}.</p>
+                {% else %}
+                <div class="alert alert-warning mb-0">
+                    Für diesen Benutzer ist keine E-Mail-Adresse hinterlegt. Der Link kann nur angezeigt werden.
+                </div>
+                {% endif %}
+            </div>
+            <div class="modal-footer">
+                <form method="POST" action="{{ url_for('admin_user_reinvite', id=u['id']) }}" class="me-auto">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="invite_action" value="show">
+                    <button type="submit" class="btn btn-outline-secondary"><i class="bi bi-eye"></i> Nur ansehen</button>
+                </form>
+                {% if u['email'] %}
+                <form method="POST" action="{{ url_for('admin_user_reinvite', id=u['id']) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="invite_action" value="send">
+                    <button type="submit" class="btn btn-primary"><i class="bi bi-envelope-arrow-up"></i> Per Mail versenden</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}
 
 <!-- Verträge hochladen -->
 <div class="card mb-4">

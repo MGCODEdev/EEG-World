@@ -545,6 +545,184 @@ def _log_mail_send(mail_cfg, recipient, subject):
     )
 
 
+def _format_invite_expires(invite_expires):
+    """Formatiert das Ablaufdatum für Einladungs-Mails."""
+    if not invite_expires:
+        return 'in 14 Tagen'
+    try:
+        return datetime.fromisoformat(str(invite_expires)).strftime('%d.%m.%Y um %H:%M Uhr')
+    except ValueError:
+        return str(invite_expires)
+
+
+def _build_invitation_email(member_name, username, role, invite_url, invite_expires, public_cfg, logo_src=None):
+    """Erzeugt Betreff, Text- und HTML-Teil für Portal-Einladungen."""
+    display_name = (member_name or username or 'Mitglied').strip()
+    role_label = 'Administrator' if role == 'admin' else 'Teilnehmer'
+    expires_text = _format_invite_expires(invite_expires)
+    org_name = public_cfg.get('org_name') or DEFAULT_ORG_NAME
+    org_email = public_cfg.get('org_email') or DEFAULT_ORG_EMAIL
+    org_address = public_cfg.get('org_address') or ''
+    org_website = public_cfg.get('org_website') or ''
+
+    subject = f'Einladung zum {org_name}'
+    body_text = f"""Hallo {display_name},
+
+Christian und Markus von der EEG haben für Sie einen Zugang zum {org_name} eingerichtet.
+
+So starten Sie:
+1. Öffnen Sie den folgenden Einladungslink:
+{invite_url}
+2. Legen Sie Ihr eigenes Passwort fest.
+3. Melden Sie sich danach mit Ihrem Benutzernamen an: {username}
+
+Der Link ist bis {expires_text} gültig. Falls der Link abgelaufen ist, antworten Sie bitte auf diese E-Mail oder wenden Sie sich an {org_email}.
+
+Ihre Rolle im Portal: {role_label}
+
+Viele Grüße
+Christian und Markus
+von der EEG
+"""
+
+    safe_name = escape(display_name)
+    safe_username = escape(username or '')
+    safe_role = escape(role_label)
+    safe_url = escape(invite_url)
+    safe_expires = escape(expires_text)
+    safe_org_name = escape(org_name)
+    safe_org_email = escape(org_email)
+    safe_org_address = escape(org_address)
+    safe_org_website = escape(org_website)
+    safe_logo_src = escape(logo_src) if logo_src else ''
+
+    html_footer_website = (
+        f'<br><a href="{safe_org_website}" style="color:#2b5e3a;text-decoration:none;">{safe_org_website}</a>'
+        if org_website else ''
+    )
+    logo_html = (
+        f'<img src="{safe_logo_src}" width="58" height="58" alt="{safe_org_name}" '
+        'style="display:block;border-radius:8px;margin:0 0 12px 0;background:#ffffff;">'
+        if logo_src else ''
+    )
+    body_html = f"""<!doctype html>
+<html lang="de">
+<body style="margin:0;padding:0;background:#f5f7f4;font-family:Arial,Helvetica,sans-serif;color:#1f2a24;">
+  <div style="display:none;max-height:0;overflow:hidden;color:transparent;">
+    Christian und Markus von der EEG laden Sie zum Portal ein.
+  </div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f7f4;padding:28px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #dfe7df;">
+          <tr>
+            <td style="background:#2b5e3a;padding:24px 28px;color:#ffffff;">
+              {logo_html}
+              <div style="font-size:13px;letter-spacing:.04em;text-transform:uppercase;opacity:.85;">Einladung zum Portal</div>
+              <h1 style="margin:8px 0 0 0;font-size:24px;line-height:1.25;font-weight:700;">{safe_org_name}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px;">
+              <p style="margin:0 0 16px 0;font-size:16px;line-height:1.6;">Hallo {safe_name},</p>
+              <p style="margin:0 0 16px 0;font-size:16px;line-height:1.6;">
+                Christian und Markus von der EEG haben für Sie einen Zugang zum <strong>{safe_org_name}</strong> eingerichtet.
+              </p>
+              <div style="background:#eef6ef;border-left:4px solid #2b5e3a;padding:16px 18px;margin:22px 0;border-radius:6px;">
+                <p style="margin:0 0 8px 0;font-size:15px;line-height:1.5;"><strong>Ihre Zugangsdaten</strong></p>
+                <p style="margin:0;font-size:15px;line-height:1.6;">Benutzername: <strong>{safe_username}</strong><br>Rolle: <strong>{safe_role}</strong></p>
+              </div>
+              <p style="margin:0 0 12px 0;font-size:16px;line-height:1.6;"><strong>So starten Sie:</strong></p>
+              <ol style="margin:0 0 22px 20px;padding:0;font-size:16px;line-height:1.7;">
+                <li>Einladungslink öffnen.</li>
+                <li>Eigenes Passwort festlegen.</li>
+                <li>Danach mit Ihrem Benutzernamen anmelden.</li>
+              </ol>
+              <p style="margin:0 0 24px 0;text-align:center;">
+                <a href="{safe_url}" style="display:inline-block;background:#2b5e3a;color:#ffffff;text-decoration:none;font-weight:700;padding:13px 22px;border-radius:6px;font-size:16px;">Einladung annehmen</a>
+              </p>
+              <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#58665e;">
+                Der Link ist bis <strong>{safe_expires}</strong> gültig. Falls der Button nicht funktioniert, kopieren Sie diesen Link in Ihren Browser:
+              </p>
+              <p style="margin:0 0 22px 0;word-break:break-all;font-size:13px;line-height:1.5;color:#2b5e3a;">
+                <a href="{safe_url}" style="color:#2b5e3a;">{safe_url}</a>
+              </p>
+              <p style="margin:0;font-size:16px;line-height:1.6;">
+                Viele Grüße<br>
+                <strong>Christian und Markus</strong><br>
+                von der EEG
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 28px;background:#f0f4ef;border-top:1px solid #dfe7df;color:#6a766e;font-size:12px;line-height:1.5;text-align:center;">
+              <strong>{safe_org_name}</strong><br>
+              {safe_org_address}<br>
+              <a href="mailto:{safe_org_email}" style="color:#2b5e3a;text-decoration:none;">{safe_org_email}</a>{html_footer_website}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+    return subject, body_text, body_html
+
+
+def send_invitation_email(db, user_row, invite_url, invite_expires):
+    """Sendet eine Portal-Einladung als HTML-Mail mit Plaintext-Fallback."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.image import MIMEImage
+
+    recipient = (user_row['email'] or '').strip()
+    if not _is_valid_email(recipient):
+        raise RuntimeError('Keine gültige E-Mail-Adresse für diesen Benutzer hinterlegt.')
+
+    mail_cfg = _get_valid_mail_config(db)
+    public_cfg = get_public_config(db)
+    member_name = user_row['member_name'] if 'member_name' in user_row.keys() else ''
+    logo_cid = 'eeg-logo'
+    subject, body_text, body_html = _build_invitation_email(
+        member_name,
+        user_row['username'],
+        user_row['role'],
+        invite_url,
+        invite_expires,
+        public_cfg,
+        logo_src=f'cid:{logo_cid}',
+    )
+
+    msg = MIMEMultipart('related')
+    msg['From'] = mail_cfg['from_header']
+    msg['Reply-To'] = mail_cfg['reply_to_header']
+    msg['To'] = recipient
+    msg['Subject'] = subject
+
+    msg_alt = MIMEMultipart('alternative')
+    msg_alt.attach(MIMEText(body_text, 'plain', 'utf-8'))
+    msg_alt.attach(MIMEText(body_html, 'html', 'utf-8'))
+    msg.attach(msg_alt)
+
+    logo_path = os.path.join(BASE_DIR, 'static', 'logo_small.png')
+    if os.path.exists(logo_path):
+        with open(logo_path, 'rb') as f:
+            logo = MIMEImage(f.read(), _subtype='png')
+        logo.add_header('Content-ID', f'<{logo_cid}>')
+        logo.add_header('Content-Disposition', 'inline', filename='eeg-logo.png')
+        msg.attach(logo)
+
+    _log_mail_send(mail_cfg, recipient, subject)
+    with smtplib.SMTP(mail_cfg['smtp_host'], mail_cfg['smtp_port']) as server:
+        if mail_cfg['smtp_tls']:
+            server.starttls()
+        server.login(mail_cfg['smtp_user'], mail_cfg['smtp_pass'])
+        server.send_message(msg, from_addr=mail_cfg['from_address'], to_addrs=[recipient])
+
+
 def _startup_mail_config_check():
     """Prüft Mail-Konfiguration beim Start und loggt das Ergebnis."""
     db = sqlite3.connect(DB_PATH)
@@ -715,12 +893,27 @@ def login():
             flash(f'Zu viele Fehlversuche. Bitte warten Sie {locked_secs} Sekunden.', 'danger')
             return render_template('login.html', locked_until=locked_secs)
 
-        username = request.form.get('username', '').strip().lower()
+        login_identifier = request.form.get('username', '').strip().lower()
         password = request.form.get('password', '')
         db = get_db()
-        row = db.execute("SELECT id, username, password_hash, is_admin, member_id, role FROM users WHERE LOWER(username)=?",
-                         (username,)).fetchone()
-        if row and check_password_hash(row['password_hash'], password):
+        candidates = db.execute("""
+            SELECT id, username, password_hash, is_admin, member_id, role
+            FROM users
+            WHERE LOWER(username)=? OR LOWER(email)=?
+            ORDER BY
+                CASE
+                    WHEN invite_token IS NULL THEN 0
+                    WHEN LOWER(username)=? THEN 1
+                    ELSE 2
+                END,
+                id
+        """, (login_identifier, login_identifier, login_identifier)).fetchall()
+        row = None
+        for candidate in candidates:
+            if check_password_hash(candidate['password_hash'], password):
+                row = candidate
+                break
+        if row:
             _reset_login_attempts(ip)
             user = User(row['id'], row['username'], row['is_admin'],
                         row['member_id'], row['role'])
@@ -733,7 +926,7 @@ def login():
                 return redirect(url_for('dashboard'))
             return redirect(url_for('portal_dashboard'))
         _record_failed_login(ip)
-        audit_log('login_failed', f'Fehlgeschlagener Login für "{username}"', user_id=0, username=username)
+        audit_log('login_failed', f'Fehlgeschlagener Login für "{login_identifier}"', user_id=0, username=login_identifier)
         remaining = MAX_LOGIN_ATTEMPTS - _login_attempts.get(ip, {}).get('count', 0)
         if remaining > 0:
             flash(f'Ungültiger Benutzername oder Passwort. Noch {remaining} Versuche.', 'danger')
@@ -2410,6 +2603,26 @@ def admin_users():
     users = db.execute("""
         SELECT u.*, m.name as member_name, m.email as member_email
         FROM users u LEFT JOIN members m ON u.member_id = m.id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM users other
+            WHERE other.id != u.id
+              AND (
+                  (u.member_id IS NOT NULL AND other.member_id = u.member_id)
+                  OR (
+                      u.email IS NOT NULL AND u.email != ''
+                      AND other.email IS NOT NULL AND other.email != ''
+                      AND LOWER(other.email) = LOWER(u.email)
+                  )
+              )
+              AND (
+                  (other.invite_token IS NULL AND u.invite_token IS NOT NULL)
+                  OR (
+                      (other.invite_token IS NULL) = (u.invite_token IS NULL)
+                      AND other.id < u.id
+                  )
+              )
+        )
         ORDER BY u.is_admin DESC, u.username
     """).fetchall()
     members = db.execute("SELECT id, name, email FROM members WHERE active=1 ORDER BY name").fetchall()
@@ -2440,9 +2653,16 @@ def admin_user_create():
         for old, new in [('ä', 'ae'), ('ö', 'oe'), ('ü', 'ue'), ('ß', 'ss')]:
             username = username.replace(old, new)
 
-    existing = db.execute("SELECT id FROM users WHERE LOWER(username)=?", (username.lower(),)).fetchone()
+    existing = db.execute("""
+        SELECT id, username FROM users
+        WHERE LOWER(username)=?
+           OR member_id=?
+           OR (? != '' AND email IS NOT NULL AND email != '' AND LOWER(email)=?)
+        ORDER BY CASE WHEN invite_token IS NULL THEN 0 ELSE 1 END, id
+        LIMIT 1
+    """, (username.lower(), member_id, (member['email'] or '').strip(), (member['email'] or '').strip().lower())).fetchone()
     if existing:
-        flash(f'Benutzer "{username}" existiert bereits.', 'warning')
+        flash(f'Für dieses Mitglied existiert bereits der Benutzer "{existing["username"]}".', 'warning')
         return redirect(url_for('admin_users'))
 
     # Einladungs-Token generieren
@@ -2460,7 +2680,22 @@ def admin_user_create():
 
     invite_url = request.url_root.rstrip('/') + url_for('invite_accept', token=invite_token)
     audit_log('user_create', f'Benutzer angelegt: {username} (Rolle: {role}, Mitglied-ID: {member_id})')
-    flash(f'Benutzer "{username}" angelegt. Einladungslink: {invite_url}', 'success')
+    if member['email']:
+        invite_user = {
+            'username': username,
+            'email': member['email'],
+            'role': role,
+            'member_name': member['name'],
+        }
+        try:
+            send_invitation_email(db, invite_user, invite_url, invite_expires)
+            flash(f'Benutzer "{username}" angelegt und Einladung an {member["email"]} gesendet.', 'success')
+        except Exception as e:
+            app.logger.exception('Invitation mail failed for user %s', username)
+            flash(f'Benutzer "{username}" angelegt, aber die Einladung konnte nicht per E-Mail gesendet werden: {e}', 'warning')
+            flash(f'Einladungslink: {invite_url}', 'info')
+    else:
+        flash(f'Benutzer "{username}" angelegt. Keine E-Mail-Adresse hinterlegt; Einladungslink: {invite_url}', 'warning')
     return redirect(url_for('admin_users'))
 
 
@@ -2469,16 +2704,36 @@ def admin_user_create():
 def admin_user_reinvite(id):
     """Neuen Einladungslink generieren."""
     db = get_db()
+    invite_action = request.form.get('invite_action', 'send')
+    if invite_action not in ('show', 'send'):
+        invite_action = 'send'
     invite_token = secrets.token_urlsafe(32)
     invite_expires = (datetime.now().replace(hour=23, minute=59) +
                       __import__('datetime').timedelta(days=14)).isoformat()
     db.execute("UPDATE users SET invite_token=?, invite_expires=? WHERE id=?",
                (invite_token, invite_expires, id))
     db.commit()
-    user = db.execute("SELECT username FROM users WHERE id=?", (id,)).fetchone()
+    user = db.execute("""
+        SELECT u.*, m.name as member_name
+        FROM users u LEFT JOIN members m ON u.member_id = m.id
+        WHERE u.id=?
+    """, (id,)).fetchone()
     invite_url = request.url_root.rstrip('/') + url_for('invite_accept', token=invite_token)
     audit_log('user_reinvite', f'Neuer Einladungslink für: {user["username"]}' if user else f'Reinvite User-ID {id}')
-    flash(f'Neuer Einladungslink generiert: {invite_url}', 'success')
+    if invite_action == 'show':
+        flash(f'Neuer Einladungslink generiert: {invite_url}', 'info')
+    elif not user:
+        flash(f'Neuer Einladungslink generiert: {invite_url}', 'success')
+    elif user['email']:
+        try:
+            send_invitation_email(db, user, invite_url, invite_expires)
+            flash(f'Neuer Einladungslink für "{user["username"]}" generiert und an {user["email"]} gesendet.', 'success')
+        except Exception as e:
+            app.logger.exception('Invitation mail failed for user %s', user['username'])
+            flash(f'Neuer Einladungslink generiert, aber die Einladung konnte nicht per E-Mail gesendet werden: {e}', 'warning')
+            flash(f'Einladungslink: {invite_url}', 'info')
+    else:
+        flash(f'Neuer Einladungslink generiert. Keine E-Mail-Adresse hinterlegt; Link: {invite_url}', 'warning')
     return redirect(url_for('admin_users'))
 
 

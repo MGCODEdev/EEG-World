@@ -206,12 +206,12 @@
                 <form method="post" autocomplete="off" novalidate>
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="form-group">
-                        <label for="username">Benutzername</label>
+                        <label for="username">Benutzername oder E-Mail</label>
                         <div class="input-wrapper">
                             <input type="text" id="username" name="username" required autofocus
                                    {% if locked_until %}disabled{% endif %}
-                                   placeholder="Benutzername eingeben">
-                            <i class="bi bi-person-fill"></i>
+                                   placeholder="Benutzername oder E-Mail eingeben">
+                            <i class="bi bi-person-badge-fill"></i>
                         </div>
                     </div>
                     <div class="form-group">
