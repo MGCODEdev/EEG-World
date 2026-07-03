@@ -102,6 +102,7 @@ BACKUP_SETTING_DEFAULTS = {
     'backup_drive_enabled': 'false',
     'backup_drive_folder_id': '',
     'backup_drive_last_upload': '',
+    'backup_drive_last_check': '',
     'backup_drive_last_error': '',
     'backup_auto_last_run_date': '',
     'backup_email_last_attempt_week': '',
@@ -2501,6 +2502,7 @@ def get_backup_settings(db):
         'drive_enabled': _setting_bool(raw.get('backup_drive_enabled')),
         'drive_folder_id': (raw.get('backup_drive_folder_id') or '').strip(),
         'drive_last_upload': raw.get('backup_drive_last_upload') or '',
+        'drive_last_check': raw.get('backup_drive_last_check') or '',
         'drive_last_error': raw.get('backup_drive_last_error') or '',
         'auto_last_run_date': raw.get('backup_auto_last_run_date') or '',
         'email_last_attempt_week': raw.get('backup_email_last_attempt_week') or '',
@@ -2785,6 +2787,16 @@ def _google_drive_service():
     except ImportError as e:
         raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
     return build('drive', 'v3', credentials=credentials, cache_discovery=False)
+
+
+def check_google_drive_connection(db):
+    service = _google_drive_service()
+    service.files().list(pageSize=1, fields='files(id,name)').execute()
+    checked_at = local_now().isoformat(timespec='seconds')
+    _set_setting(db, 'backup_drive_last_check', checked_at)
+    _set_setting(db, 'backup_drive_last_error', '')
+    db.commit()
+    return checked_at
 
 
 def upload_backup_to_google_drive(db, backup_path):
@@ -3187,6 +3199,23 @@ def admin_backup_google_disconnect():
     except Exception as e:
         audit_log('backup_drive_disconnect_failed', f'Google Drive Trennung fehlgeschlagen: {e}')
         flash(f'Google Drive konnte nicht getrennt werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/test', methods=['POST'])
+@admin_required
+def admin_backup_google_test():
+    """Prüft Refresh-Token und Google Drive API Zugriff."""
+    db = get_db()
+    try:
+        checked_at = check_google_drive_connection(db)
+        audit_log('backup_drive_test', 'Google Drive Verbindung erfolgreich geprüft')
+        flash(f'Google Drive Verbindung erfolgreich geprüft: {checked_at}', 'success')
+    except Exception as e:
+        _set_setting(db, 'backup_drive_last_error', str(e))
+        db.commit()
+        audit_log('backup_drive_test_failed', f'Google Drive Verbindungstest fehlgeschlagen: {e}')
+        flash(f'Google Drive Verbindungstest fehlgeschlagen: {e}', 'danger')
     return redirect(url_for('admin_backup'))
 
 

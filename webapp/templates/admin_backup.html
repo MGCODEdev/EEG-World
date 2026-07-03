@@ -236,6 +236,9 @@
                     {% if backup_settings.drive_last_upload %}
                         <br>Letzter Upload: {{ backup_settings.drive_last_upload|localdatetime }}
                     {% endif %}
+                    {% if backup_settings.drive_last_check %}
+                        <br>Letzte Verbindungsprüfung: {{ backup_settings.drive_last_check|localdatetime }}
+                    {% endif %}
                     {% if backup_settings.drive_last_error %}
                         <br><span class="text-danger">Letzter Fehler: {{ backup_settings.drive_last_error }}</span>
                     {% endif %}
@@ -338,6 +341,12 @@
         {% endif %}
 
         {% if google_drive.connected %}
+            <form method="post" action="{{ url_for('admin_backup_google_test') }}" class="mt-3 d-inline-block">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline-success">
+                    <i class="bi bi-check2-circle"></i> Drive-Verbindung prüfen
+                </button>
+            </form>
             <form method="post" action="{{ url_for('admin_backup_google_disconnect') }}" class="mt-3">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-outline-secondary"
@@ -361,6 +370,7 @@
                     <li>In der Google Cloud Console ein Projekt öffnen oder neu erstellen.</li>
                     <li>Unter <strong>APIs & Dienste</strong> die <strong>Google Drive API</strong> aktivieren.</li>
                     <li>Unter <strong>OAuth-Zustimmungsbildschirm</strong> die App konfigurieren. Für private Nutzung genügt meist Testmodus; deinen Google-Account als Testnutzer hinzufügen.</li>
+                    <li>Für dauerhafte Backups über Monate/Jahre den Veröffentlichungsstatus auf <strong>In production</strong> stellen. Im Google-Testmodus können Refresh-Tokens nach kurzer Zeit ablaufen.</li>
                     <li>Bei den Berechtigungen den Scope <code>https://www.googleapis.com/auth/drive.file</code> verwenden.</li>
                     <li>Unter <strong>Anmeldedaten</strong> einen <strong>OAuth-Client</strong> vom Typ <strong>Webanwendung</strong> erstellen.</li>
                     <li>Diese Redirect-URI als autorisierte Weiterleitungs-URI eintragen:<br>
@@ -374,7 +384,7 @@
                 </ol>
                 <div class="alert alert-warning mb-0">
                     <i class="bi bi-shield-lock"></i>
-                    OAuth Client-JSON und Token enthalten Zugangsdaten. Sie werden lokal im Ordner <code>instance/</code> gespeichert und dürfen nicht ins Git-Repository.
+                    OAuth Client-JSON und Token enthalten Zugangsdaten. Sie werden lokal im Ordner <code>instance/</code> gespeichert und dürfen nicht ins Git-Repository. Für zuverlässige Langzeit-Backups regelmäßig den Button <strong>Drive-Verbindung prüfen</strong> nutzen.
                 </div>
             </div>
             <div class="modal-footer">

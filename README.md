@@ -72,6 +72,10 @@ EEG_GOOGLE_OAUTH_REDIRECT_URI=https://deine-domain.example/admin/backup/google/c
 ```
 
 `instance/` ist vom Git-Repository ausgeschlossen.
+Für dauerhafte automatische Backups sollte der OAuth-Zustimmungsbildschirm in
+Google Cloud auf **In production** stehen; im Testmodus können Refresh-Tokens
+nach kurzer Zeit ablaufen. Die Backup-Seite enthält einen Button
+**Drive-Verbindung prüfen**, der Token-Refresh und Drive-API-Zugriff testet.
 
 ## Dateistruktur
 
