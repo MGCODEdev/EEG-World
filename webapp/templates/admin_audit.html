@@ -24,6 +24,8 @@
     .badge-backup_settings_update, .badge-backup_manual, .badge-backup_manual_failed,
     .badge-backup_auto, .badge-backup_email, .badge-backup_email_failed,
     .badge-backup_email_manual, .badge-backup_email_manual_failed { background: #607d8b; color: #fff; }
+    .badge-database_quality_check, .badge-database_quality_check_failed,
+    .badge-database_maintenance, .badge-database_maintenance_failed { background: #0f766e; color: #fff; }
     .badge-portal_data_update { background: #009688; color: #fff; }
     .audit-stat { text-align: center; padding: 1rem; }
     .audit-stat .num { font-size: 1.8rem; font-weight: 700; color: #17252a; }
@@ -170,6 +172,10 @@
                             'backup_email_failed': 'Backup-Mail fehlgeschlagen',
                             'backup_email_manual': 'Backup-Mail manuell',
                             'backup_email_manual_failed': 'Backup-Mail fehlgeschlagen',
+                            'database_quality_check': 'DB-Qualitätscheck',
+                            'database_quality_check_failed': 'DB-Check fehlgeschlagen',
+                            'database_maintenance': 'DB-Wartung',
+                            'database_maintenance_failed': 'DB-Wartung fehlgeschlagen',
                             'portal_data_update': 'Stammdaten aktualisiert',
                         } %}
                         <span class="audit-badge badge-{{ action }}">
@@ -190,6 +196,7 @@
                             {% elif action == 'invite_accept' %}<i class="bi bi-check-circle"></i>
                             {% elif action in ('settings_update',) %}<i class="bi bi-gear"></i>
                             {% elif action in ('backup_download','backup_restore','backup_restore_failed','backup_settings_update','backup_manual','backup_manual_failed','backup_auto','backup_email','backup_email_failed','backup_email_manual','backup_email_manual_failed') %}<i class="bi bi-archive"></i>
+                            {% elif action in ('database_quality_check','database_quality_check_failed','database_maintenance','database_maintenance_failed') %}<i class="bi bi-database"></i>
                             {% elif action == 'portal_data_update' %}<i class="bi bi-pencil"></i>
                             {% else %}<i class="bi bi-dot"></i>
                             {% endif %}

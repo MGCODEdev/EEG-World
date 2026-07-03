@@ -816,6 +816,7 @@ _AUDIT_PAGE_ENDPOINTS = {
     'reports': 'Reports',
     'settings': 'Einstellungen',
     'admin_backup': 'Backup',
+    'admin_database': 'Datenbank-Wartung',
     'admin_users': 'Benutzerverwaltung',
     'payments': 'Überweisungen',
     'portal_dashboard': 'Portal: Übersicht',
@@ -2913,6 +2914,330 @@ def backup_restore():
         os.unlink(tmp.name)
 
     return redirect(url_for('admin_backup'))
+
+
+# === Datenbank-Wartung ===
+
+def _quote_identifier(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _table_exists(conn, table_name):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,)
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn, table_name, column_name):
+    if not _table_exists(conn, table_name):
+        return False
+    return any(row['name'] == column_name for row in conn.execute(f"PRAGMA table_info({_quote_identifier(table_name)})"))
+
+
+def get_database_stats():
+    db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+    wal_path = DB_PATH + '-wal'
+    shm_path = DB_PATH + '-shm'
+    stats = {
+        'db_path': DB_PATH,
+        'db_size': db_size,
+        'wal_size': os.path.getsize(wal_path) if os.path.exists(wal_path) else 0,
+        'shm_size': os.path.getsize(shm_path) if os.path.exists(shm_path) else 0,
+        'page_count': 0,
+        'page_size': 0,
+        'freelist_count': 0,
+        'fragmentation_mb': 0,
+        'tables': [],
+    }
+    if not os.path.exists(DB_PATH):
+        return stats
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        stats['page_count'] = conn.execute("PRAGMA page_count").fetchone()[0]
+        stats['page_size'] = conn.execute("PRAGMA page_size").fetchone()[0]
+        stats['freelist_count'] = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        stats['fragmentation_mb'] = stats['freelist_count'] * stats['page_size'] / 1024 / 1024
+        tables = conn.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """).fetchall()
+        for table in tables:
+            name = table['name']
+            count = conn.execute(f"SELECT COUNT(*) FROM {_quote_identifier(name)}").fetchone()[0]
+            stats['tables'].append({'name': name, 'count': count})
+    return stats
+
+
+def _quality_result(title, status, detail, count=None):
+    return {
+        'title': title,
+        'status': status,
+        'detail': detail,
+        'count': count,
+    }
+
+
+def _quality_count(conn, title, sql, error_detail, ok_detail='Keine Auffälligkeiten gefunden.'):
+    count = conn.execute(sql).fetchone()[0]
+    status = 'ok' if count == 0 else 'warning'
+    detail = ok_detail if count == 0 else error_detail
+    return _quality_result(title, status, detail, count)
+
+
+def run_database_quality_check():
+    results = []
+    with BACKUP_JOB_LOCK:
+        with sqlite3.connect(DB_PATH, timeout=60) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+
+            integrity_rows = [row[0] for row in conn.execute("PRAGMA integrity_check").fetchall()]
+            if integrity_rows == ['ok']:
+                results.append(_quality_result('SQLite Integritätsprüfung', 'ok', 'Datenbankdatei ist konsistent.', 0))
+            else:
+                results.append(_quality_result('SQLite Integritätsprüfung', 'error', '; '.join(integrity_rows[:5]), len(integrity_rows)))
+
+            fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_rows:
+                results.append(_quality_result('Fremdschlüsselprüfung', 'error', f'{len(fk_rows)} verletzte Referenzen gefunden.', len(fk_rows)))
+            else:
+                results.append(_quality_result('Fremdschlüsselprüfung', 'ok', 'Keine verletzten Fremdschlüssel gefunden.', 0))
+
+            if _table_exists(conn, 'invoice_items'):
+                results.append(_quality_count(
+                    conn,
+                    'Abrechnungspositionen ohne Abrechnung',
+                    """SELECT COUNT(*) FROM invoice_items ii
+                       LEFT JOIN invoices i ON i.id = ii.invoice_id
+                       WHERE i.id IS NULL""",
+                    'Abrechnungspositionen verweisen auf gelöschte oder fehlende Abrechnungen.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Abrechnungspositionen ohne Mitglied',
+                    """SELECT COUNT(*) FROM invoice_items ii
+                       LEFT JOIN members m ON m.id = ii.member_id
+                       WHERE m.id IS NULL""",
+                    'Abrechnungspositionen verweisen auf gelöschte oder fehlende Mitglieder.'
+                ))
+
+            if _table_exists(conn, 'email_log'):
+                results.append(_quality_count(
+                    conn,
+                    'E-Mail-Log ohne Abrechnung',
+                    """SELECT COUNT(*) FROM email_log el
+                       LEFT JOIN invoices i ON i.id = el.invoice_id
+                       WHERE el.invoice_id IS NOT NULL AND i.id IS NULL""",
+                    'E-Mail-Protokolle verweisen auf fehlende Abrechnungen.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'E-Mail-Log ohne Mitglied',
+                    """SELECT COUNT(*) FROM email_log el
+                       LEFT JOIN members m ON m.id = el.member_id
+                       WHERE el.member_id IS NOT NULL AND m.id IS NULL""",
+                    'E-Mail-Protokolle verweisen auf fehlende Mitglieder.'
+                ))
+
+            if _table_exists(conn, 'contracts'):
+                results.append(_quality_count(
+                    conn,
+                    'Verträge ohne Mitglied',
+                    """SELECT COUNT(*) FROM contracts c
+                       LEFT JOIN members m ON m.id = c.member_id
+                       WHERE m.id IS NULL""",
+                    'Verträge verweisen auf fehlende Mitglieder.'
+                ))
+
+            if _table_exists(conn, 'newsletter_log'):
+                results.append(_quality_count(
+                    conn,
+                    'Newsletter-Log ohne Newsletter',
+                    """SELECT COUNT(*) FROM newsletter_log nl
+                       LEFT JOIN newsletters n ON n.id = nl.newsletter_id
+                       WHERE n.id IS NULL""",
+                    'Newsletter-Protokolle verweisen auf fehlende Newsletter.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Newsletter-Log ohne Mitglied',
+                    """SELECT COUNT(*) FROM newsletter_log nl
+                       LEFT JOIN members m ON m.id = nl.member_id
+                       WHERE m.id IS NULL""",
+                    'Newsletter-Protokolle verweisen auf fehlende Mitglieder.'
+                ))
+
+            if _column_exists(conn, 'users', 'member_id'):
+                results.append(_quality_count(
+                    conn,
+                    'Benutzer ohne zugeordnetes Mitglied',
+                    """SELECT COUNT(*) FROM users u
+                       LEFT JOIN members m ON m.id = u.member_id
+                       WHERE u.member_id IS NOT NULL AND m.id IS NULL""",
+                    'Benutzerkonten verweisen auf fehlende Mitglieder.'
+                ))
+
+            if _table_exists(conn, 'members'):
+                results.append(_quality_count(
+                    conn,
+                    'Aktive Mitglieder ohne Zählpunkt',
+                    """SELECT COUNT(*) FROM members
+                       WHERE active=1
+                         AND COALESCE(TRIM(bezug_zp), '') = ''
+                         AND COALESCE(TRIM(einspeiser_zp), '') = ''""",
+                    'Aktive Mitglieder ohne Bezugs- oder Einspeise-Zählpunkt gefunden.',
+                    ok_detail='Alle aktiven Mitglieder haben mindestens einen Zählpunkt.'
+                ))
+
+            if _table_exists(conn, 'measurements'):
+                results.append(_quality_count(
+                    conn,
+                    'Messwerte ohne Import-Batch',
+                    """SELECT COUNT(*) FROM measurements m
+                       LEFT JOIN import_batches b ON b.id = m.batch_id
+                       WHERE b.id IS NULL""",
+                    'Messwerte verweisen auf fehlende Import-Batches.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Messwerte ohne Meter-Code',
+                    """SELECT COUNT(*) FROM measurements m
+                       LEFT JOIN meter_codes mc ON mc.id = m.meter_code_id
+                       WHERE mc.id IS NULL""",
+                    'Messwerte verweisen auf fehlende Meter-Codes.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Messwerte mit ungültigem Zeitintervall',
+                    """SELECT COUNT(*) FROM measurements
+                       WHERE timestamp_start >= timestamp_end OR interval_minutes <= 0""",
+                    'Messwerte mit ungültigem Zeitraum oder Intervall gefunden.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Messwerte mit negativer Energie',
+                    "SELECT COUNT(*) FROM measurements WHERE value_kwh < 0",
+                    'Negative kWh-Werte gefunden.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Messwerte ohne Qualitätskennzeichen',
+                    "SELECT COUNT(*) FROM measurements WHERE COALESCE(TRIM(quality), '') = ''",
+                    'Messwerte ohne Qualitätskennzeichen gefunden.'
+                ))
+
+            if _table_exists(conn, 'overview_totals'):
+                results.append(_quality_count(
+                    conn,
+                    'Übersichtswerte ohne Import-Batch',
+                    """SELECT COUNT(*) FROM overview_totals ot
+                       LEFT JOIN import_batches b ON b.id = ot.batch_id
+                       WHERE b.id IS NULL""",
+                    'Übersichtswerte verweisen auf fehlende Import-Batches.'
+                ))
+                results.append(_quality_count(
+                    conn,
+                    'Übersichtswerte ohne Meter-Code',
+                    """SELECT COUNT(*) FROM overview_totals ot
+                       LEFT JOIN meter_codes mc ON mc.id = ot.meter_code_id
+                       WHERE mc.id IS NULL""",
+                    'Übersichtswerte verweisen auf fehlende Meter-Codes.'
+                ))
+
+    has_error = any(item['status'] == 'error' for item in results)
+    has_warning = any(item['status'] == 'warning' for item in results)
+    summary = 'Fehler gefunden' if has_error else ('Auffälligkeiten gefunden' if has_warning else 'Keine Fehler gefunden')
+    return {
+        'checked_at': local_now(),
+        'summary': summary,
+        'status': 'error' if has_error else ('warning' if has_warning else 'ok'),
+        'results': results,
+    }
+
+
+def run_database_maintenance(action):
+    action_labels = {
+        'checkpoint': 'WAL-Checkpoint',
+        'analyze': 'Statistiken aktualisieren',
+        'optimize': 'SQLite optimieren',
+        'vacuum': 'Defragmentierung',
+        'full': 'Komplette Wartung',
+    }
+    if action not in action_labels:
+        raise ValueError('Unbekannte Wartungsaktion.')
+
+    backup_filename = None
+    if action in ('vacuum', 'full'):
+        _, backup_filename = create_local_backup('eeg_manual')
+
+    before = get_database_stats()
+    close_db()
+    with BACKUP_JOB_LOCK:
+        with sqlite3.connect(DB_PATH, timeout=120, isolation_level=None) as conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            if action in ('checkpoint', 'full'):
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            if action in ('vacuum', 'full'):
+                conn.execute("VACUUM")
+            if action in ('analyze', 'full'):
+                conn.execute("ANALYZE")
+            if action in ('optimize', 'full'):
+                conn.execute("PRAGMA optimize")
+    after = get_database_stats()
+    return {
+        'action': action,
+        'label': action_labels[action],
+        'backup_filename': backup_filename,
+        'before_size': before['db_size'],
+        'after_size': after['db_size'],
+        'before_fragmentation': before['fragmentation_mb'],
+        'after_fragmentation': after['fragmentation_mb'],
+    }
+
+
+@app.route('/admin/database')
+@admin_required
+def admin_database():
+    """Admin-Seite fuer Datenbank-Wartung und Qualitaetscheck."""
+    return render_template('admin_database.html', stats=get_database_stats())
+
+
+@app.route('/admin/database/check', methods=['POST'])
+@admin_required
+def admin_database_check():
+    """Führt Integritäts- und Plausibilitätsprüfungen aus."""
+    try:
+        check_result = run_database_quality_check()
+        audit_log('database_quality_check', check_result['summary'])
+        flash(f'Datenbank-Qualitätscheck abgeschlossen: {check_result["summary"]}.', 'success' if check_result['status'] == 'ok' else 'warning')
+    except Exception as e:
+        check_result = None
+        audit_log('database_quality_check_failed', f'Datenbank-Qualitätscheck fehlgeschlagen: {e}')
+        flash(f'Qualitätscheck fehlgeschlagen: {e}', 'danger')
+    return render_template('admin_database.html', stats=get_database_stats(), check_result=check_result)
+
+
+@app.route('/admin/database/maintenance', methods=['POST'])
+@admin_required
+def admin_database_maintenance():
+    """Führt ausgewählte SQLite-Wartungsaktionen aus."""
+    action = request.form.get('maintenance_action', '')
+    try:
+        result = run_database_maintenance(action)
+        detail = f'{result["label"]} ausgeführt'
+        if result['backup_filename']:
+            detail += f' (Sicherungsbackup: {result["backup_filename"]})'
+        audit_log('database_maintenance', detail)
+        flash(f'{result["label"]} erfolgreich abgeschlossen.', 'success')
+    except Exception as e:
+        result = None
+        audit_log('database_maintenance_failed', f'Datenbank-Wartung fehlgeschlagen: {e}')
+        flash(f'Datenbank-Wartung fehlgeschlagen: {e}', 'danger')
+    return render_template('admin_database.html', stats=get_database_stats(), maintenance_result=result)
 
 
 # === Überweisungsliste / Forderungen ===

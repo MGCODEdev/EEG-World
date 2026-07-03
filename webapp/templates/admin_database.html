@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Datenbank{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-database"></i> Datenbank-Wartung</h2>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="h3 mb-0">{{ "%.1f"|format(stats.db_size / 1024 / 1024) }} MB</div>
+                <div class="text-muted small text-uppercase">Datenbankgröße</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="h3 mb-0">{{ "%.1f"|format(stats.wal_size / 1024 / 1024) }} MB</div>
+                <div class="text-muted small text-uppercase">WAL-Datei</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="h3 mb-0">{{ "%.1f"|format(stats.fragmentation_mb) }} MB</div>
+                <div class="text-muted small text-uppercase">Freier DB-Speicher</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body text-center">
+                <div class="h3 mb-0">{{ stats.tables|length }}</div>
+                <div class="text-muted small text-uppercase">Tabellen</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header bg-white">
+                <strong><i class="bi bi-search"></i> Qualitätscheck</strong>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    Prüft SQLite-Integrität, Fremdschlüssel und typische Datenfehler wie verwaiste Abrechnungen, fehlende Mitglieder oder ungültige Messwerte.
+                </p>
+                <form method="post" action="{{ url_for('admin_database_check') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-shield-check"></i> Qualitätscheck starten
+                    </button>
+                </form>
+
+                {% if check_result %}
+                    <hr>
+                    <div class="alert alert-{{ 'success' if check_result.status == 'ok' else ('danger' if check_result.status == 'error' else 'warning') }}">
+                        <strong>{{ check_result.summary }}</strong>
+                        <span class="ms-2">Geprüft am {{ check_result.checked_at|localdatetime }}</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Prüfung</th>
+                                    <th style="width:120px;">Status</th>
+                                    <th>Detail</th>
+                                    <th class="text-end" style="width:90px;">Anzahl</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for item in check_result.results %}
+                                    <tr>
+                                        <td>{{ item.title }}</td>
+                                        <td>
+                                            {% if item.status == 'ok' %}
+                                                <span class="badge bg-success"><i class="bi bi-check-circle"></i> OK</span>
+                                            {% elif item.status == 'error' %}
+                                                <span class="badge bg-danger"><i class="bi bi-x-circle"></i> Fehler</span>
+                                            {% else %}
+                                                <span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle"></i> Hinweis</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-muted">{{ item.detail }}</td>
+                                        <td class="text-end">{{ item.count if item.count is not none else '—' }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header bg-white">
+                <strong><i class="bi bi-tools"></i> Wartung</strong>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    Wartungsaktionen können bei großen Datenbanken einige Zeit dauern. Defragmentierung erstellt vorher automatisch ein lokales Backup.
+                </p>
+                <form method="post" action="{{ url_for('admin_database_maintenance') }}" class="d-grid gap-2">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" name="maintenance_action" value="checkpoint" class="btn btn-outline-primary">
+                        <i class="bi bi-arrow-repeat"></i> WAL-Checkpoint ausführen
+                    </button>
+                    <button type="submit" name="maintenance_action" value="analyze" class="btn btn-outline-primary">
+                        <i class="bi bi-bar-chart"></i> Statistiken aktualisieren
+                    </button>
+                    <button type="submit" name="maintenance_action" value="optimize" class="btn btn-outline-primary">
+                        <i class="bi bi-magic"></i> SQLite optimieren
+                    </button>
+                    <button type="submit" name="maintenance_action" value="vacuum" class="btn btn-outline-warning"
+                            onclick="return confirm('Defragmentierung startet VACUUM und erstellt vorher ein lokales Backup. Fortfahren?')">
+                        <i class="bi bi-arrows-collapse"></i> Defragmentieren
+                    </button>
+                    <button type="submit" name="maintenance_action" value="full" class="btn btn-warning"
+                            onclick="return confirm('Komplette Wartung startet Checkpoint, VACUUM, ANALYZE und PRAGMA optimize. Vorher wird ein lokales Backup erstellt. Fortfahren?')">
+                        <i class="bi bi-wrench-adjustable"></i> Komplette Wartung
+                    </button>
+                </form>
+
+                {% if maintenance_result %}
+                    <hr>
+                    <div class="alert alert-success mb-0">
+                        <strong>{{ maintenance_result.label }} abgeschlossen.</strong><br>
+                        Größe vorher: {{ "%.1f"|format(maintenance_result.before_size / 1024 / 1024) }} MB ·
+                        nachher: {{ "%.1f"|format(maintenance_result.after_size / 1024 / 1024) }} MB<br>
+                        Freier DB-Speicher vorher: {{ "%.1f"|format(maintenance_result.before_fragmentation) }} MB ·
+                        nachher: {{ "%.1f"|format(maintenance_result.after_fragmentation) }} MB
+                        {% if maintenance_result.backup_filename %}
+                            <br>Sicherungsbackup: <code>{{ maintenance_result.backup_filename }}</code>
+                        {% endif %}
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header bg-white">
+        <strong><i class="bi bi-table"></i> Tabellenübersicht</strong>
+    </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-sm mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Tabelle</th>
+                        <th class="text-end">Datensätze</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for table in stats.tables %}
+                        <tr>
+                            <td><code>{{ table.name }}</code></td>
+                            <td class="text-end">{{ "{:,}".format(table.count).replace(",", ".") }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="2" class="text-muted text-center py-3">Keine Tabellen gefunden.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header bg-white">
+        <strong><i class="bi bi-info-circle"></i> Speicherort</strong>
+    </div>
+    <div class="card-body">
+        <code>{{ stats.db_path }}</code>
+    </div>
+</div>
+{% endblock %}
