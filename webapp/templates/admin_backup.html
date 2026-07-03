@@ -221,7 +221,7 @@
             {% elif not google_drive.client_configured %}
                 <div class="alert alert-warning mt-3 mb-0">
                     <i class="bi bi-exclamation-triangle"></i>
-                    OAuth Client-Datei fehlt: <code>{{ google_drive.client_file }}</code>
+                    OAuth Client-Konfiguration fehlt. Du kannst sie unten hochladen oder einfügen.
                 </div>
             {% else %}
                 <div class="alert alert-info mt-3 mb-0">
@@ -236,6 +236,61 @@
                 </div>
             {% endif %}
         </form>
+
+        <hr>
+        <div class="row g-4">
+            <div class="col-lg-6">
+                <form method="post" action="{{ url_for('admin_backup_google_client_config') }}" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <h6><i class="bi bi-google"></i> Google OAuth Client einrichten</h6>
+                    <div class="mb-2">
+                        <label class="form-label" for="google_client_file">Client-JSON Datei</label>
+                        <input type="file" class="form-control" id="google_client_file" name="google_client_file" accept=".json,application/json">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="google_client_json">oder Client-JSON einfügen</label>
+                        <textarea class="form-control font-monospace" id="google_client_json" name="google_client_json" rows="4" placeholder='{"web":{"client_id":"...","client_secret":"..."}}'></textarea>
+                    </div>
+                    <div class="text-muted small mb-2">
+                        Speicherort: <code>{{ google_drive.client_file }}</code>
+                    </div>
+                    <button type="submit" class="btn btn-outline-primary">
+                        <i class="bi bi-save"></i> Client-Konfiguration speichern
+                    </button>
+                </form>
+            </div>
+            <div class="col-lg-6">
+                <form method="post" action="{{ url_for('admin_backup_google_token') }}" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <h6><i class="bi bi-key"></i> Token hinterlegen</h6>
+                    <div class="mb-2">
+                        <label class="form-label" for="google_token_file">Token-JSON Datei</label>
+                        <input type="file" class="form-control" id="google_token_file" name="google_token_file" accept=".json,application/json">
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label" for="google_token_json">oder Token-JSON einfügen</label>
+                        <textarea class="form-control font-monospace" id="google_token_json" name="google_token_json" rows="4" placeholder='{"refresh_token":"...","client_id":"...","client_secret":"..."}'></textarea>
+                    </div>
+                    <div class="text-muted small mb-2">
+                        Speicherort: <code>{{ google_drive.token_file }}</code>
+                    </div>
+                    <button type="submit" class="btn btn-outline-primary">
+                        <i class="bi bi-key"></i> Token speichern
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        {% if google_drive.client_configured %}
+            <form method="post" action="{{ url_for('admin_backup_google_client_config_delete') }}" class="mt-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline-danger"
+                        onclick="return confirm('Google OAuth Client-Konfiguration und gespeicherten Token wirklich entfernen?')">
+                    <i class="bi bi-trash"></i> Google-Konfiguration entfernen
+                </button>
+            </form>
+        {% endif %}
+
         {% if google_drive.connected %}
             <form method="post" action="{{ url_for('admin_backup_google_disconnect') }}" class="mt-3">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

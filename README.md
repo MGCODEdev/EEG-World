@@ -60,8 +60,10 @@ Dafür wird OAuth verwendet; Google-Passwörter werden nicht in der App gespeich
 
 1. In der Google Cloud Console ein OAuth-Client vom Typ Webanwendung erstellen.
 2. Als Redirect-URI eintragen: `https://deine-domain.example/admin/backup/google/callback`
-3. Die Client-JSON lokal speichern, z. B. `/var/www/eeg/instance/google_client_secret.json`.
-4. In `.env` setzen:
+3. In der App unter **Backup** die Client-JSON hochladen oder einfügen.
+4. Danach unter **Backup** auf **Google verbinden** klicken, damit das OAuth-Token lokal gespeichert wird.
+
+Optional können feste Speicherpfade in `.env` gesetzt werden:
 
 ```bash
 EEG_GOOGLE_CLIENT_SECRETS=/var/www/eeg/instance/google_client_secret.json
@@ -69,7 +71,6 @@ EEG_GOOGLE_TOKEN_FILE=/var/www/eeg/instance/google_drive_token.json
 EEG_GOOGLE_OAUTH_REDIRECT_URI=https://deine-domain.example/admin/backup/google/callback
 ```
 
-Danach in der App unter **Backup** auf **Google verbinden** klicken.
 `instance/` ist vom Git-Repository ausgeschlossen.
 
 ## Dateistruktur

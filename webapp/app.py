@@ -6,6 +6,7 @@ import sys
 import sqlite3
 import secrets
 import re
+import json
 import threading
 import time
 from datetime import datetime, date, timezone
@@ -2606,6 +2607,64 @@ def _google_libs_available():
     return True
 
 
+def _write_private_json_file(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f'{path}.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, path)
+
+
+def _load_json_payload(file_field, text_field, label):
+    upload = request.files.get(file_field)
+    raw = ''
+    if upload and upload.filename:
+        raw = upload.read().decode('utf-8')
+    else:
+        raw = (request.form.get(text_field) or '').strip()
+    if not raw:
+        raise ValueError(f'{label} fehlt.')
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f'{label} ist kein gültiges JSON: {e}') from e
+
+
+def validate_google_client_config(payload):
+    if not isinstance(payload, dict):
+        raise ValueError('OAuth Client-Konfiguration muss ein JSON-Objekt sein.')
+    section_name = 'web' if isinstance(payload.get('web'), dict) else 'installed'
+    section = payload.get(section_name)
+    if not isinstance(section, dict):
+        raise ValueError('OAuth Client-JSON muss einen Bereich "web" oder "installed" enthalten.')
+    missing = [
+        key for key in ('client_id', 'client_secret', 'auth_uri', 'token_uri')
+        if not section.get(key)
+    ]
+    if missing:
+        raise ValueError(f'OAuth Client-JSON ist unvollständig: {", ".join(missing)} fehlt.')
+    return section_name
+
+
+def validate_google_token_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError('Token muss ein JSON-Objekt sein.')
+    missing = [
+        key for key in ('refresh_token', 'token_uri', 'client_id', 'client_secret')
+        if not payload.get(key)
+    ]
+    if missing:
+        raise ValueError(f'Token-JSON ist unvollständig: {", ".join(missing)} fehlt.')
+    try:
+        from google.oauth2.credentials import Credentials
+    except ImportError as e:
+        raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
+    Credentials.from_authorized_user_info(payload, GOOGLE_DRIVE_SCOPES)
+    return True
+
+
 def get_google_drive_status():
     token_exists = os.path.exists(GOOGLE_TOKEN_FILE)
     client_exists = os.path.exists(GOOGLE_CLIENT_SECRETS_FILE)
@@ -2967,6 +3026,47 @@ def admin_backup_google_connect():
         return redirect(url_for('admin_backup'))
 
 
+@app.route('/admin/backup/google/client-config', methods=['POST'])
+@admin_required
+def admin_backup_google_client_config():
+    """Speichert die Google OAuth Client-Konfiguration aus dem Webinterface."""
+    try:
+        payload = _load_json_payload('google_client_file', 'google_client_json', 'OAuth Client-JSON')
+        section_name = validate_google_client_config(payload)
+        _write_private_json_file(GOOGLE_CLIENT_SECRETS_FILE, payload)
+        if os.path.exists(GOOGLE_TOKEN_FILE):
+            os.remove(GOOGLE_TOKEN_FILE)
+        db = get_db()
+        _set_setting(db, 'backup_drive_enabled', 'false')
+        _set_setting(db, 'backup_drive_last_error', '')
+        db.commit()
+        audit_log('backup_drive_client_config', f'Google OAuth Client-Konfiguration gespeichert ({section_name})')
+        flash('Google OAuth Client-Konfiguration gespeichert. Ein vorhandener Token wurde zur Sicherheit entfernt; bitte Google Drive neu verbinden.', 'success')
+    except Exception as e:
+        audit_log('backup_drive_client_config_failed', f'Google OAuth Client-Konfiguration fehlgeschlagen: {e}')
+        flash(f'Google OAuth Client-Konfiguration konnte nicht gespeichert werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/token', methods=['POST'])
+@admin_required
+def admin_backup_google_token():
+    """Speichert ein vorhandenes Google OAuth Token-JSON aus dem Webinterface."""
+    try:
+        payload = _load_json_payload('google_token_file', 'google_token_json', 'Google Token-JSON')
+        validate_google_token_payload(payload)
+        _write_private_json_file(GOOGLE_TOKEN_FILE, payload)
+        db = get_db()
+        _set_setting(db, 'backup_drive_last_error', '')
+        db.commit()
+        audit_log('backup_drive_token', 'Google Drive Token hinterlegt')
+        flash('Google Drive Token wurde gespeichert.', 'success')
+    except Exception as e:
+        audit_log('backup_drive_token_failed', f'Google Drive Token konnte nicht gespeichert werden: {e}')
+        flash(f'Google Drive Token konnte nicht gespeichert werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
 @app.route('/admin/backup/google/callback')
 @admin_required
 def admin_backup_google_callback():
@@ -2990,6 +3090,26 @@ def admin_backup_google_callback():
     except Exception as e:
         audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
         flash(f'Google Drive konnte nicht verbunden werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/client-config/delete', methods=['POST'])
+@admin_required
+def admin_backup_google_client_config_delete():
+    """Entfernt lokale Google Client- und Token-Dateien."""
+    try:
+        for path in (GOOGLE_TOKEN_FILE, GOOGLE_CLIENT_SECRETS_FILE):
+            if os.path.exists(path):
+                os.remove(path)
+        db = get_db()
+        _set_setting(db, 'backup_drive_enabled', 'false')
+        _set_setting(db, 'backup_drive_last_error', '')
+        db.commit()
+        audit_log('backup_drive_client_config_delete', 'Google Drive Client-Konfiguration und Token entfernt')
+        flash('Google Drive Client-Konfiguration und Token wurden entfernt.', 'success')
+    except Exception as e:
+        audit_log('backup_drive_client_config_delete_failed', f'Google Drive Client-Konfiguration konnte nicht entfernt werden: {e}')
+        flash(f'Google Drive Client-Konfiguration konnte nicht entfernt werden: {e}', 'danger')
     return redirect(url_for('admin_backup'))
 
 
