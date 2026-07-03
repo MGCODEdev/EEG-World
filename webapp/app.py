@@ -9,6 +9,8 @@ import re
 import json
 import threading
 import time
+import base64
+import hashlib
 from datetime import datetime, date, timezone
 from functools import wraps
 from email.header import Header
@@ -58,6 +60,9 @@ app.config['SERVER_NAME_PUBLIC'] = os.environ.get('EEG_SERVER_NAME_PUBLIC', 'loc
 app.config['SESSION_COOKIE_SECURE'] = _IS_PRODUCTION
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_PATH'] = '/'
+if os.environ.get('EEG_SESSION_COOKIE_DOMAIN'):
+    app.config['SESSION_COOKIE_DOMAIN'] = os.environ['EEG_SESSION_COOKIE_DOMAIN']
 
 DEFAULT_ORG_NAME = os.environ.get('EEG_ORG_NAME', 'EEG Portal')
 DEFAULT_ORG_EMAIL = os.environ.get('EEG_ORG_EMAIL', 'office@example.org')
@@ -67,7 +72,7 @@ DEFAULT_ORG_LEGAL = os.environ.get('EEG_ORG_LEGAL', 'Vereinsdaten bitte konfigur
 
 # Proxy-Fix: Hinter HAProxy/Nginx die echte Client-IP lesen
 # x_for=1: Ein Proxy-Level (HAProxy/Nginx) leitet X-Forwarded-For weiter
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
 
 csrf = CSRFProtect(app)
 
@@ -442,6 +447,14 @@ def init_db():
     db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_recipient', ?)", (DEFAULT_ORG_NAME,))
     for key, value in BACKUP_SETTING_DEFAULTS.items():
         db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    db.execute("""CREATE TABLE IF NOT EXISTS oauth_pkce_sessions (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER,
+        state TEXT NOT NULL,
+        code_verifier TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )""")
     # Newsletter-Tabellen
     db.execute("""CREATE TABLE IF NOT EXISTS newsletters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2712,6 +2725,54 @@ def validate_google_token_payload(payload):
     return True
 
 
+def _pkce_code_verifier():
+    return base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b'=').decode('ascii')
+
+
+def _pkce_code_challenge(code_verifier):
+    digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
+
+
+def _oauth_verifier_fingerprint(code_verifier):
+    return hashlib.sha256(code_verifier.encode('ascii')).hexdigest()[:12]
+
+
+def _store_google_oauth_pkce(correlation_id, state, code_verifier):
+    db = get_db()
+    db.execute("DELETE FROM oauth_pkce_sessions WHERE expires_at <= ?", (utc_now_string(),))
+    db.execute(
+        """INSERT OR REPLACE INTO oauth_pkce_sessions
+           (id, user_id, state, code_verifier, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, datetime(?, '+15 minutes'))""",
+        (
+            correlation_id,
+            current_user.id if current_user and current_user.is_authenticated else None,
+            state,
+            code_verifier,
+            utc_now_string(),
+            utc_now_string(),
+        )
+    )
+    db.commit()
+
+
+def _pop_google_oauth_pkce(correlation_id, state):
+    db = get_db()
+    row = db.execute(
+        """SELECT * FROM oauth_pkce_sessions
+           WHERE id=? AND state=? AND expires_at > ?""",
+        (correlation_id, state, utc_now_string())
+    ).fetchone()
+    db.execute("DELETE FROM oauth_pkce_sessions WHERE id=?", (correlation_id,))
+    db.commit()
+    if not row:
+        return None
+    if row['user_id'] and current_user and current_user.is_authenticated and row['user_id'] != current_user.id:
+        return None
+    return row['code_verifier']
+
+
 def get_google_drive_status():
     token_exists = os.path.exists(GOOGLE_TOKEN_FILE)
     client_exists = os.path.exists(GOOGLE_CLIENT_SECRETS_FILE)
@@ -2772,9 +2833,7 @@ def _load_google_drive_credentials(refresh=False):
     credentials = Credentials.from_authorized_user_file(GOOGLE_TOKEN_FILE, GOOGLE_DRIVE_SCOPES)
     if refresh and credentials and credentials.expired and credentials.refresh_token:
         credentials.refresh(GoogleAuthRequest())
-        os.makedirs(os.path.dirname(GOOGLE_TOKEN_FILE), exist_ok=True)
-        with open(GOOGLE_TOKEN_FILE, 'w') as token_file:
-            token_file.write(credentials.to_json())
+        _write_private_json_file(GOOGLE_TOKEN_FILE, json.loads(credentials.to_json()))
     return credentials
 
 
@@ -3079,12 +3138,33 @@ def admin_backup_google_connect():
     """Startet den Google OAuth-Flow fuer Drive-Backups."""
     try:
         flow = _google_drive_flow()
+        correlation_id = secrets.token_hex(12)
+        oauth_state = secrets.token_urlsafe(32)
+        code_verifier = _pkce_code_verifier()
+        code_challenge = _pkce_code_challenge(code_verifier)
+        _store_google_oauth_pkce(correlation_id, oauth_state, code_verifier)
+        session['google_drive_oauth_state'] = oauth_state
+        session['google_drive_oauth_correlation_id'] = correlation_id
+        session.modified = True
+        app.logger.info(
+            'Google Drive OAuth start | correlation=%s | verifier_stored=%s | verifier_fp=%s | redirect_uri=%s | secure_cookie=%s | samesite=%s',
+            correlation_id,
+            True,
+            _oauth_verifier_fingerprint(code_verifier),
+            _google_redirect_uri(),
+            app.config.get('SESSION_COOKIE_SECURE'),
+            app.config.get('SESSION_COOKIE_SAMESITE'),
+        )
         authorization_url, state = flow.authorization_url(
+            state=oauth_state,
             access_type='offline',
             include_granted_scopes='true',
             prompt='consent',
+            code_challenge=code_challenge,
+            code_challenge_method='S256',
         )
-        session['google_drive_oauth_state'] = state
+        if state != oauth_state:
+            app.logger.warning('Google Drive OAuth state changed by library | correlation=%s', correlation_id)
         return redirect(authorization_url)
     except Exception as e:
         audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
@@ -3141,17 +3221,32 @@ def admin_backup_google_token():
 @admin_required
 def admin_backup_google_callback():
     """OAuth Callback fuer Google Drive."""
+    correlation_id = session.get('google_drive_oauth_correlation_id')
+    code_verifier = None
     try:
         state = session.get('google_drive_oauth_state')
-        if not state or state != request.args.get('state'):
+        callback_state = request.args.get('state')
+        verifier_found = False
+        if state and callback_state and correlation_id:
+            code_verifier = _pop_google_oauth_pkce(correlation_id, callback_state)
+            verifier_found = bool(code_verifier)
+        app.logger.info(
+            'Google Drive OAuth callback | correlation=%s | session_state_present=%s | state_matches=%s | verifier_found=%s | scheme=%s | host=%s',
+            correlation_id or 'missing',
+            bool(state),
+            bool(state and state == callback_state),
+            verifier_found,
+            request.scheme,
+            request.host,
+        )
+        if not state or state != callback_state:
             raise RuntimeError('OAuth-State ist ungültig.')
+        if not code_verifier:
+            raise RuntimeError('PKCE Code-Verifier wurde in der Session nicht gefunden. Bitte Google Drive erneut verbinden.')
         flow = _google_drive_flow()
-        flow.fetch_token(authorization_response=request.url)
+        flow.fetch_token(authorization_response=request.url, code_verifier=code_verifier)
         credentials = flow.credentials
-        os.makedirs(os.path.dirname(GOOGLE_TOKEN_FILE), exist_ok=True)
-        with open(GOOGLE_TOKEN_FILE, 'w') as token_file:
-            token_file.write(credentials.to_json())
-        session.pop('google_drive_oauth_state', None)
+        _write_private_json_file(GOOGLE_TOKEN_FILE, json.loads(credentials.to_json()))
         db = get_db()
         _set_setting(db, 'backup_drive_last_error', '')
         db.commit()
@@ -3160,6 +3255,10 @@ def admin_backup_google_callback():
     except Exception as e:
         audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
         flash(f'Google Drive konnte nicht verbunden werden: {e}', 'danger')
+    finally:
+        session.pop('google_drive_oauth_state', None)
+        session.pop('google_drive_oauth_correlation_id', None)
+        session.modified = True
     return redirect(url_for('admin_backup'))
 
 
