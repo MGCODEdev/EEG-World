@@ -24,7 +24,10 @@
     .badge-backup_settings_update, .badge-backup_manual, .badge-backup_manual_failed,
     .badge-backup_auto, .badge-backup_email, .badge-backup_email_failed,
     .badge-backup_email_manual, .badge-backup_email_manual_failed,
-    .badge-backup_delete, .badge-backup_delete_failed { background: #607d8b; color: #fff; }
+    .badge-backup_delete, .badge-backup_delete_failed,
+    .badge-backup_drive_connect, .badge-backup_drive_connect_failed,
+    .badge-backup_drive_disconnect, .badge-backup_drive_disconnect_failed,
+    .badge-backup_drive_upload, .badge-backup_drive_failed { background: #607d8b; color: #fff; }
     .badge-database_quality_check, .badge-database_quality_check_failed,
     .badge-database_maintenance, .badge-database_maintenance_failed { background: #0f766e; color: #fff; }
     .badge-portal_data_update { background: #009688; color: #fff; }
@@ -175,6 +178,12 @@
                             'backup_email_manual_failed': 'Backup-Mail fehlgeschlagen',
                             'backup_delete': 'Backup gelöscht',
                             'backup_delete_failed': 'Backup-Löschung fehlgeschlagen',
+                            'backup_drive_connect': 'Google Drive verbunden',
+                            'backup_drive_connect_failed': 'Drive-Verbindung fehlgeschlagen',
+                            'backup_drive_disconnect': 'Google Drive getrennt',
+                            'backup_drive_disconnect_failed': 'Drive-Trennung fehlgeschlagen',
+                            'backup_drive_upload': 'Drive-Upload',
+                            'backup_drive_failed': 'Drive-Upload fehlgeschlagen',
                             'database_quality_check': 'DB-Qualitätscheck',
                             'database_quality_check_failed': 'DB-Check fehlgeschlagen',
                             'database_maintenance': 'DB-Wartung',
@@ -198,7 +207,7 @@
                             {% elif action in ('contract_upload','contract_download','contract_delete') %}<i class="bi bi-file-earmark-text"></i>
                             {% elif action == 'invite_accept' %}<i class="bi bi-check-circle"></i>
                             {% elif action in ('settings_update',) %}<i class="bi bi-gear"></i>
-                            {% elif action in ('backup_download','backup_restore','backup_restore_failed','backup_settings_update','backup_manual','backup_manual_failed','backup_auto','backup_email','backup_email_failed','backup_email_manual','backup_email_manual_failed','backup_delete','backup_delete_failed') %}<i class="bi bi-archive"></i>
+                            {% elif action in ('backup_download','backup_restore','backup_restore_failed','backup_settings_update','backup_manual','backup_manual_failed','backup_auto','backup_email','backup_email_failed','backup_email_manual','backup_email_manual_failed','backup_delete','backup_delete_failed','backup_drive_connect','backup_drive_connect_failed','backup_drive_disconnect','backup_drive_disconnect_failed','backup_drive_upload','backup_drive_failed') %}<i class="bi bi-archive"></i>
                             {% elif action in ('database_quality_check','database_quality_check_failed','database_maintenance','database_maintenance_failed') %}<i class="bi bi-database"></i>
                             {% elif action == 'portal_data_update' %}<i class="bi bi-pencil"></i>
                             {% else %}<i class="bi bi-dot"></i>

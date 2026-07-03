@@ -180,7 +180,71 @@
             {% if not smtp_configured %}
                 <span class="text-muted ms-2">SMTP ist noch nicht vollständig konfiguriert.</span>
             {% endif %}
+
+            <hr>
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="backup_drive_enabled" name="backup_drive_enabled" value="1"
+                               {% if backup_settings.drive_enabled %}checked{% endif %}
+                               {% if not google_drive.connected %}disabled{% endif %}>
+                        <label class="form-check-label" for="backup_drive_enabled">Google-Drive-Kopie</label>
+                    </div>
+                </div>
+                <div class="col-md-5">
+                    <label class="form-label" for="backup_drive_folder_id">Google Drive Ordner-ID</label>
+                    <input type="text" class="form-control" id="backup_drive_folder_id" name="backup_drive_folder_id"
+                           value="{{ backup_settings.drive_folder_id }}" placeholder="Leer = Meine Ablage">
+                </div>
+                <div class="col-md-4">
+                    <div class="d-flex gap-2 flex-wrap">
+                        {% if google_drive.connected %}
+                            <span class="badge bg-success align-self-center"><i class="bi bi-check-circle"></i> Verbunden</span>
+                        {% else %}
+                            <span class="badge bg-secondary align-self-center"><i class="bi bi-cloud-slash"></i> Nicht verbunden</span>
+                        {% endif %}
+                        {% if not google_drive.connected %}
+                            <a href="{{ url_for('admin_backup_google_connect') }}" class="btn btn-outline-primary">
+                                <i class="bi bi-google"></i> Google verbinden
+                            </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            {% if not google_drive.libs_available %}
+                <div class="alert alert-warning mt-3 mb-0">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    Google Drive Bibliotheken fehlen. Bitte <code>pip install -r requirements.txt</code> ausführen.
+                </div>
+            {% elif not google_drive.client_configured %}
+                <div class="alert alert-warning mt-3 mb-0">
+                    <i class="bi bi-exclamation-triangle"></i>
+                    OAuth Client-Datei fehlt: <code>{{ google_drive.client_file }}</code>
+                </div>
+            {% else %}
+                <div class="alert alert-info mt-3 mb-0">
+                    <i class="bi bi-info-circle"></i>
+                    Bei aktivierter Google-Drive-Kopie werden neue automatische Backups zusätzlich in Google Drive hochgeladen. Bereits vorhandene Dateien können unten einzeln kopiert werden.
+                    {% if backup_settings.drive_last_upload %}
+                        <br>Letzter Upload: {{ backup_settings.drive_last_upload|localdatetime }}
+                    {% endif %}
+                    {% if backup_settings.drive_last_error %}
+                        <br><span class="text-danger">Letzter Fehler: {{ backup_settings.drive_last_error }}</span>
+                    {% endif %}
+                </div>
+            {% endif %}
         </form>
+        {% if google_drive.connected %}
+            <form method="post" action="{{ url_for('admin_backup_google_disconnect') }}" class="mt-3">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline-secondary"
+                        onclick="return confirm('Google Drive Verbindung trennen und automatischen Drive-Upload deaktivieren?')">
+                    <i class="bi bi-x-circle"></i> Google Drive trennen
+                </button>
+            </form>
+        {% endif %}
     </div>
 </div>
 
@@ -209,6 +273,15 @@
                                 <td>{{ backup.created_at|localdatetime }}</td>
                                 <td class="text-end">{{ "%.1f"|format(backup.size / 1024 / 1024) }} MB</td>
                                 <td class="text-end">
+                                    <form method="post" action="{{ url_for('admin_backup_upload_drive') }}" class="d-inline">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <input type="hidden" name="backup_name" value="{{ backup.name }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-primary"
+                                                {% if not google_drive.connected %}disabled{% endif %}
+                                                onclick="return confirm('Backup {{ backup.name }} nach Google Drive kopieren?')">
+                                            <i class="bi bi-cloud-upload"></i> Drive
+                                        </button>
+                                    </form>
                                     <form method="post" action="{{ url_for('admin_backup_delete') }}" class="d-inline">
                                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                         <input type="hidden" name="backup_name" value="{{ backup.name }}">

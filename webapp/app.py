@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, send_file, jsonify, g, abort)
 from flask import has_request_context
+from flask import session
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
 from flask_wtf.csrf import CSRFProtect
@@ -39,6 +40,7 @@ DB_PATH = os.path.join(BASE_DIR, '..', 'eeg_data.db')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, '..', 'data')
 INVOICE_FOLDER = os.path.join(BASE_DIR, 'invoices')
 BACKUP_FOLDER = os.path.join(BASE_DIR, '..', 'backups')
+INSTANCE_DIR = os.path.join(BASE_DIR, '..', 'instance')
 APP_TIMEZONE = ZoneInfo(os.environ.get('EEG_TIMEZONE', 'Europe/Vienna'))
 
 app = Flask(__name__)
@@ -71,6 +73,18 @@ csrf = CSRFProtect(app)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(INVOICE_FOLDER, exist_ok=True)
 os.makedirs(BACKUP_FOLDER, exist_ok=True)
+os.makedirs(INSTANCE_DIR, exist_ok=True)
+
+GOOGLE_DRIVE_SCOPES = ['https://www.googleapis.com/auth/drive.file']
+GOOGLE_CLIENT_SECRETS_FILE = os.environ.get(
+    'EEG_GOOGLE_CLIENT_SECRETS',
+    os.path.join(INSTANCE_DIR, 'google_client_secret.json')
+)
+GOOGLE_TOKEN_FILE = os.environ.get(
+    'EEG_GOOGLE_TOKEN_FILE',
+    os.path.join(INSTANCE_DIR, 'google_drive_token.json')
+)
+GOOGLE_OAUTH_REDIRECT_URI = os.environ.get('EEG_GOOGLE_OAUTH_REDIRECT_URI', '')
 
 BACKUP_SETTING_DEFAULTS = {
     'backup_auto_enabled': 'true',
@@ -84,6 +98,10 @@ BACKUP_SETTING_DEFAULTS = {
     'backup_email_time': '03:00',
     'backup_email_to': '',
     'backup_email_max_mb': '20',
+    'backup_drive_enabled': 'false',
+    'backup_drive_folder_id': '',
+    'backup_drive_last_upload': '',
+    'backup_drive_last_error': '',
     'backup_auto_last_run_date': '',
     'backup_email_last_attempt_week': '',
     'backup_email_last_sent_week': '',
@@ -2479,6 +2497,10 @@ def get_backup_settings(db):
         'email_time': _valid_time_or_default(raw.get('backup_email_time'), BACKUP_SETTING_DEFAULTS['backup_email_time']),
         'email_to': (raw.get('backup_email_to') or '').strip(),
         'email_max_mb': _setting_int(raw.get('backup_email_max_mb'), 20, 1, 2000),
+        'drive_enabled': _setting_bool(raw.get('backup_drive_enabled')),
+        'drive_folder_id': (raw.get('backup_drive_folder_id') or '').strip(),
+        'drive_last_upload': raw.get('backup_drive_last_upload') or '',
+        'drive_last_error': raw.get('backup_drive_last_error') or '',
         'auto_last_run_date': raw.get('backup_auto_last_run_date') or '',
         'email_last_attempt_week': raw.get('backup_email_last_attempt_week') or '',
         'email_last_sent_week': raw.get('backup_email_last_sent_week') or '',
@@ -2570,6 +2592,111 @@ def local_backup_path_for_delete(filename):
     if not os.path.isfile(backup_path):
         raise FileNotFoundError('Backup-Datei wurde nicht gefunden.')
     return backup_path, backup_name
+
+
+def _google_libs_available():
+    try:
+        import google.auth.transport.requests  # noqa: F401
+        import google.oauth2.credentials  # noqa: F401
+        import google_auth_oauthlib.flow  # noqa: F401
+        import googleapiclient.discovery  # noqa: F401
+        import googleapiclient.http  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def get_google_drive_status():
+    token_exists = os.path.exists(GOOGLE_TOKEN_FILE)
+    client_exists = os.path.exists(GOOGLE_CLIENT_SECRETS_FILE)
+    connected = False
+    error = ''
+    if token_exists and _google_libs_available():
+        try:
+            credentials = _load_google_drive_credentials(refresh=True)
+            connected = credentials and credentials.valid
+        except Exception as e:
+            error = str(e)
+    return {
+        'libs_available': _google_libs_available(),
+        'client_file': GOOGLE_CLIENT_SECRETS_FILE,
+        'client_configured': client_exists,
+        'token_file': GOOGLE_TOKEN_FILE,
+        'connected': connected,
+        'error': error,
+    }
+
+
+def _google_redirect_uri():
+    return GOOGLE_OAUTH_REDIRECT_URI or url_for('admin_backup_google_callback', _external=True)
+
+
+def _google_drive_flow():
+    if not os.path.exists(GOOGLE_CLIENT_SECRETS_FILE):
+        raise RuntimeError(f'Google OAuth Client-Datei fehlt: {GOOGLE_CLIENT_SECRETS_FILE}')
+    try:
+        from google_auth_oauthlib.flow import Flow
+    except ImportError as e:
+        raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
+    return Flow.from_client_secrets_file(
+        GOOGLE_CLIENT_SECRETS_FILE,
+        scopes=GOOGLE_DRIVE_SCOPES,
+        redirect_uri=_google_redirect_uri(),
+    )
+
+
+def _load_google_drive_credentials(refresh=False):
+    if not os.path.exists(GOOGLE_TOKEN_FILE):
+        return None
+    try:
+        from google.auth.transport.requests import Request as GoogleAuthRequest
+        from google.oauth2.credentials import Credentials
+    except ImportError as e:
+        raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
+
+    credentials = Credentials.from_authorized_user_file(GOOGLE_TOKEN_FILE, GOOGLE_DRIVE_SCOPES)
+    if refresh and credentials and credentials.expired and credentials.refresh_token:
+        credentials.refresh(GoogleAuthRequest())
+        os.makedirs(os.path.dirname(GOOGLE_TOKEN_FILE), exist_ok=True)
+        with open(GOOGLE_TOKEN_FILE, 'w') as token_file:
+            token_file.write(credentials.to_json())
+    return credentials
+
+
+def _google_drive_service():
+    credentials = _load_google_drive_credentials(refresh=True)
+    if not credentials or not credentials.valid:
+        raise RuntimeError('Google Drive ist noch nicht verbunden.')
+    try:
+        from googleapiclient.discovery import build
+    except ImportError as e:
+        raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
+    return build('drive', 'v3', credentials=credentials, cache_discovery=False)
+
+
+def upload_backup_to_google_drive(db, backup_path):
+    try:
+        from googleapiclient.http import MediaFileUpload
+    except ImportError as e:
+        raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
+
+    settings = get_backup_settings(db)
+    service = _google_drive_service()
+    backup_name = os.path.basename(backup_path)
+    metadata = {'name': backup_name}
+    if settings['drive_folder_id']:
+        metadata['parents'] = [settings['drive_folder_id']]
+    media = MediaFileUpload(backup_path, mimetype='application/zip', resumable=True)
+    uploaded = service.files().create(
+        body=metadata,
+        media_body=media,
+        fields='id,name,webViewLink',
+        supportsAllDrives=True,
+    ).execute()
+    _set_setting(db, 'backup_drive_last_upload', local_now().isoformat(timespec='seconds'))
+    _set_setting(db, 'backup_drive_last_error', '')
+    db.commit()
+    return uploaded
 
 
 def apply_backup_retention(settings):
@@ -2679,9 +2806,19 @@ def _run_due_backup_jobs():
             if settings['auto_last_run_date'] != today:
                 zip_path, zip_filename = create_local_backup('eeg_auto')
                 deleted = apply_backup_retention(settings)
+                drive_detail = ''
+                if settings['drive_enabled']:
+                    try:
+                        uploaded = upload_backup_to_google_drive(db, zip_path)
+                        drive_detail = f' · Google Drive Upload: {uploaded.get("id")}'
+                    except Exception as e:
+                        _set_setting(db, 'backup_drive_last_error', str(e))
+                        db.commit()
+                        app.logger.exception('Google Drive backup upload failed')
+                        audit_log('backup_drive_failed', f'Google Drive Upload fehlgeschlagen: {zip_filename} ({e})')
                 _set_setting(db, 'backup_auto_last_run_date', today)
                 db.commit()
-                audit_log('backup_auto', f'Automatisches Backup erstellt: {zip_filename} ({deleted} alte Backups entfernt)')
+                audit_log('backup_auto', f'Automatisches Backup erstellt: {zip_filename} ({deleted} alte Backups entfernt){drive_detail}')
                 app.logger.info('Automatic backup created: %s', zip_path)
 
         if (settings['email_enabled']
@@ -2756,6 +2893,7 @@ def admin_backup():
         info=get_backup_info(),
         backup_settings=get_backup_settings(db),
         backup_files=list_local_backups()[:20],
+        google_drive=get_google_drive_status(),
         smtp_configured=smtp_configured,
         weekdays=[
             (0, 'Montag'),
@@ -2779,6 +2917,10 @@ def admin_backup_settings():
     if email_enabled and not _is_valid_email(email_to):
         flash('Bitte eine gültige Empfängeradresse für das Mail-Backup eintragen.', 'danger')
         return redirect(url_for('admin_backup'))
+    drive_enabled = form_switch_enabled('backup_drive_enabled')
+    if drive_enabled and not get_google_drive_status()['connected']:
+        flash('Google Drive muss zuerst verbunden werden, bevor der automatische Drive-Upload aktiviert werden kann.', 'danger')
+        return redirect(url_for('admin_backup'))
 
     values = {
         'backup_auto_enabled': 'true' if form_switch_enabled('backup_auto_enabled') else 'false',
@@ -2792,6 +2934,8 @@ def admin_backup_settings():
         'backup_email_time': _valid_time_or_default(request.form.get('backup_email_time'), BACKUP_SETTING_DEFAULTS['backup_email_time']),
         'backup_email_to': email_to,
         'backup_email_max_mb': _setting_int(request.form.get('backup_email_max_mb'), 20, 1, 2000),
+        'backup_drive_enabled': 'true' if drive_enabled else 'false',
+        'backup_drive_folder_id': (request.form.get('backup_drive_folder_id') or '').strip(),
     }
     for key, value in values.items():
         _set_setting(db, key, value)
@@ -2801,6 +2945,70 @@ def admin_backup_settings():
     deleted = apply_backup_retention(settings)
     audit_log('backup_settings_update', f'Backup-Konfiguration geändert ({deleted} alte Auto-Backups entfernt)')
     flash('Backup-Konfiguration gespeichert.', 'success')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/connect')
+@admin_required
+def admin_backup_google_connect():
+    """Startet den Google OAuth-Flow fuer Drive-Backups."""
+    try:
+        flow = _google_drive_flow()
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent',
+        )
+        session['google_drive_oauth_state'] = state
+        return redirect(authorization_url)
+    except Exception as e:
+        audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
+        flash(f'Google Drive Verbindung konnte nicht gestartet werden: {e}', 'danger')
+        return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/callback')
+@admin_required
+def admin_backup_google_callback():
+    """OAuth Callback fuer Google Drive."""
+    try:
+        state = session.get('google_drive_oauth_state')
+        if not state or state != request.args.get('state'):
+            raise RuntimeError('OAuth-State ist ungültig.')
+        flow = _google_drive_flow()
+        flow.fetch_token(authorization_response=request.url)
+        credentials = flow.credentials
+        os.makedirs(os.path.dirname(GOOGLE_TOKEN_FILE), exist_ok=True)
+        with open(GOOGLE_TOKEN_FILE, 'w') as token_file:
+            token_file.write(credentials.to_json())
+        session.pop('google_drive_oauth_state', None)
+        db = get_db()
+        _set_setting(db, 'backup_drive_last_error', '')
+        db.commit()
+        audit_log('backup_drive_connect', 'Google Drive verbunden')
+        flash('Google Drive wurde erfolgreich verbunden.', 'success')
+    except Exception as e:
+        audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
+        flash(f'Google Drive konnte nicht verbunden werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/disconnect', methods=['POST'])
+@admin_required
+def admin_backup_google_disconnect():
+    """Entfernt das lokal gespeicherte Google OAuth-Token."""
+    try:
+        if os.path.exists(GOOGLE_TOKEN_FILE):
+            os.remove(GOOGLE_TOKEN_FILE)
+        db = get_db()
+        _set_setting(db, 'backup_drive_enabled', 'false')
+        _set_setting(db, 'backup_drive_last_error', '')
+        db.commit()
+        audit_log('backup_drive_disconnect', 'Google Drive getrennt')
+        flash('Google Drive wurde getrennt. Automatischer Drive-Upload ist deaktiviert.', 'success')
+    except Exception as e:
+        audit_log('backup_drive_disconnect_failed', f'Google Drive Trennung fehlgeschlagen: {e}')
+        flash(f'Google Drive konnte nicht getrennt werden: {e}', 'danger')
     return redirect(url_for('admin_backup'))
 
 
@@ -2816,6 +3024,25 @@ def admin_backup_run():
     except Exception as e:
         audit_log('backup_manual_failed', f'Manuelles lokales Backup fehlgeschlagen: {e}')
         flash(f'Backup konnte nicht erstellt werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/upload-drive', methods=['POST'])
+@admin_required
+def admin_backup_upload_drive():
+    """Kopiert eine lokale Backup-Datei manuell nach Google Drive."""
+    filename = request.form.get('backup_name', '')
+    try:
+        backup_path, backup_name = local_backup_path_for_delete(filename)
+        uploaded = upload_backup_to_google_drive(get_db(), backup_path)
+        audit_log('backup_drive_upload', f'Backup nach Google Drive kopiert: {backup_name} ({uploaded.get("id")})')
+        flash(f'Backup wurde nach Google Drive kopiert: {backup_name}', 'success')
+    except Exception as e:
+        db = get_db()
+        _set_setting(db, 'backup_drive_last_error', str(e))
+        db.commit()
+        audit_log('backup_drive_failed', f'Google Drive Upload fehlgeschlagen: {filename} ({e})')
+        flash(f'Google Drive Upload fehlgeschlagen: {e}', 'danger')
     return redirect(url_for('admin_backup'))
 
 
