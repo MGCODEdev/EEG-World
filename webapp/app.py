@@ -788,6 +788,7 @@ _AUDIT_PAGE_ENDPOINTS = {
     'invoice_detail': 'Abrechnungsdetail',
     'reports': 'Reports',
     'settings': 'Einstellungen',
+    'admin_backup': 'Backup',
     'admin_users': 'Benutzerverwaltung',
     'payments': 'Überweisungen',
     'portal_dashboard': 'Portal: Übersicht',
@@ -2403,6 +2404,31 @@ def settings():
 
 # === Backup / Restore ===
 
+def get_backup_info():
+    invoice_count = 0
+    invoice_size = 0
+    if os.path.isdir(INVOICE_FOLDER):
+        for fname in os.listdir(INVOICE_FOLDER):
+            fpath = os.path.join(INVOICE_FOLDER, fname)
+            if os.path.isfile(fpath):
+                invoice_count += 1
+                invoice_size += os.path.getsize(fpath)
+    return {
+        'db_path': DB_PATH,
+        'db_size': os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
+        'invoice_folder': INVOICE_FOLDER,
+        'invoice_count': invoice_count,
+        'invoice_size': invoice_size,
+    }
+
+
+@app.route('/admin/backup')
+@admin_required
+def admin_backup():
+    """Admin-Seite fuer Backup und Restore."""
+    return render_template('admin_backup.html', info=get_backup_info())
+
+
 @app.route('/backup')
 @admin_required
 def backup_download():
@@ -2424,6 +2450,12 @@ def backup_download():
     with zipfile.ZipFile(tmp.name, 'w', zipfile.ZIP_DEFLATED) as zf:
         # Datenbank
         zf.write(DB_PATH, 'eeg_data.db')
+        zf.writestr(
+            'backup_manifest.txt',
+            f"created_at={local_now().isoformat(timespec='seconds')}\n"
+            f"database=eeg_data.db\n"
+            f"invoices_folder=invoices/\n"
+        )
         # Rechnungs-PDFs
         if os.path.isdir(INVOICE_FOLDER):
             for fname in os.listdir(INVOICE_FOLDER):
@@ -2432,8 +2464,18 @@ def backup_download():
                     zf.write(fpath, f'invoices/{fname}')
 
     audit_log('backup_download', f'Backup heruntergeladen: {zip_filename}')
-    return send_file(tmp.name, as_attachment=True, download_name=zip_filename,
-                     mimetype='application/zip')
+
+    response = send_file(tmp.name, as_attachment=True, download_name=zip_filename,
+                         mimetype='application/zip')
+
+    @response.call_on_close
+    def cleanup_backup_file():
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    return response
 
 
 @app.route('/backup/restore', methods=['POST'])
@@ -2444,12 +2486,12 @@ def backup_restore():
 
     if 'backup_file' not in request.files:
         flash('Keine Datei ausgewählt.', 'danger')
-        return redirect(url_for('settings'))
+        return redirect(url_for('admin_backup'))
 
     file = request.files['backup_file']
     if not file.filename.lower().endswith('.zip'):
         flash('Nur ZIP-Dateien sind erlaubt.', 'danger')
-        return redirect(url_for('settings'))
+        return redirect(url_for('admin_backup'))
 
     # Temporär speichern
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
@@ -2461,7 +2503,7 @@ def backup_restore():
             names = zf.namelist()
             if 'eeg_data.db' not in names:
                 flash('Ungültiges Backup: eeg_data.db nicht gefunden.', 'danger')
-                return redirect(url_for('settings'))
+                return redirect(url_for('admin_backup'))
 
             # DB schließen
             close_db()
@@ -2490,7 +2532,7 @@ def backup_restore():
     finally:
         os.unlink(tmp.name)
 
-    return redirect(url_for('settings'))
+    return redirect(url_for('admin_backup'))
 
 
 # === Überweisungsliste / Forderungen ===

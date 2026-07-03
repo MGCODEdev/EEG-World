@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Backup{% endblock %}
+{% block content %}
+<h2 class="page-title"><i class="bi bi-archive"></i> Backup & Wiederherstellung</h2>
+
+<div class="row g-4">
+    <div class="col-lg-6">
+        <div class="card h-100">
+            <div class="card-header bg-white">
+                <strong><i class="bi bi-download"></i> Backup herunterladen</strong>
+            </div>
+            <div class="card-body">
+                <p class="text-muted">
+                    Das ZIP-Backup enthält die SQLite-Datenbank und die erzeugten Rechnungs-PDFs.
+                </p>
+                <table class="table table-sm">
+                    <tr>
+                        <td>Datenbank</td>
+                        <td class="text-end">{{ "%.1f"|format(info.db_size / 1024 / 1024) }} MB</td>
+                    </tr>
+                    <tr>
+                        <td>Rechnungs-PDFs</td>
+                        <td class="text-end">{{ info.invoice_count }} Dateien · {{ "%.1f"|format(info.invoice_size / 1024 / 1024) }} MB</td>
+                    </tr>
+                    <tr>
+                        <td>Pfad</td>
+                        <td class="text-end"><code>{{ info.db_path }}</code></td>
+                    </tr>
+                </table>
+                <a href="{{ url_for('backup_download') }}" class="btn btn-success">
+                    <i class="bi bi-download"></i> Backup herunterladen
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card h-100 border-danger">
+            <div class="card-header bg-white text-danger">
+                <strong><i class="bi bi-upload"></i> Backup wiederherstellen</strong>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    <strong>Achtung:</strong> Beim Wiederherstellen werden die aktuelle Datenbank und vorhandene Rechnungsdateien aus dem Backup überschrieben.
+                </div>
+                <form method="post" action="{{ url_for('backup_restore') }}" enctype="multipart/form-data">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="mb-3">
+                        <label class="form-label">Backup-ZIP</label>
+                        <input type="file" name="backup_file" accept=".zip" class="form-control" required>
+                    </div>
+                    <button type="submit" class="btn btn-outline-danger"
+                            onclick="return confirm('ACHTUNG: Aktuelle Daten werden überschrieben. Backup wirklich wiederherstellen?')">
+                        <i class="bi bi-upload"></i> Backup wiederherstellen
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header bg-white">
+        <strong><i class="bi bi-shield-lock"></i> Hinweis</strong>
+    </div>
+    <div class="card-body">
+        <p class="mb-0 text-muted">
+            Backup-Dateien enthalten personenbezogene Daten, Bankdaten, Verträge und Abrechnungen. Bewahren Sie ZIP-Dateien nur verschlüsselt oder an einem geschützten Ort auf.
+        </p>
+    </div>
+</div>
+{% endblock %}
