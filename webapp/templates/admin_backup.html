@@ -257,6 +257,24 @@
                         <label class="form-label" for="google_client_json">oder Client-JSON einfügen</label>
                         <textarea class="form-control font-monospace" id="google_client_json" name="google_client_json" rows="4" placeholder='{"web":{"client_id":"...","client_secret":"..."}}'></textarea>
                     </div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_client_id">oder Client-ID</label>
+                            <input type="text" class="form-control" id="google_client_id" name="google_client_id" autocomplete="off">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_client_secret">Client-Secret</label>
+                            <input type="password" class="form-control" id="google_client_secret" name="google_client_secret" autocomplete="new-password">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_auth_uri">Auth-URI</label>
+                            <input type="url" class="form-control" id="google_auth_uri" name="google_auth_uri" value="https://accounts.google.com/o/oauth2/auth">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_token_uri">Token-URI</label>
+                            <input type="url" class="form-control" id="google_token_uri" name="google_token_uri" value="https://oauth2.googleapis.com/token">
+                        </div>
+                    </div>
                     <div class="text-muted small mb-2">
                         Speicherort: <code>{{ google_drive.client_file }}</code>
                     </div>
@@ -276,6 +294,28 @@
                     <div class="mb-2">
                         <label class="form-label" for="google_token_json">oder Token-JSON einfügen</label>
                         <textarea class="form-control font-monospace" id="google_token_json" name="google_token_json" rows="4" placeholder='{"refresh_token":"...","client_id":"...","client_secret":"..."}'></textarea>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-md-12">
+                            <label class="form-label" for="google_refresh_token">oder Refresh-Token</label>
+                            <input type="password" class="form-control" id="google_refresh_token" name="google_refresh_token" autocomplete="new-password">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_token_client_id">Client-ID</label>
+                            <input type="text" class="form-control" id="google_token_client_id" name="google_token_client_id" autocomplete="off" placeholder="Leer = aus gespeicherter Client-Konfiguration">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_token_client_secret">Client-Secret</label>
+                            <input type="password" class="form-control" id="google_token_client_secret" name="google_token_client_secret" autocomplete="new-password" placeholder="Leer = aus gespeicherter Client-Konfiguration">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_access_token">Access-Token optional</label>
+                            <input type="password" class="form-control" id="google_access_token" name="google_access_token" autocomplete="new-password">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="google_token_token_uri">Token-URI</label>
+                            <input type="url" class="form-control" id="google_token_token_uri" name="google_token_token_uri" value="https://oauth2.googleapis.com/token">
+                        </div>
                     </div>
                     <div class="text-muted small mb-2">
                         Speicherort: <code>{{ google_drive.token_file }}</code>
@@ -326,8 +366,9 @@
                     <li>Diese Redirect-URI als autorisierte Weiterleitungs-URI eintragen:<br>
                         <code>{{ google_drive.redirect_uri or 'https://deine-domain.example/admin/backup/google/callback' }}</code>
                     </li>
-                    <li>Die OAuth-Client-JSON herunterladen und hier bei <strong>Google OAuth Client einrichten</strong> hochladen oder einfügen.</li>
+                    <li>Die OAuth-Client-JSON herunterladen und hier hochladen. Alternativ kannst du aus Google auch nur <strong>Client-ID</strong> und <strong>Client-Secret</strong> in die Felder eintragen.</li>
                     <li>Danach auf <strong>Google verbinden</strong> klicken, Google-Account auswählen und Zugriff erlauben.</li>
+                    <li>Ein Token musst du normalerweise nicht selbst besorgen. Die App speichert es nach dem Klick auf <strong>Google verbinden</strong> automatisch. Nur wenn du bereits ein Refresh-Token hast, kannst du es im Formular <strong>Token hinterlegen</strong> manuell eintragen.</li>
                     <li>Optional eine Google-Drive-Ordner-ID eintragen. Leer bedeutet: Upload in <strong>Meine Ablage</strong>.</li>
                     <li><strong>Google-Drive-Kopie</strong> aktivieren und die Backup-Konfiguration speichern.</li>
                 </ol>

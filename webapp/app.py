@@ -2632,6 +2632,51 @@ def _load_json_payload(file_field, text_field, label):
         raise ValueError(f'{label} ist kein gültiges JSON: {e}') from e
 
 
+def _manual_google_client_payload():
+    client_id = (request.form.get('google_client_id') or '').strip()
+    client_secret = (request.form.get('google_client_secret') or '').strip()
+    if not client_id and not client_secret:
+        return None
+    if not client_id or not client_secret:
+        raise ValueError('Client-ID und Client-Secret müssen beide ausgefüllt sein.')
+    return {
+        'web': {
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'auth_uri': (request.form.get('google_auth_uri') or 'https://accounts.google.com/o/oauth2/auth').strip(),
+            'token_uri': (request.form.get('google_token_uri') or 'https://oauth2.googleapis.com/token').strip(),
+            'redirect_uris': [_google_redirect_uri_for_display()],
+        }
+    }
+
+
+def _manual_google_token_payload():
+    refresh_token = (request.form.get('google_refresh_token') or '').strip()
+    if not refresh_token:
+        return None
+
+    client_id = (request.form.get('google_token_client_id') or '').strip()
+    client_secret = (request.form.get('google_token_client_secret') or '').strip()
+    if (not client_id or not client_secret) and os.path.exists(GOOGLE_CLIENT_SECRETS_FILE):
+        with open(GOOGLE_CLIENT_SECRETS_FILE, encoding='utf-8') as f:
+            client_payload = json.load(f)
+        section = client_payload.get('web') or client_payload.get('installed') or {}
+        client_id = client_id or section.get('client_id', '')
+        client_secret = client_secret or section.get('client_secret', '')
+
+    if not client_id or not client_secret:
+        raise ValueError('Für einen manuellen Token brauchen wir Refresh-Token, Client-ID und Client-Secret.')
+
+    return {
+        'token': (request.form.get('google_access_token') or '').strip(),
+        'refresh_token': refresh_token,
+        'token_uri': (request.form.get('google_token_token_uri') or 'https://oauth2.googleapis.com/token').strip(),
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'scopes': GOOGLE_DRIVE_SCOPES,
+    }
+
+
 def validate_google_client_config(payload):
     if not isinstance(payload, dict):
         raise ValueError('OAuth Client-Konfiguration muss ein JSON-Objekt sein.')
@@ -3040,7 +3085,9 @@ def admin_backup_google_connect():
 def admin_backup_google_client_config():
     """Speichert die Google OAuth Client-Konfiguration aus dem Webinterface."""
     try:
-        payload = _load_json_payload('google_client_file', 'google_client_json', 'OAuth Client-JSON')
+        payload = _manual_google_client_payload()
+        if payload is None:
+            payload = _load_json_payload('google_client_file', 'google_client_json', 'OAuth Client-JSON')
         section_name = validate_google_client_config(payload)
         _write_private_json_file(GOOGLE_CLIENT_SECRETS_FILE, payload)
         if os.path.exists(GOOGLE_TOKEN_FILE):
@@ -3062,7 +3109,9 @@ def admin_backup_google_client_config():
 def admin_backup_google_token():
     """Speichert ein vorhandenes Google OAuth Token-JSON aus dem Webinterface."""
     try:
-        payload = _load_json_payload('google_token_file', 'google_token_json', 'Google Token-JSON')
+        payload = _manual_google_token_payload()
+        if payload is None:
+            payload = _load_json_payload('google_token_file', 'google_token_json', 'Google Token-JSON')
         validate_google_token_payload(payload)
         _write_private_json_file(GOOGLE_TOKEN_FILE, payload)
         db = get_db()
