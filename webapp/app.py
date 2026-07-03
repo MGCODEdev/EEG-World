@@ -2683,11 +2683,20 @@ def get_google_drive_status():
         'token_file': GOOGLE_TOKEN_FILE,
         'connected': connected,
         'error': error,
+        'redirect_uri': _google_redirect_uri_for_display(),
     }
 
 
 def _google_redirect_uri():
     return GOOGLE_OAUTH_REDIRECT_URI or url_for('admin_backup_google_callback', _external=True)
+
+
+def _google_redirect_uri_for_display():
+    if GOOGLE_OAUTH_REDIRECT_URI:
+        return GOOGLE_OAUTH_REDIRECT_URI
+    if has_request_context():
+        return url_for('admin_backup_google_callback', _external=True)
+    return ''
 
 
 def _google_drive_flow():
