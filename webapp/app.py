@@ -6,6 +6,8 @@ import sys
 import sqlite3
 import secrets
 import re
+import threading
+import time
 from datetime import datetime, date, timezone
 from functools import wraps
 from email.header import Header
@@ -17,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from flask import (Flask, render_template, request, redirect, url_for,
                    flash, send_file, jsonify, g, abort)
+from flask import has_request_context
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
 from flask_wtf.csrf import CSRFProtect
@@ -35,6 +38,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, '..', 'eeg_data.db')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, '..', 'data')
 INVOICE_FOLDER = os.path.join(BASE_DIR, 'invoices')
+BACKUP_FOLDER = os.path.join(BASE_DIR, '..', 'backups')
 APP_TIMEZONE = ZoneInfo(os.environ.get('EEG_TIMEZONE', 'Europe/Vienna'))
 
 app = Flask(__name__)
@@ -66,6 +70,27 @@ csrf = CSRFProtect(app)
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(INVOICE_FOLDER, exist_ok=True)
+os.makedirs(BACKUP_FOLDER, exist_ok=True)
+
+BACKUP_SETTING_DEFAULTS = {
+    'backup_auto_enabled': 'false',
+    'backup_auto_time': '02:30',
+    'backup_retention_daily': '3',
+    'backup_retention_weekly': '4',
+    'backup_retention_monthly': '6',
+    'backup_retention_yearly': '3',
+    'backup_email_enabled': 'false',
+    'backup_email_weekday': '6',
+    'backup_email_time': '03:00',
+    'backup_email_to': '',
+    'backup_email_max_mb': '20',
+    'backup_auto_last_run_date': '',
+    'backup_email_last_attempt_week': '',
+    'backup_email_last_sent_week': '',
+}
+BACKUP_JOB_LOCK = threading.Lock()
+BACKUP_SCHEDULER_LOCK = threading.Lock()
+BACKUP_SCHEDULER_STARTED = False
 
 
 def local_now():
@@ -395,6 +420,8 @@ def init_db():
     db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_bic', '')")
     db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_iban', '')")
     db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('payment_recipient', ?)", (DEFAULT_ORG_NAME,))
+    for key, value in BACKUP_SETTING_DEFAULTS.items():
+        db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
     # Newsletter-Tabellen
     db.execute("""CREATE TABLE IF NOT EXISTS newsletters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -810,7 +837,7 @@ def audit_log(action, detail=None, user_id=None, username=None):
         db = get_db()
         uid = user_id
         uname = username
-        if uid is None and current_user and current_user.is_authenticated:
+        if uid is None and has_request_context() and current_user and current_user.is_authenticated:
             uid = current_user.id
             uname = current_user.username
         db.execute(
@@ -818,9 +845,9 @@ def audit_log(action, detail=None, user_id=None, username=None):
                (timestamp, user_id, username, action, detail, ip, url, method)
                VALUES (?,?,?,?,?,?,?,?)""",
             (utc_now_string(), uid, uname, action, detail,
-             get_real_ip() if request else None,
-             request.url if request else None,
-             request.method if request else None))
+             get_real_ip() if has_request_context() else None,
+             request.url if has_request_context() else None,
+             request.method if has_request_context() else None))
         db.commit()
     except Exception:
         pass  # Audit-Log darf nie die App blockieren
@@ -2404,6 +2431,284 @@ def settings():
 
 # === Backup / Restore ===
 
+def _setting_bool(value):
+    return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _setting_int(value, default, min_value=0, max_value=999):
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        parsed = default
+    return max(min_value, min(parsed, max_value))
+
+
+def _valid_time_or_default(value, default):
+    text = str(value or '').strip()
+    match = re.match(r'^([01]\d|2[0-3]):([0-5]\d)$', text)
+    return text if match else default
+
+
+def _backup_week_marker(day):
+    year, week, _ = day.isocalendar()
+    return f'{year}-W{week:02d}'
+
+
+def _set_setting(db, key, value):
+    db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+
+
+def get_backup_settings(db):
+    rows = db.execute("SELECT key, value FROM settings").fetchall()
+    raw = dict(BACKUP_SETTING_DEFAULTS)
+    raw.update({r['key']: r['value'] for r in rows if r['key'] in BACKUP_SETTING_DEFAULTS})
+    public_cfg = get_public_config(db)
+    if not raw.get('backup_email_to'):
+        raw['backup_email_to'] = public_cfg.get('org_email') or ''
+
+    return {
+        'auto_enabled': _setting_bool(raw.get('backup_auto_enabled')),
+        'auto_time': _valid_time_or_default(raw.get('backup_auto_time'), BACKUP_SETTING_DEFAULTS['backup_auto_time']),
+        'retention_daily': _setting_int(raw.get('backup_retention_daily'), 3, 0, 31),
+        'retention_weekly': _setting_int(raw.get('backup_retention_weekly'), 4, 0, 104),
+        'retention_monthly': _setting_int(raw.get('backup_retention_monthly'), 6, 0, 120),
+        'retention_yearly': _setting_int(raw.get('backup_retention_yearly'), 3, 0, 20),
+        'email_enabled': _setting_bool(raw.get('backup_email_enabled')),
+        'email_weekday': _setting_int(raw.get('backup_email_weekday'), 6, 0, 6),
+        'email_time': _valid_time_or_default(raw.get('backup_email_time'), BACKUP_SETTING_DEFAULTS['backup_email_time']),
+        'email_to': (raw.get('backup_email_to') or '').strip(),
+        'email_max_mb': _setting_int(raw.get('backup_email_max_mb'), 20, 1, 2000),
+        'auto_last_run_date': raw.get('backup_auto_last_run_date') or '',
+        'email_last_attempt_week': raw.get('backup_email_last_attempt_week') or '',
+        'email_last_sent_week': raw.get('backup_email_last_sent_week') or '',
+    }
+
+
+def _checkpoint_database():
+    if not os.path.exists(DB_PATH):
+        raise FileNotFoundError('Datenbankdatei wurde nicht gefunden.')
+    with sqlite3.connect(DB_PATH) as checkpoint_db:
+        checkpoint_db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def write_backup_zip(zip_path):
+    """Schreibt ein vollstaendiges ZIP-Backup an den angegebenen Pfad."""
+    import zipfile
+
+    with BACKUP_JOB_LOCK:
+        _checkpoint_database()
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(DB_PATH, 'eeg_data.db')
+            zf.writestr(
+                'backup_manifest.txt',
+                f"created_at={local_now().isoformat(timespec='seconds')}\n"
+                f"database=eeg_data.db\n"
+                f"invoices_folder=invoices/\n"
+            )
+            if os.path.isdir(INVOICE_FOLDER):
+                for fname in os.listdir(INVOICE_FOLDER):
+                    fpath = os.path.join(INVOICE_FOLDER, fname)
+                    if os.path.isfile(fpath):
+                        zf.write(fpath, f'invoices/{fname}')
+
+
+def create_local_backup(prefix='eeg_auto'):
+    os.makedirs(BACKUP_FOLDER, exist_ok=True)
+    timestamp = local_now().strftime('%Y%m%d_%H%M%S')
+    zip_filename = f'{prefix}_{timestamp}.zip'
+    zip_path = os.path.join(BACKUP_FOLDER, zip_filename)
+    write_backup_zip(zip_path)
+    return zip_path, zip_filename
+
+
+def _parse_backup_timestamp(filename):
+    match = re.match(r'^eeg_(?:auto|manual)_(\d{8}_\d{6})\.zip$', filename)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), '%Y%m%d_%H%M%S').replace(tzinfo=APP_TIMEZONE)
+    except ValueError:
+        return None
+
+
+def list_local_backups():
+    backups = []
+    if not os.path.isdir(BACKUP_FOLDER):
+        return backups
+    for fname in os.listdir(BACKUP_FOLDER):
+        if not fname.endswith('.zip'):
+            continue
+        created_at = _parse_backup_timestamp(fname)
+        if not created_at:
+            continue
+        fpath = os.path.join(BACKUP_FOLDER, fname)
+        if not os.path.isfile(fpath):
+            continue
+        backups.append({
+            'name': fname,
+            'path': fpath,
+            'size': os.path.getsize(fpath),
+            'created_at': created_at,
+            'kind': 'Automatisch' if fname.startswith('eeg_auto_') else 'Manuell',
+        })
+    backups.sort(key=lambda item: item['created_at'], reverse=True)
+    return backups
+
+
+def apply_backup_retention(settings):
+    """Wendet eine einfache Grossvater-Vater-Sohn-Aufbewahrung auf Auto-Backups an."""
+    auto_backups = [
+        item for item in list_local_backups()
+        if item['name'].startswith('eeg_auto_')
+    ]
+    now = local_now()
+    kept_buckets = set()
+    keep_paths = set()
+
+    for item in auto_backups:
+        ts = item['created_at']
+        age_days = (now.date() - ts.date()).days
+        month_distance = (now.year - ts.year) * 12 + (now.month - ts.month)
+        year_distance = now.year - ts.year
+
+        bucket = None
+        if age_days < settings['retention_daily']:
+            bucket = f"day:{ts.strftime('%Y-%m-%d')}"
+        elif age_days < settings['retention_weekly'] * 7:
+            if settings['retention_weekly'] > 0:
+                bucket = f"week:{ts.strftime('%G-W%V')}"
+        elif month_distance < settings['retention_monthly']:
+            if settings['retention_monthly'] > 0:
+                bucket = f"month:{ts.strftime('%Y-%m')}"
+        elif year_distance < settings['retention_yearly']:
+            if settings['retention_yearly'] > 0:
+                bucket = f"year:{ts.strftime('%Y')}"
+
+        if bucket and bucket not in kept_buckets:
+            kept_buckets.add(bucket)
+            keep_paths.add(item['path'])
+
+    deleted = 0
+    for item in auto_backups:
+        if item['path'] in keep_paths:
+            continue
+        try:
+            os.remove(item['path'])
+            deleted += 1
+        except OSError:
+            app.logger.warning('Could not delete old backup %s', item['path'], exc_info=True)
+    return deleted
+
+
+def _time_reached(now, time_text):
+    hour, minute = [int(part) for part in _valid_time_or_default(time_text, '00:00').split(':')]
+    return (now.hour, now.minute) >= (hour, minute)
+
+
+def send_backup_email(db, backup_path, recipient, max_mb):
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+
+    if not _is_valid_email(recipient):
+        raise RuntimeError('Empfängeradresse für Backup-Mail ist ungültig.')
+
+    size_mb = os.path.getsize(backup_path) / 1024 / 1024
+    if size_mb > max_mb:
+        raise RuntimeError(f'Backup ist {size_mb:.1f} MB groß und überschreitet das konfigurierte Mail-Limit von {max_mb} MB.')
+
+    mail_cfg = _get_valid_mail_config(db)
+    public_cfg = get_public_config(db)
+    backup_name = os.path.basename(backup_path)
+    subject = f"EEG Backup {local_now().strftime('%d.%m.%Y')}"
+    body_text = (
+        f"Automatisches Backup der Webapp {public_cfg['org_name']}.\n\n"
+        f"Datei: {backup_name}\n"
+        f"Groesse: {size_mb:.1f} MB\n"
+        f"Erstellt am: {local_now().strftime('%d.%m.%Y %H:%M')} {getattr(APP_TIMEZONE, 'key', 'Europe/Vienna')}\n\n"
+        "Bitte diese Datei geschuetzt aufbewahren, da sie personenbezogene Daten enthalten kann."
+    )
+
+    msg = MIMEMultipart('mixed')
+    msg['From'] = mail_cfg['from_header']
+    msg['Reply-To'] = mail_cfg['reply_to_header']
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body_text, 'plain', 'utf-8'))
+
+    with open(backup_path, 'rb') as f:
+        attachment = MIMEApplication(f.read(), _subtype='zip')
+    attachment.add_header('Content-Disposition', 'attachment', filename=backup_name)
+    msg.attach(attachment)
+
+    _log_mail_send(mail_cfg, recipient, subject)
+    with smtplib.SMTP(mail_cfg['smtp_host'], mail_cfg['smtp_port']) as server:
+        if mail_cfg['smtp_tls']:
+            server.starttls()
+        server.login(mail_cfg['smtp_user'], mail_cfg['smtp_pass'])
+        server.send_message(msg, from_addr=mail_cfg['from_address'], to_addrs=[recipient])
+
+
+def _run_due_backup_jobs():
+    with app.app_context():
+        db = get_db()
+        settings = get_backup_settings(db)
+        now = local_now()
+        today = now.strftime('%Y-%m-%d')
+        week_marker = _backup_week_marker(now.date())
+
+        if settings['auto_enabled'] and _time_reached(now, settings['auto_time']):
+            if settings['auto_last_run_date'] != today:
+                zip_path, zip_filename = create_local_backup('eeg_auto')
+                deleted = apply_backup_retention(settings)
+                _set_setting(db, 'backup_auto_last_run_date', today)
+                db.commit()
+                audit_log('backup_auto', f'Automatisches Backup erstellt: {zip_filename} ({deleted} alte Backups entfernt)')
+                app.logger.info('Automatic backup created: %s', zip_path)
+
+        if (settings['email_enabled']
+                and now.weekday() == settings['email_weekday']
+                and _time_reached(now, settings['email_time'])
+                and settings['email_last_attempt_week'] != week_marker):
+            email_path = None
+            try:
+                email_path, zip_filename = create_local_backup('eeg_mail')
+                send_backup_email(db, email_path, settings['email_to'], settings['email_max_mb'])
+                _set_setting(db, 'backup_email_last_sent_week', week_marker)
+                audit_log('backup_email', f'Woechentliches Backup per Mail versendet: {zip_filename} an {settings["email_to"]}')
+            except Exception as e:
+                app.logger.exception('Weekly backup mail failed')
+                audit_log('backup_email_failed', f'Woechentliches Backup-Mail fehlgeschlagen: {e}')
+            finally:
+                _set_setting(db, 'backup_email_last_attempt_week', week_marker)
+                db.commit()
+                if email_path and os.path.exists(email_path):
+                    try:
+                        os.remove(email_path)
+                    except OSError:
+                        app.logger.warning('Could not remove temporary mail backup %s', email_path, exc_info=True)
+
+
+def _backup_scheduler_loop():
+    while True:
+        try:
+            _run_due_backup_jobs()
+        except Exception:
+            app.logger.exception('Automatic backup scheduler failed')
+        time.sleep(60)
+
+
+def start_backup_scheduler():
+    global BACKUP_SCHEDULER_STARTED
+    with BACKUP_SCHEDULER_LOCK:
+        if BACKUP_SCHEDULER_STARTED:
+            return
+        thread = threading.Thread(target=_backup_scheduler_loop, name='eeg-backup-scheduler', daemon=True)
+        thread.start()
+        BACKUP_SCHEDULER_STARTED = True
+
+
 def get_backup_info():
     invoice_count = 0
     invoice_size = 0
@@ -2417,6 +2722,7 @@ def get_backup_info():
         'db_path': DB_PATH,
         'db_size': os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
         'invoice_folder': INVOICE_FOLDER,
+        'backup_folder': BACKUP_FOLDER,
         'invoice_count': invoice_count,
         'invoice_size': invoice_size,
     }
@@ -2426,42 +2732,116 @@ def get_backup_info():
 @admin_required
 def admin_backup():
     """Admin-Seite fuer Backup und Restore."""
-    return render_template('admin_backup.html', info=get_backup_info())
+    db = get_db()
+    smtp_configured, _ = _validate_mail_config(_load_mail_config(db))
+    return render_template(
+        'admin_backup.html',
+        info=get_backup_info(),
+        backup_settings=get_backup_settings(db),
+        backup_files=list_local_backups()[:20],
+        smtp_configured=smtp_configured,
+        weekdays=[
+            (0, 'Montag'),
+            (1, 'Dienstag'),
+            (2, 'Mittwoch'),
+            (3, 'Donnerstag'),
+            (4, 'Freitag'),
+            (5, 'Samstag'),
+            (6, 'Sonntag'),
+        ],
+    )
+
+
+@app.route('/admin/backup/settings', methods=['POST'])
+@admin_required
+def admin_backup_settings():
+    """Speichert Zeitplan, Aufbewahrung und Mail-Backup-Konfiguration."""
+    db = get_db()
+    email_enabled = form_switch_enabled('backup_email_enabled')
+    email_to = (request.form.get('backup_email_to') or '').strip()
+    if email_enabled and not _is_valid_email(email_to):
+        flash('Bitte eine gültige Empfängeradresse für das Mail-Backup eintragen.', 'danger')
+        return redirect(url_for('admin_backup'))
+
+    values = {
+        'backup_auto_enabled': 'true' if form_switch_enabled('backup_auto_enabled') else 'false',
+        'backup_auto_time': _valid_time_or_default(request.form.get('backup_auto_time'), BACKUP_SETTING_DEFAULTS['backup_auto_time']),
+        'backup_retention_daily': _setting_int(request.form.get('backup_retention_daily'), 3, 0, 31),
+        'backup_retention_weekly': _setting_int(request.form.get('backup_retention_weekly'), 4, 0, 104),
+        'backup_retention_monthly': _setting_int(request.form.get('backup_retention_monthly'), 6, 0, 120),
+        'backup_retention_yearly': _setting_int(request.form.get('backup_retention_yearly'), 3, 0, 20),
+        'backup_email_enabled': 'true' if email_enabled else 'false',
+        'backup_email_weekday': _setting_int(request.form.get('backup_email_weekday'), 6, 0, 6),
+        'backup_email_time': _valid_time_or_default(request.form.get('backup_email_time'), BACKUP_SETTING_DEFAULTS['backup_email_time']),
+        'backup_email_to': email_to,
+        'backup_email_max_mb': _setting_int(request.form.get('backup_email_max_mb'), 20, 1, 2000),
+    }
+    for key, value in values.items():
+        _set_setting(db, key, value)
+    db.commit()
+
+    settings = get_backup_settings(db)
+    deleted = apply_backup_retention(settings)
+    audit_log('backup_settings_update', f'Backup-Konfiguration geändert ({deleted} alte Auto-Backups entfernt)')
+    flash('Backup-Konfiguration gespeichert.', 'success')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/run', methods=['POST'])
+@admin_required
+def admin_backup_run():
+    """Erstellt ein lokales Backup im Backup-Ordner."""
+    try:
+        zip_path, zip_filename = create_local_backup('eeg_manual')
+        audit_log('backup_manual', f'Manuelles lokales Backup erstellt: {zip_filename}')
+        flash(f'Lokales Backup erstellt: {zip_filename}', 'success')
+        app.logger.info('Manual local backup created: %s', zip_path)
+    except Exception as e:
+        audit_log('backup_manual_failed', f'Manuelles lokales Backup fehlgeschlagen: {e}')
+        flash(f'Backup konnte nicht erstellt werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/send-mail', methods=['POST'])
+@admin_required
+def admin_backup_send_mail():
+    """Sendet ein Backup sofort per Mail an die konfigurierte Adresse."""
+    db = get_db()
+    settings = get_backup_settings(db)
+    recipient = (request.form.get('backup_email_to') or settings['email_to']).strip()
+    max_mb = _setting_int(request.form.get('backup_email_max_mb'), settings['email_max_mb'], 1, 2000)
+    email_path = None
+    try:
+        if not _is_valid_email(recipient):
+            raise RuntimeError('Empfängeradresse für Backup-Mail ist ungültig.')
+        email_path, zip_filename = create_local_backup('eeg_mail')
+        send_backup_email(db, email_path, recipient, max_mb)
+        audit_log('backup_email_manual', f'Backup-Mail manuell versendet: {zip_filename} an {recipient}')
+        flash(f'Backup-Mail wurde an {recipient} gesendet.', 'success')
+    except Exception as e:
+        audit_log('backup_email_manual_failed', f'Manuelle Backup-Mail fehlgeschlagen: {e}')
+        flash(f'Backup-Mail konnte nicht gesendet werden: {e}', 'danger')
+    finally:
+        if email_path and os.path.exists(email_path):
+            try:
+                os.remove(email_path)
+            except OSError:
+                app.logger.warning('Could not remove temporary mail backup %s', email_path, exc_info=True)
+    return redirect(url_for('admin_backup'))
 
 
 @app.route('/backup')
 @admin_required
 def backup_download():
     """Erstellt ein ZIP-Backup (DB + Rechnungs-PDFs) zum Download."""
-    import zipfile, tempfile, shutil
-    from datetime import datetime
+    import tempfile
 
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = local_now().strftime('%Y%m%d_%H%M%S')
     zip_filename = f"eeg_backup_{timestamp}.zip"
-
-    # WAL checkpoint damit DB konsistent ist
-    db = get_db()
-    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    db.close()
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
     tmp.close()
-
-    with zipfile.ZipFile(tmp.name, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Datenbank
-        zf.write(DB_PATH, 'eeg_data.db')
-        zf.writestr(
-            'backup_manifest.txt',
-            f"created_at={local_now().isoformat(timespec='seconds')}\n"
-            f"database=eeg_data.db\n"
-            f"invoices_folder=invoices/\n"
-        )
-        # Rechnungs-PDFs
-        if os.path.isdir(INVOICE_FOLDER):
-            for fname in os.listdir(INVOICE_FOLDER):
-                fpath = os.path.join(INVOICE_FOLDER, fname)
-                if os.path.isfile(fpath):
-                    zf.write(fpath, f'invoices/{fname}')
+    write_backup_zip(tmp.name)
 
     audit_log('backup_download', f'Backup heruntergeladen: {zip_filename}')
 
@@ -3420,6 +3800,7 @@ def newsletter_delete(id):
 if __name__ == '__main__':
     init_db()
     _startup_mail_config_check()
+    start_backup_scheduler()
     app.run(
         host=os.environ.get('EEG_HOST', '127.0.0.1'),
         port=int(os.environ.get('EEG_PORT', '5000')),

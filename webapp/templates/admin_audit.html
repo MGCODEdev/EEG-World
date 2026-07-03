@@ -20,7 +20,10 @@
     .badge-invite_accept { background: #28a745; color: #fff; }
     .badge-password_change { background: #6610f2; color: #fff; }
     .badge-settings_update { background: #795548; color: #fff; }
-    .badge-backup_download, .badge-backup_restore, .badge-backup_restore_failed { background: #607d8b; color: #fff; }
+    .badge-backup_download, .badge-backup_restore, .badge-backup_restore_failed,
+    .badge-backup_settings_update, .badge-backup_manual, .badge-backup_manual_failed,
+    .badge-backup_auto, .badge-backup_email, .badge-backup_email_failed,
+    .badge-backup_email_manual, .badge-backup_email_manual_failed { background: #607d8b; color: #fff; }
     .badge-portal_data_update { background: #009688; color: #fff; }
     .audit-stat { text-align: center; padding: 1rem; }
     .audit-stat .num { font-size: 1.8rem; font-weight: 700; color: #17252a; }
@@ -159,6 +162,14 @@
                             'backup_download': 'Backup heruntergeladen',
                             'backup_restore': 'Backup wiederhergestellt',
                             'backup_restore_failed': 'Backup fehlgeschlagen',
+                            'backup_settings_update': 'Backup konfiguriert',
+                            'backup_manual': 'Backup erstellt',
+                            'backup_manual_failed': 'Backup fehlgeschlagen',
+                            'backup_auto': 'Auto-Backup',
+                            'backup_email': 'Backup-Mail',
+                            'backup_email_failed': 'Backup-Mail fehlgeschlagen',
+                            'backup_email_manual': 'Backup-Mail manuell',
+                            'backup_email_manual_failed': 'Backup-Mail fehlgeschlagen',
                             'portal_data_update': 'Stammdaten aktualisiert',
                         } %}
                         <span class="audit-badge badge-{{ action }}">
@@ -178,7 +189,7 @@
                             {% elif action in ('contract_upload','contract_download','contract_delete') %}<i class="bi bi-file-earmark-text"></i>
                             {% elif action == 'invite_accept' %}<i class="bi bi-check-circle"></i>
                             {% elif action in ('settings_update',) %}<i class="bi bi-gear"></i>
-                            {% elif action in ('backup_download','backup_restore','backup_restore_failed') %}<i class="bi bi-archive"></i>
+                            {% elif action in ('backup_download','backup_restore','backup_restore_failed','backup_settings_update','backup_manual','backup_manual_failed','backup_auto','backup_email','backup_email_failed','backup_email_manual','backup_email_manual_failed') %}<i class="bi bi-archive"></i>
                             {% elif action == 'portal_data_update' %}<i class="bi bi-pencil"></i>
                             {% else %}<i class="bi bi-dot"></i>
                             {% endif %}

@@ -30,6 +30,12 @@
                 <a href="{{ url_for('backup_download') }}" class="btn btn-success">
                     <i class="bi bi-download"></i> Backup herunterladen
                 </a>
+                <form method="post" action="{{ url_for('admin_backup_run') }}" class="d-inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline-success">
+                        <i class="bi bi-save"></i> Lokal jetzt erstellen
+                    </button>
+                </form>
             </div>
         </div>
     </div>
@@ -56,6 +62,159 @@
                 </form>
             </div>
         </div>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header bg-white">
+        <strong><i class="bi bi-clock-history"></i> Automatisches Backup</strong>
+    </div>
+    <div class="card-body">
+        <form method="post" action="{{ url_for('admin_backup_settings') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="backup_auto_enabled" name="backup_auto_enabled" value="1"
+                               {% if backup_settings.auto_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="backup_auto_enabled">Automatische Backups</label>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="backup_auto_time">Tägliche Uhrzeit</label>
+                    <input type="time" class="form-control" id="backup_auto_time" name="backup_auto_time"
+                           value="{{ backup_settings.auto_time }}">
+                </div>
+                <div class="col-md-6 text-muted small">
+                    Lokale Backups werden im Ordner <code>{{ info.backup_folder }}</code> abgelegt.
+                </div>
+            </div>
+
+            <hr>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label" for="backup_retention_daily">Täglich</label>
+                    <div class="input-group">
+                        <input type="number" min="0" max="31" class="form-control" id="backup_retention_daily"
+                               name="backup_retention_daily" value="{{ backup_settings.retention_daily }}">
+                        <span class="input-group-text">Tage</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="backup_retention_weekly">Wöchentlich</label>
+                    <div class="input-group">
+                        <input type="number" min="0" max="104" class="form-control" id="backup_retention_weekly"
+                               name="backup_retention_weekly" value="{{ backup_settings.retention_weekly }}">
+                        <span class="input-group-text">Wochen</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="backup_retention_monthly">Monatlich</label>
+                    <div class="input-group">
+                        <input type="number" min="0" max="120" class="form-control" id="backup_retention_monthly"
+                               name="backup_retention_monthly" value="{{ backup_settings.retention_monthly }}">
+                        <span class="input-group-text">Monate</span>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="backup_retention_yearly">Jährlich</label>
+                    <div class="input-group">
+                        <input type="number" min="0" max="20" class="form-control" id="backup_retention_yearly"
+                               name="backup_retention_yearly" value="{{ backup_settings.retention_yearly }}">
+                        <span class="input-group-text">Jahre</span>
+                    </div>
+                </div>
+            </div>
+
+            <hr>
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch"
+                               id="backup_email_enabled" name="backup_email_enabled" value="1"
+                               {% if backup_settings.email_enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="backup_email_enabled">Wöchentliche Backup-Mail</label>
+                    </div>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="backup_email_weekday">Wochentag</label>
+                    <select class="form-select" id="backup_email_weekday" name="backup_email_weekday">
+                        {% for value, label in weekdays %}
+                            <option value="{{ value }}" {% if backup_settings.email_weekday == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="backup_email_time">Uhrzeit</label>
+                    <input type="time" class="form-control" id="backup_email_time" name="backup_email_time"
+                           value="{{ backup_settings.email_time }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label" for="backup_email_to">Empfänger</label>
+                    <input type="email" class="form-control" id="backup_email_to" name="backup_email_to"
+                           value="{{ backup_settings.email_to }}">
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label" for="backup_email_max_mb">Mail-Limit</label>
+                    <div class="input-group">
+                        <input type="number" min="1" max="2000" class="form-control" id="backup_email_max_mb"
+                               name="backup_email_max_mb" value="{{ backup_settings.email_max_mb }}">
+                        <span class="input-group-text">MB</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="alert alert-info mt-3 mb-3">
+                <i class="bi bi-info-circle"></i>
+                E-Mail-Anbieter begrenzen Anhänge häufig auf 20 bis 25 MB. Bei größeren Backups bleibt das lokale automatische Backup aktiv, die Mail wird protokolliert fehlgeschlagen.
+            </div>
+
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check2"></i> Backup-Konfiguration speichern
+            </button>
+            <button type="submit" formaction="{{ url_for('admin_backup_send_mail') }}" class="btn btn-outline-primary"
+                    {% if not smtp_configured %}disabled{% endif %}>
+                <i class="bi bi-envelope"></i> Backup-Mail jetzt senden
+            </button>
+            {% if not smtp_configured %}
+                <span class="text-muted ms-2">SMTP ist noch nicht vollständig konfiguriert.</span>
+            {% endif %}
+        </form>
+    </div>
+</div>
+
+<div class="card mt-4">
+    <div class="card-header bg-white">
+        <strong><i class="bi bi-folder2-open"></i> Lokale Backup-Dateien</strong>
+    </div>
+    <div class="card-body p-0">
+        {% if backup_files %}
+            <div class="table-responsive">
+                <table class="table table-sm mb-0 align-middle">
+                    <thead>
+                        <tr>
+                            <th>Datei</th>
+                            <th>Typ</th>
+                            <th>Zeitpunkt</th>
+                            <th class="text-end">Größe</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for backup in backup_files %}
+                            <tr>
+                                <td><code>{{ backup.name }}</code></td>
+                                <td>{{ backup.kind }}</td>
+                                <td>{{ backup.created_at|localdatetime }}</td>
+                                <td class="text-end">{{ "%.1f"|format(backup.size / 1024 / 1024) }} MB</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <div class="p-3 text-muted">Noch keine lokalen Backup-Dateien vorhanden.</div>
+        {% endif %}
     </div>
 </div>
 
