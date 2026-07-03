@@ -198,6 +198,7 @@
                             <th>Typ</th>
                             <th>Zeitpunkt</th>
                             <th class="text-end">Größe</th>
+                            <th class="text-end">Aktion</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -207,6 +208,16 @@
                                 <td>{{ backup.kind }}</td>
                                 <td>{{ backup.created_at|localdatetime }}</td>
                                 <td class="text-end">{{ "%.1f"|format(backup.size / 1024 / 1024) }} MB</td>
+                                <td class="text-end">
+                                    <form method="post" action="{{ url_for('admin_backup_delete') }}" class="d-inline">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <input type="hidden" name="backup_name" value="{{ backup.name }}">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                onclick="return confirm('Backup {{ backup.name }} wirklich dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.')">
+                                            <i class="bi bi-trash"></i> Löschen
+                                        </button>
+                                    </form>
+                                </td>
                             </tr>
                         {% endfor %}
                     </tbody>

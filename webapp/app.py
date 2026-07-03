@@ -2556,6 +2556,22 @@ def list_local_backups():
     return backups
 
 
+def local_backup_path_for_delete(filename):
+    """Validiert eine lokale Backup-Datei und liefert den sicheren Vollpfad."""
+    backup_name = os.path.basename(str(filename or '').strip())
+    if backup_name != str(filename or '').strip():
+        raise ValueError('Ungültiger Backup-Dateiname.')
+    if not _parse_backup_timestamp(backup_name):
+        raise ValueError('Ungültiger Backup-Dateiname.')
+    backup_path = os.path.abspath(os.path.join(BACKUP_FOLDER, backup_name))
+    backup_root = os.path.abspath(BACKUP_FOLDER)
+    if os.path.commonpath([backup_root, backup_path]) != backup_root:
+        raise ValueError('Ungültiger Backup-Pfad.')
+    if not os.path.isfile(backup_path):
+        raise FileNotFoundError('Backup-Datei wurde nicht gefunden.')
+    return backup_path, backup_name
+
+
 def apply_backup_retention(settings):
     """Wendet eine einfache Grossvater-Vater-Sohn-Aufbewahrung auf Auto-Backups an."""
     auto_backups = [
@@ -2800,6 +2816,23 @@ def admin_backup_run():
     except Exception as e:
         audit_log('backup_manual_failed', f'Manuelles lokales Backup fehlgeschlagen: {e}')
         flash(f'Backup konnte nicht erstellt werden: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/delete', methods=['POST'])
+@admin_required
+def admin_backup_delete():
+    """Löscht eine lokale Backup-Datei nach serverseitiger Sicherheitsprüfung."""
+    filename = request.form.get('backup_name', '')
+    try:
+        backup_path, backup_name = local_backup_path_for_delete(filename)
+        size_mb = os.path.getsize(backup_path) / 1024 / 1024
+        os.remove(backup_path)
+        audit_log('backup_delete', f'Lokales Backup gelöscht: {backup_name} ({size_mb:.1f} MB)')
+        flash(f'Backup gelöscht: {backup_name}', 'success')
+    except Exception as e:
+        audit_log('backup_delete_failed', f'Backup-Löschung fehlgeschlagen: {filename} ({e})')
+        flash(f'Backup konnte nicht gelöscht werden: {e}', 'danger')
     return redirect(url_for('admin_backup'))
 
 
