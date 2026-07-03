@@ -73,7 +73,7 @@ os.makedirs(INVOICE_FOLDER, exist_ok=True)
 os.makedirs(BACKUP_FOLDER, exist_ok=True)
 
 BACKUP_SETTING_DEFAULTS = {
-    'backup_auto_enabled': 'false',
+    'backup_auto_enabled': 'true',
     'backup_auto_time': '02:30',
     'backup_retention_daily': '3',
     'backup_retention_weekly': '4',
