@@ -1,4 +1,8 @@
+import json
+import os
+import tempfile
 import unittest
+import zipfile
 
 import app as eegapp
 
@@ -152,6 +156,52 @@ class GoogleOAuthPKCETests(unittest.TestCase):
             self.assertIn("name contains 'eeg_'", files.list_kwargs['q'])
         finally:
             eegapp._google_drive_service = original_service
+
+    def test_private_json_file_is_encrypted_when_key_is_set(self):
+        original_key = os.environ.get('EEG_DATA_ENCRYPTION_KEY')
+        os.environ['EEG_DATA_ENCRYPTION_KEY'] = 'test-encryption-key-for-google-drive-secrets'
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp.close()
+        try:
+            payload = {'refresh_token': 'very-secret-refresh-token'}
+            eegapp._write_private_json_file(tmp.name, payload)
+
+            with open(tmp.name, encoding='utf-8') as f:
+                raw = f.read()
+            self.assertNotIn('very-secret-refresh-token', raw)
+            stored = json.loads(raw)
+            self.assertEqual(stored['_eeg_encrypted'], 1)
+
+            self.assertEqual(eegapp._load_private_json_file(tmp.name), payload)
+        finally:
+            if original_key is None:
+                os.environ.pop('EEG_DATA_ENCRYPTION_KEY', None)
+            else:
+                os.environ['EEG_DATA_ENCRYPTION_KEY'] = original_key
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+    def test_safe_invoice_pdf_filename_removes_path_characters(self):
+        filename = eegapp.safe_invoice_pdf_filename(2, 7, '../Max Muster/Privat')
+        self.assertEqual(filename, 'abrechnung_2_7_Max_Muster_Privat.pdf')
+
+    def test_validate_backup_zip_rejects_unexpected_files(self):
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+        tmp.close()
+        try:
+            with zipfile.ZipFile(tmp.name, 'w') as zf:
+                zf.writestr('eeg_data.db', b'db')
+                zf.writestr('instance/google_drive_token.json', b'nope')
+            with zipfile.ZipFile(tmp.name, 'r') as zf:
+                with self.assertRaises(ValueError):
+                    eegapp.validate_backup_zip(zf)
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
     def test_trash_google_drive_backup_rejects_non_backup_file(self):
         files = FakeDriveFiles(metadata={

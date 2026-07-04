@@ -47,11 +47,18 @@ cp .env.example .env
 Danach in `.env` mindestens setzen:
 
 - `EEG_SECRET_KEY`
+- `EEG_DATA_ENCRYPTION_KEY` für lokal gespeicherte OAuth-/Secret-Dateien
 - `EEG_INITIAL_ADMIN_PASSWORD` für die erste Admin-Anlage
 - Organisationsdaten (`EEG_ORG_NAME`, `EEG_ORG_EMAIL`, ...)
 
 Produktiv sollte die App hinter einem Reverse Proxy mit HTTPS laufen. Der direkte
 Flask-Start bindet standardmäßig nur an `127.0.0.1`.
+
+Einen passenden separaten Datenverschlüsselungs-Key erzeugst du so:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
 ## Google Drive Backup
 
@@ -72,10 +79,25 @@ EEG_GOOGLE_OAUTH_REDIRECT_URI=https://deine-domain.example/admin/backup/google/c
 ```
 
 `instance/` ist vom Git-Repository ausgeschlossen.
+Google-Client- und Token-Dateien werden lokal als private Dateien gespeichert.
+Wenn `EEG_DATA_ENCRYPTION_KEY` gesetzt ist, werden sie verschlüsselt abgelegt.
 Für dauerhafte automatische Backups sollte der OAuth-Zustimmungsbildschirm in
 Google Cloud auf **In production** stehen; im Testmodus können Refresh-Tokens
 nach kurzer Zeit ablaufen. Die Backup-Seite enthält einen Button
 **Drive-Verbindung prüfen**, der Token-Refresh und Drive-API-Zugriff testet.
+
+## Dependency-Audit
+
+Die direkten Python-Abhängigkeiten sind in `requirements.txt` gepinnt. Für einen
+aktuellen Schwachstellencheck kann zusätzlich `pip-audit` installiert werden:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m pip_audit -r requirements.txt
+```
+
+`pip-audit` nutzt die Python Packaging Advisory Database/PyPI-Daten und sollte
+vor Deployments oder mindestens regelmäßig ausgeführt werden.
 
 ## Dateistruktur
 

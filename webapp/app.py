@@ -12,6 +12,7 @@ import time
 import base64
 import hashlib
 import ipaddress
+import io
 from datetime import datetime, date, timezone, timedelta
 from functools import wraps
 from email.header import Header
@@ -93,6 +94,8 @@ GOOGLE_TOKEN_FILE = os.environ.get(
     os.path.join(INSTANCE_DIR, 'google_drive_token.json')
 )
 GOOGLE_OAUTH_REDIRECT_URI = os.environ.get('EEG_GOOGLE_OAUTH_REDIRECT_URI', '')
+RESTORE_MAX_FILES = int(os.environ.get('EEG_RESTORE_MAX_FILES', '1000'))
+RESTORE_MAX_UNCOMPRESSED_BYTES = int(os.environ.get('EEG_RESTORE_MAX_UNCOMPRESSED_MB', '512')) * 1024 * 1024
 
 BACKUP_SETTING_DEFAULTS = {
     'backup_auto_enabled': 'true',
@@ -350,6 +353,32 @@ def safe_extract_zip_member(zf, member_name, destination):
     return target_path
 
 
+def validate_backup_zip(zf):
+    """Prueft Backup-ZIPs vor dem Entpacken gegen unerwartete Dateien und ZIP-Bomben."""
+    infos = [info for info in zf.infolist() if not info.is_dir()]
+    if len(infos) > RESTORE_MAX_FILES:
+        raise ValueError(f'Backup enthaelt zu viele Dateien ({len(infos)} > {RESTORE_MAX_FILES}).')
+
+    total_size = sum(info.file_size for info in infos)
+    if total_size > RESTORE_MAX_UNCOMPRESSED_BYTES:
+        max_mb = RESTORE_MAX_UNCOMPRESSED_BYTES / 1024 / 1024
+        raise ValueError(f'Backup ist entpackt zu gross ({total_size / 1024 / 1024:.1f} MB > {max_mb:.0f} MB).')
+
+    names = []
+    for info in infos:
+        name = info.filename
+        normalized = os.path.normpath(name).replace('\\', '/')
+        if normalized.startswith('../') or normalized.startswith('/') or '/..' in normalized:
+            raise ValueError(f'Ungueltiger ZIP-Pfad: {name}')
+        if normalized not in {'eeg_data.db', 'backup_manifest.txt'} and not normalized.startswith('invoices/'):
+            raise ValueError(f'Unerwartete Datei im Backup: {name}')
+        names.append(normalized)
+
+    if 'eeg_data.db' not in names:
+        raise ValueError('Ungueltiges Backup: eeg_data.db nicht gefunden.')
+    return names
+
+
 @app.before_request
 def enforce_allowed_country():
     """Optionaler Laenderblock, gedacht fuer Cloudflare/Reverse-Proxy-Header."""
@@ -418,6 +447,21 @@ def set_security_headers(response):
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'; "
+        "img-src 'self' data:; "
+        "font-src 'self' https://cdn.jsdelivr.net data:; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://code.highcharts.com; "
+        "connect-src 'self'; "
+        "object-src 'none'"
+    )
+    if _IS_PRODUCTION and (request.is_secure or request.headers.get('X-Forwarded-Proto', '').lower() == 'https'):
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     return response
 
 login_manager = LoginManager()
@@ -1341,6 +1385,13 @@ def _format_import_status_label(data_status):
     return 'Endgültig' if data_status == 'final' else 'Vorläufig'
 
 
+def safe_invoice_pdf_filename(invoice_id, member_id, member_name):
+    """Erzeugt einen Download-Dateinamen ohne daraus einen Serverpfad zu bauen."""
+    safe_name = secure_filename(str(member_name or '').replace(' ', '_')) or f'mitglied_{member_id}'
+    safe_name = safe_name[:80]
+    return f'abrechnung_{int(invoice_id)}_{int(member_id)}_{safe_name}.pdf'
+
+
 def _active_batches_for_period(db, period_start, period_end, data_status=None):
     params = [period_start, period_end]
     status_filter = ''
@@ -2149,11 +2200,11 @@ def invoice_pdf(id, member_id):
                            pie_monthly_colors=pie_monthly_colors)
 
     from weasyprint import HTML
-    pdf_filename = f"abrechnung_{id}_{member['name'].replace(' ', '_')}.pdf"
-    pdf_path = os.path.join(INVOICE_FOLDER, pdf_filename)
-    HTML(string=html, base_url=BASE_DIR).write_pdf(pdf_path)
+    pdf_filename = safe_invoice_pdf_filename(id, member_id, member['name'])
+    pdf_bytes = HTML(string=html, base_url=BASE_DIR).write_pdf()
 
-    return send_file(pdf_path, as_attachment=True, download_name=pdf_filename)
+    return send_file(io.BytesIO(pdf_bytes), as_attachment=True,
+                     download_name=pdf_filename, mimetype='application/pdf')
 
 
 def generate_epc_qr(amount, invoice, member):
@@ -3502,7 +3553,38 @@ def _google_libs_available():
     return True
 
 
-def _write_private_json_file(path, payload):
+def _secret_cipher_for_key(raw_key):
+    if not raw_key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError as e:
+        raise RuntimeError('cryptography fehlt. Bitte requirements.txt installieren.') from e
+
+    key_text = str(raw_key).strip()
+    try:
+        return Fernet(key_text.encode('ascii'))
+    except Exception:
+        derived_key = base64.urlsafe_b64encode(hashlib.sha256(key_text.encode('utf-8')).digest())
+        return Fernet(derived_key)
+
+
+def _secret_cipher_candidates():
+    keys = []
+    data_key = os.environ.get('EEG_DATA_ENCRYPTION_KEY')
+    if data_key:
+        keys.append(data_key)
+    if _SECRET_KEY and _SECRET_KEY not in keys:
+        keys.append(_SECRET_KEY)
+    return [_secret_cipher_for_key(key) for key in keys if key]
+
+
+def _secret_cipher():
+    candidates = _secret_cipher_candidates()
+    return candidates[0] if candidates else None
+
+
+def _atomic_write_json_file(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_path = f'{path}.tmp'
     with open(tmp_path, 'w', encoding='utf-8') as f:
@@ -3510,6 +3592,42 @@ def _write_private_json_file(path, payload):
         f.write('\n')
     os.chmod(tmp_path, 0o600)
     os.replace(tmp_path, path)
+
+
+def _write_private_json_file(path, payload):
+    """Speichert lokale Secret-JSONs verschluesselt, wenn ein persistenter Key vorhanden ist."""
+    cipher = _secret_cipher()
+    if cipher:
+        encrypted = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode('utf-8')).decode('ascii')
+        _atomic_write_json_file(path, {
+            '_eeg_encrypted': 1,
+            'cipher': 'fernet-sha256-v1',
+            'payload': encrypted,
+        })
+        return
+    if _IS_PRODUCTION:
+        raise RuntimeError('EEG_DATA_ENCRYPTION_KEY oder EEG_SECRET_KEY muss fuer Secret-Speicherung gesetzt sein.')
+    app.logger.warning('Secret JSON wird unverschluesselt gespeichert, weil kein persistenter Encryption-Key gesetzt ist.')
+    _atomic_write_json_file(path, payload)
+
+
+def _load_private_json_file(path):
+    with open(path, encoding='utf-8') as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict) or not payload.get('_eeg_encrypted'):
+        return payload
+
+    candidates = _secret_cipher_candidates()
+    if not candidates:
+        raise RuntimeError('Secret-Datei ist verschluesselt, aber EEG_DATA_ENCRYPTION_KEY/EEG_SECRET_KEY fehlt.')
+    encrypted = str(payload.get('payload') or '').encode('ascii')
+    for cipher in candidates:
+        try:
+            decrypted = cipher.decrypt(encrypted)
+            return json.loads(decrypted.decode('utf-8'))
+        except Exception:
+            continue
+    raise RuntimeError('Secret-Datei konnte nicht entschluesselt werden. Encryption-Key pruefen.')
 
 
 def _load_json_payload(file_field, text_field, label):
@@ -3553,8 +3671,7 @@ def _manual_google_token_payload():
     client_id = (request.form.get('google_token_client_id') or '').strip()
     client_secret = (request.form.get('google_token_client_secret') or '').strip()
     if (not client_id or not client_secret) and os.path.exists(GOOGLE_CLIENT_SECRETS_FILE):
-        with open(GOOGLE_CLIENT_SECRETS_FILE, encoding='utf-8') as f:
-            client_payload = json.load(f)
+        client_payload = _load_private_json_file(GOOGLE_CLIENT_SECRETS_FILE)
         section = client_payload.get('web') or client_payload.get('installed') or {}
         client_id = client_id or section.get('client_id', '')
         client_secret = client_secret or section.get('client_secret', '')
@@ -3692,8 +3809,9 @@ def _google_drive_flow():
         from google_auth_oauthlib.flow import Flow
     except ImportError as e:
         raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
-    return Flow.from_client_secrets_file(
-        GOOGLE_CLIENT_SECRETS_FILE,
+    client_config = _load_private_json_file(GOOGLE_CLIENT_SECRETS_FILE)
+    return Flow.from_client_config(
+        client_config,
         scopes=GOOGLE_DRIVE_SCOPES,
         redirect_uri=_google_redirect_uri(),
     )
@@ -3708,7 +3826,8 @@ def _load_google_drive_credentials(refresh=False):
     except ImportError as e:
         raise RuntimeError('Google Drive Python-Bibliotheken fehlen. Bitte requirements.txt installieren.') from e
 
-    credentials = Credentials.from_authorized_user_file(GOOGLE_TOKEN_FILE, GOOGLE_DRIVE_SCOPES)
+    token_payload = _load_private_json_file(GOOGLE_TOKEN_FILE)
+    credentials = Credentials.from_authorized_user_info(token_payload, GOOGLE_DRIVE_SCOPES)
     if refresh and credentials and credentials.expired and credentials.refresh_token:
         credentials.refresh(GoogleAuthRequest())
         _write_private_json_file(GOOGLE_TOKEN_FILE, json.loads(credentials.to_json()))
@@ -4428,6 +4547,9 @@ def backup_restore():
     if not file.filename.lower().endswith('.zip'):
         flash('Nur ZIP-Dateien sind erlaubt.', 'danger')
         return redirect(url_for('admin_backup'))
+    if request.form.get('restore_confirm') != '1':
+        flash('Bitte bestätigen Sie die Wiederherstellung ausdrücklich.', 'danger')
+        return redirect(url_for('admin_backup'))
 
     # Temporär speichern
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
@@ -4435,11 +4557,12 @@ def backup_restore():
     tmp.close()
 
     try:
+        if not zipfile.is_zipfile(tmp.name):
+            flash('Ungültiges Backup: Die Datei ist kein lesbares ZIP-Archiv.', 'danger')
+            return redirect(url_for('admin_backup'))
+
         with zipfile.ZipFile(tmp.name, 'r') as zf:
-            names = zf.namelist()
-            if 'eeg_data.db' not in names:
-                flash('Ungültiges Backup: eeg_data.db nicht gefunden.', 'danger')
-                return redirect(url_for('admin_backup'))
+            names = validate_backup_zip(zf)
 
             # DB schließen
             close_db()
@@ -5787,8 +5910,7 @@ def newsletter_preview(id):
     if not nl:
         flash('Newsletter nicht gefunden.', 'danger')
         return redirect(url_for('newsletter_list'))
-    base_url = request.url_root.rstrip('/')
-    logo_url = f"{base_url}/static/logo.png"
+    logo_url = public_url_for('static', filename='logo.png')
     html = render_template('newsletter_email.html',
         subject=nl['subject'],
         preview_text=nl['subject'],
@@ -5827,8 +5949,8 @@ def newsletter_test(id):
         flash(f'E-Mail-Konfiguration ungültig: {e}', 'danger')
         return redirect(url_for('newsletter_list'))
 
-    base_url = request.url_root.rstrip('/')
-    logo_url = f"{base_url}/static/logo.png"
+    base_url = public_base_url()
+    logo_url = public_url_for('static', filename='logo.png')
 
     full_html = render_template('newsletter_email.html',
         subject=nl['subject'],
@@ -5898,10 +6020,8 @@ def newsletter_send(id):
 
     sent = 0
     failed = 0
-    base_url = request.url_root.rstrip('/')
-
     # Logo-URL für E-Mail
-    logo_url = f"{base_url}/static/logo.png"
+    logo_url = public_url_for('static', filename='logo.png')
 
     try:
         server = smtplib.SMTP(mail_cfg['smtp_host'], mail_cfg['smtp_port'])
@@ -5917,7 +6037,7 @@ def newsletter_send(id):
                 db.execute("UPDATE members SET unsubscribe_token=? WHERE id=?", (unsub_token, member['id']))
                 db.commit()
 
-            unsub_url = f"{base_url}/newsletter/unsubscribe/{unsub_token}"
+            unsub_url = public_url_for('newsletter_unsubscribe', token=unsub_token)
 
             # HTML aus Template rendern
             full_html = render_template('newsletter_email.html',
