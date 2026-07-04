@@ -25,6 +25,100 @@
     </div>
 </div>
 
+{% if account %}
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-wallet2"></i> Mein EEG-Konto</strong></div>
+    <div class="card-body">
+        <div class="row g-3 mb-3">
+            <div class="col-md-3">
+                <div class="border rounded p-3 h-100">
+                    <div class="text-muted small text-uppercase">Aktueller Kontostand</div>
+                    <div class="fs-4 fw-bold {% if account.balance > 0 %}text-danger{% elif account.balance < 0 %}text-success{% endif %}">
+                        {% if account.balance > 0 %}{{ "%.2f"|format(account.balance) }} €
+                        {% elif account.balance < 0 %}−{{ "%.2f"|format(account.balance|abs) }} €
+                        {% else %}0,00 €{% endif %}
+                    </div>
+                    <div class="small text-muted">
+                        {% if account.balance > 0 %}offen zu zahlen
+                        {% elif account.balance < 0 %}Guthaben
+                        {% else %}ausgeglichen{% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="border rounded p-3 h-100">
+                    <div class="text-muted small text-uppercase">Offene Forderungen</div>
+                    <div class="fs-5 fw-bold text-danger">{{ "%.2f"|format(account.open_claims) }} €</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="border rounded p-3 h-100">
+                    <div class="text-muted small text-uppercase">Offene Gutschriften</div>
+                    <div class="fs-5 fw-bold text-success">{{ "%.2f"|format(account.open_credits|abs) }} €</div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="border rounded p-3 h-100">
+                    <div class="text-muted small text-uppercase">Buchungsrückstand</div>
+                    <div class="fs-5 fw-bold {% if account.overdue_claims > 0 %}text-warning{% endif %}">{{ "%.2f"|format(account.overdue_claims) }} €</div>
+                </div>
+            </div>
+        </div>
+
+        {% if account.previous_open %}
+        <div class="alert alert-warning">
+            <strong>Offen aus Vorperioden:</strong>
+            {% for row in account.previous_open %}
+                <span class="badge bg-secondary ms-1">#{{ row.invoice_id }} · {{ row.period_from }}–{{ row.period_to }} · {{ "%.2f"|format(row.net_total) }} €</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="table-responsive">
+            <table class="table table-sm mb-0 align-middle">
+                <thead>
+                    <tr>
+                        <th>Datum</th>
+                        <th>Buchung</th>
+                        <th>Status</th>
+                        <th class="text-end">Betrag</th>
+                        <th class="text-end">Saldo danach</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in account.history[:12] %}
+                    <tr class="{% if entry.is_overdue %}table-warning{% endif %}">
+                        <td>{{ entry.date.strftime('%d.%m.%Y') }}</td>
+                        <td>
+                            {{ entry.label }}
+                            {% if entry.invoice_id %}<span class="text-muted small">#{{ entry.invoice_id }}</span>{% endif %}
+                            {% if entry.is_previous_period_open %}<span class="badge bg-secondary ms-1">Vorperiode offen</span>{% endif %}
+                            {% if entry.is_overdue %}<span class="badge bg-warning text-dark ms-1">Buchungsrückstand</span>{% endif %}
+                        </td>
+                        <td>
+                            <span class="badge bg-{% if entry.status == 'gebucht' %}success{% else %}secondary{% endif %}">{{ entry.status }}</span>
+                        </td>
+                        <td class="text-end {% if entry.amount > 0 %}text-danger{% elif entry.amount < 0 %}text-success{% endif %}">
+                            {% if entry.amount > 0 %}+{{ "%.2f"|format(entry.amount) }} €
+                            {% elif entry.amount < 0 %}−{{ "%.2f"|format(entry.amount|abs) }} €
+                            {% else %}0,00 €{% endif %}
+                        </td>
+                        <td class="text-end fw-semibold {% if entry.balance_after > 0 %}text-danger{% elif entry.balance_after < 0 %}text-success{% endif %}">
+                            {% if entry.balance_after > 0 %}{{ "%.2f"|format(entry.balance_after) }} €
+                            {% elif entry.balance_after < 0 %}−{{ "%.2f"|format(entry.balance_after|abs) }} €
+                            {% else %}0,00 €{% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="text-center text-muted py-3">Noch keine Buchungen vorhanden</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 {% if stats %}
 <div class="row g-3 mb-4">
     <div class="col-md-3">

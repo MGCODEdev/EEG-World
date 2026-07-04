@@ -20,6 +20,22 @@
                 <input type="file" name="files" class="form-control" multiple accept=".xlsx" required>
                 <div class="form-text">EDA Energiedatenreport-Dateien im Format RC*_YYYY-MM-DDThh_mm-*.xlsx</div>
             </div>
+            <div class="mb-3">
+                <label class="form-label d-block">Datenstatus</label>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="data_status" id="data_status_provisional" value="provisional" checked>
+                    <label class="form-check-label" for="data_status_provisional">
+                        <span class="badge bg-warning text-dark">Vorläufig</span>
+                    </label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="data_status" id="data_status_final" value="final">
+                    <label class="form-check-label" for="data_status_final">
+                        <span class="badge bg-success">Endgültig</span>
+                    </label>
+                </div>
+                <div class="form-text">Endgültige Daten ersetzen vorläufige Daten desselben Zeitraums.</div>
+            </div>
             <div class="form-check mb-3">
                 <input type="checkbox" name="overwrite" value="1" class="form-check-input" id="overwrite">
                 <label class="form-check-label" for="overwrite">
@@ -27,7 +43,10 @@
                     Bestehende Daten überschreiben bei Überschneidung
                 </label>
             </div>
-            <button type="submit" class="btn btn-success"><i class="bi bi-upload"></i> Importieren</button>
+            <button type="submit" class="btn btn-success"
+                    onclick="if (document.getElementById('data_status_final').checked) { return confirm('Diese Datei als endgültige Daten importieren? Vorläufige Daten im gleichen Zeitraum werden ersetzt.'); } return true;">
+                <i class="bi bi-upload"></i> Importieren
+            </button>
         </form>
     </div>
 </div>
@@ -40,6 +59,7 @@
             <thead>
                 <tr>
                     <th>Datei</th>
+                    <th>Datenstatus</th>
                     <th class="text-end">Importierte Werte</th>
                     <th class="text-end">Überschrieben</th>
                     <th>Status</th>
@@ -50,13 +70,21 @@
             {% for r in results %}
             <tr>
                 <td><small>{{ r.filename }}</small></td>
+                <td>
+                    {% if r.data_status == 'final' %}
+                    <span class="badge bg-success">Endgültig</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Vorläufig</span>
+                    {% endif %}
+                </td>
                 <td class="text-end">{{ "{:,.0f}".format(r.records) }}</td>
                 <td class="text-end">{{ "{:,.0f}".format(r.overwritten) }}</td>
                 <td>
                     {% if r.status == 'success' %}
                     <span class="badge bg-success">Erfolgreich</span>
                     {% else %}
-                    <span class="badge bg-danger" title="{{ r.error or '' }}">Fehler</span>
+                    <span class="badge bg-danger">Fehler</span>
+                    {% if r.error %}<div class="small text-danger mt-1">{{ r.error }}</div>{% endif %}
                     {% endif %}
                 </td>
                 <td><small>{{ r.imported_at|localdatetime if r.imported_at else '—' }}</small></td>
@@ -76,6 +104,7 @@
             <thead>
                 <tr>
                     <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='filename', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Datei</a></th>
+                    <th>Datenstatus</th>
                     <th class="text-end"><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='records_imported', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Importierte Werte</a></th>
                     <th class="text-end">Überschrieben</th>
                     <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', values_sort='status', values_dir=values_next_dir, files_sort=files_sort, files_dir=files_dir) }}">Status</a></th>
@@ -87,6 +116,13 @@
             {% for v in import_values %}
             <tr>
                 <td><small>{{ v['filename'] }}</small></td>
+                <td>
+                    {% if v['data_status'] == 'final' %}
+                    <span class="badge bg-success">Endgültig</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Vorläufig</span>
+                    {% endif %}
+                </td>
                 <td class="text-end">{{ "{:,.0f}".format(v['records_imported'] or 0) }}</td>
                 <td class="text-end">{{ "{:,.0f}".format(v['records_overwritten'] or 0) }}</td>
                 <td>
@@ -94,6 +130,7 @@
                     <span class="badge bg-success">Erfolgreich</span>
                     {% elif v['status'] == 'error' %}
                     <span class="badge bg-danger">Fehler</span>
+                    {% if v['error_message'] %}<div class="small text-danger mt-1">{{ v['error_message'] }}</div>{% endif %}
                     {% else %}
                     <span class="badge bg-secondary">{{ v['status'] }}</span>
                     {% endif %}
@@ -117,6 +154,7 @@
                 <tr>
                     <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', files_sort='source_file', files_dir=files_next_dir, values_sort=values_sort, values_dir=values_dir) }}">Datei</a></th>
                     <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', files_sort='period_start', files_dir=files_next_dir, values_sort=values_sort, values_dir=values_dir) }}">Zeitraum</a></th>
+                    <th>Status</th>
                     <th><a class="link-dark text-decoration-none" href="{{ url_for('import_data', files_sort='imported_at', files_dir=files_next_dir, values_sort=values_sort, values_dir=values_dir) }}">Importiert am</a></th>
                 </tr>
             </thead>
@@ -125,6 +163,15 @@
             <tr>
                 <td><small>{{ imp['source_file'] }}</small></td>
                 <td>{{ imp['period_start'][:10] }} – {{ imp['period_end'][:10] }}</td>
+                <td>
+                    {% if imp['replaced_at'] %}
+                    <span class="badge bg-secondary">Ersetzt</span>
+                    {% elif imp['data_status'] == 'final' %}
+                    <span class="badge bg-success">Endgültig</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Vorläufig</span>
+                    {% endif %}
+                </td>
                 <td><small>{{ imp['imported_at']|localdatetime }}</small></td>
             </tr>
             {% endfor %}

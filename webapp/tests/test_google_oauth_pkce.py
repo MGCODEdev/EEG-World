@@ -3,6 +3,45 @@ import unittest
 import app as eegapp
 
 
+class FakeDriveFiles:
+    def __init__(self, files=None, metadata=None):
+        self._files = files or []
+        self._metadata = metadata or {}
+        self.list_kwargs = None
+        self.updated = None
+
+    def list(self, **kwargs):
+        self.list_kwargs = kwargs
+        return self
+
+    def get(self, **kwargs):
+        self.get_kwargs = kwargs
+        return self
+
+    def update(self, **kwargs):
+        self.updated = kwargs
+        return self
+
+    def execute(self):
+        if self.updated:
+            return {
+                'id': self.updated['fileId'],
+                'name': self._metadata.get('name'),
+                'trashed': True,
+            }
+        if getattr(self, 'get_kwargs', None):
+            return self._metadata
+        return {'files': self._files}
+
+
+class FakeDriveService:
+    def __init__(self, files):
+        self.files_resource = files
+
+    def files(self):
+        return self.files_resource
+
+
 class GoogleOAuthPKCETests(unittest.TestCase):
     def setUp(self):
         eegapp.init_db()
@@ -84,6 +123,69 @@ class GoogleOAuthPKCETests(unittest.TestCase):
         finally:
             eegapp._google_drive_flow = original_flow
             eegapp._write_private_json_file = original_write
+
+    def test_list_google_drive_backups_filters_and_normalizes_files(self):
+        files = FakeDriveFiles([
+            {
+                'id': 'driveid123',
+                'name': 'eeg_manual_20260703_201500.zip',
+                'size': '2097152',
+                'createdTime': '2026-07-03T18:15:00Z',
+                'modifiedTime': '2026-07-03T18:16:00Z',
+                'webViewLink': 'https://drive.google.com/file/d/driveid123',
+                'mimeType': 'application/zip',
+            },
+            {
+                'id': 'other123',
+                'name': 'not_a_backup.zip',
+                'size': '1',
+            },
+        ])
+        original_service = eegapp._google_drive_service
+        try:
+            eegapp._google_drive_service = lambda: FakeDriveService(files)
+            with eegapp.app.app_context():
+                backups = eegapp.list_google_drive_backups(eegapp.get_db())
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0]['name'], 'eeg_manual_20260703_201500.zip')
+            self.assertEqual(backups[0]['size'], 2097152)
+            self.assertIn("name contains 'eeg_'", files.list_kwargs['q'])
+        finally:
+            eegapp._google_drive_service = original_service
+
+    def test_trash_google_drive_backup_rejects_non_backup_file(self):
+        files = FakeDriveFiles(metadata={
+            'id': 'driveid123',
+            'name': 'private_document.zip',
+            'mimeType': 'application/zip',
+            'trashed': False,
+        })
+        original_service = eegapp._google_drive_service
+        try:
+            eegapp._google_drive_service = lambda: FakeDriveService(files)
+            with eegapp.app.app_context():
+                with self.assertRaises(ValueError):
+                    eegapp.trash_google_drive_backup(eegapp.get_db(), 'driveid123')
+            self.assertIsNone(files.updated)
+        finally:
+            eegapp._google_drive_service = original_service
+
+    def test_trash_google_drive_backup_moves_valid_backup_to_trash(self):
+        files = FakeDriveFiles(metadata={
+            'id': 'driveid123',
+            'name': 'eeg_auto_20260703_021500.zip',
+            'mimeType': 'application/zip',
+            'trashed': False,
+        })
+        original_service = eegapp._google_drive_service
+        try:
+            eegapp._google_drive_service = lambda: FakeDriveService(files)
+            with eegapp.app.app_context():
+                deleted = eegapp.trash_google_drive_backup(eegapp.get_db(), 'driveid123')
+            self.assertEqual(deleted['name'], 'eeg_auto_20260703_021500.zip')
+            self.assertTrue(files.updated['body']['trashed'])
+        finally:
+            eegapp._google_drive_service = original_service
 
 
 if __name__ == '__main__':

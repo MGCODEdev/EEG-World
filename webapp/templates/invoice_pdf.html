@@ -29,6 +29,36 @@
             line-height: 1.5;
         }
 
+        .provisional-watermark {
+            position: fixed;
+            top: 43%;
+            left: -22mm;
+            width: 250mm;
+            text-align: center;
+            transform: rotate(-34deg);
+            font-size: 30pt;
+            font-weight: 900;
+            letter-spacing: 2.5px;
+            color: rgba(198, 83, 63, .16);
+            border-top: 2px solid rgba(198, 83, 63, .10);
+            border-bottom: 2px solid rgba(198, 83, 63, .10);
+            padding: 7mm 0;
+            z-index: 999;
+            pointer-events: none;
+        }
+        .provisional-note {
+            border: 1.2px solid #d99229;
+            background: #fff7e6;
+            color: #5d3b05;
+            padding: 7px 9px;
+            margin: 0 0 12px 0;
+            font-size: 8.4pt;
+            line-height: 1.45;
+        }
+        .provisional-note strong {
+            color: #8a4f00;
+        }
+
         .page-break { page-break-before: always; }
 
         /* ===== HEADER ===== */
@@ -566,6 +596,9 @@
     </style>
 </head>
 <body>
+{% if invoice['data_status'] != 'final' %}
+<div class="provisional-watermark">VORLÄUFIGE INFORMATION</div>
+{% endif %}
 
 <!-- ════════════════════════════════════════════════════════════════════════
      SEITE 1: ABRECHNUNG
@@ -602,12 +635,29 @@
 </div>
 
 <div class="subject">
+    {% if invoice['data_status'] == 'final' %}
     Energieabrechnung für den Zeitraum {{ invoice['period_from'] }} bis {{ invoice['period_to'] }}
+    {% else %}
+    Vorläufige Information zur Energieabrechnung für den Zeitraum {{ invoice['period_from'] }} bis {{ invoice['period_to'] }}
+    {% endif %}
 </div>
+
+{% if invoice['data_status'] != 'final' %}
+<div class="provisional-note">
+    <strong>Vorläufige Information, keine finale Abrechnung.</strong>
+    Dieses Dokument dient nur zur Kontrolle und Vorschau. Beträge, Energiemengen und Buchungssalden können sich noch ändern.
+    Versand, Zahlungsaufforderung und endgültiger Abschluss sind erst zulässig, wenn für den gesamten Zeitraum finale Messdaten vorliegen
+    und die Abrechnung danach neu berechnet wurde.
+</div>
+{% endif %}
 
 <p class="intro">
     Sehr geehrte/r {{ member['name'] }},<br>
+    {% if invoice['data_status'] == 'final' %}
     nachfolgend Ihre Abrechnung des innergemeinschaftlichen Energieaustauschs gemäß § 16c ElWOG 2010 i.V.m. EAG.
+    {% else %}
+    nachfolgend erhalten Sie eine vorläufige Vorschau des innergemeinschaftlichen Energieaustauschs gemäß § 16c ElWOG 2010 i.V.m. EAG.
+    {% endif %}
 </p>
 
 <div class="zp-box">
@@ -648,10 +698,37 @@
         <td class="r">{% if item['type'] == 'generation' %}−{% endif %}{{ "%.2f"|format(item['amount_eur']) }}</td>
     </tr>
     {% endfor %}
+    {% for carryover in carryovers %}
+    {% set ns.pos = ns.pos + 1 %}
+    <tr>
+        <td>{{ ns.pos }}</td>
+        <td>
+            {% if carryover['amount_eur'] > 0 %}
+            Buchungsrückstand aus Vorperioden
+            {% else %}
+            Guthaben aus Vorperioden
+            {% endif %}
+            <span class="sub">Übernommen aus Abrechnung #{{ carryover['source_invoice_id'] }} ({{ carryover['source_period_from'] }} – {{ carryover['source_period_to'] }})</span>
+        </td>
+        <td class="r">–</td>
+        <td class="r">–</td>
+        <td class="r">{% if carryover['amount_eur'] < 0 %}−{% endif %}{{ "%.2f"|format(carryover['amount_eur']|abs) }}</td>
+    </tr>
+    {% endfor %}
     </tbody>
     <tfoot>
+        {% if carryovers %}
         <tr>
-            <td colspan="4">{% if net_total >= 0 %}Netto-Rechnungsbetrag{% else %}Netto-Gutschrift{% endif %}</td>
+            <td colspan="4">Zwischensumme Energieabrechnung</td>
+            <td class="r">{% if energy_net_total < 0 %}−{% endif %}{{ "%.2f"|format(energy_net_total|abs) }} €</td>
+        </tr>
+        <tr>
+            <td colspan="4">{% if carryover_total >= 0 %}Vortrag aus Vorperioden{% else %}Guthaben aus Vorperioden{% endif %}</td>
+            <td class="r">{% if carryover_total < 0 %}−{% endif %}{{ "%.2f"|format(carryover_total|abs) }} €</td>
+        </tr>
+        {% endif %}
+        <tr>
+            <td colspan="4">{% if net_total >= 0 %}Zahlungsbetrag gesamt{% else %}Guthaben gesamt{% endif %}</td>
             <td class="r">{% if net_total < 0 %}−{% endif %}{{ "%.2f"|format(net_total|abs) }} €</td>
         </tr>
     </tfoot>

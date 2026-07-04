@@ -11,7 +11,8 @@ import threading
 import time
 import base64
 import hashlib
-from datetime import datetime, date, timezone
+import ipaddress
+from datetime import datetime, date, timezone, timedelta
 from functools import wraps
 from email.header import Header
 from email.utils import formataddr
@@ -26,7 +27,7 @@ from flask import has_request_context
 from flask import session
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
-from flask_wtf.csrf import CSRFProtect
+from flask_wtf.csrf import CSRFProtect, CSRFError
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -57,6 +58,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 app.config['WTF_CSRF_ENABLED'] = True
 app.config['PREFERRED_URL_SCHEME'] = 'https'
 app.config['SERVER_NAME_PUBLIC'] = os.environ.get('EEG_SERVER_NAME_PUBLIC', 'localhost')
+app.config['PUBLIC_BASE_URL'] = os.environ.get('EEG_PUBLIC_BASE_URL', '').strip().rstrip('/')
 app.config['SESSION_COOKIE_SECURE'] = _IS_PRODUCTION
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -276,6 +278,52 @@ def is_safe_redirect_url(target):
     return test.scheme in {'http', 'https'} and ref.netloc == test.netloc
 
 
+def public_base_url():
+    """Liefert die oeffentliche Basis-URL fuer Links in E-Mails."""
+    configured = (app.config.get('PUBLIC_BASE_URL') or '').strip().rstrip('/')
+    if configured:
+        parsed = urlparse(configured)
+        if parsed.scheme in {'http', 'https'} and parsed.netloc:
+            return configured
+        app.logger.warning('Ignoring invalid EEG_PUBLIC_BASE_URL: %s', configured)
+
+    public_host = (app.config.get('SERVER_NAME_PUBLIC') or '').strip().rstrip('/')
+    if public_host and public_host != 'localhost':
+        if '://' in public_host:
+            parsed = urlparse(public_host)
+            if parsed.scheme in {'http', 'https'} and parsed.netloc:
+                return public_host.rstrip('/')
+        return f'https://{public_host}'
+
+    if has_request_context():
+        return request.url_root.rstrip('/')
+    return 'http://localhost'
+
+
+def public_url_for(endpoint, **values):
+    """Erzeugt absolute URLs mit der oeffentlichen Basisadresse."""
+    return urljoin(public_base_url() + '/', url_for(endpoint, **values).lstrip('/'))
+
+
+def _hostname_without_port(host):
+    text = (host or '').strip().lower()
+    if not text:
+        return ''
+    if text.startswith('[') and ']' in text:
+        return text[1:text.index(']')]
+    return text.rsplit(':', 1)[0] if ':' in text else text
+
+
+def _is_internal_hostname(hostname):
+    if hostname in {'localhost', '127.0.0.1', '::1'}:
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
+
+
 def initial_password_hash():
     """Erzeugt sichere Initial-Passwoerter ohne fest codierten Default."""
     password = os.environ.get('EEG_INITIAL_ADMIN_PASSWORD')
@@ -320,6 +368,49 @@ def enforce_allowed_country():
     return None
 
 
+@app.before_request
+def redirect_internal_host_to_public_url():
+    """Verhindert Browser-Sessions ueber interne HTTP-Adressen im Produktivbetrieb."""
+    if not _IS_PRODUCTION:
+        return None
+    redirect_enabled = os.environ.get('EEG_REDIRECT_INTERNAL_HTTP', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    if not redirect_enabled:
+        return None
+    base_url = public_base_url()
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc or parsed.hostname in {None, 'localhost'}:
+        return None
+    current_hostname = _hostname_without_port(request.host)
+    public_hostname = (parsed.hostname or '').lower()
+    if current_hostname == public_hostname:
+        return None
+    if request.is_secure or request.headers.get('X-Forwarded-Proto', '').lower() == 'https':
+        return None
+    if not _is_internal_hostname(current_hostname):
+        return None
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        return redirect(urljoin(base_url + '/', 'login?csrf=1'), code=303)
+    target = urljoin(base_url + '/', request.full_path.lstrip('/'))
+    if target.endswith('?'):
+        target = target[:-1]
+    return redirect(target, code=302)
+
+
+@app.errorhandler(CSRFError)
+def handle_csrf_error(error):
+    app.logger.warning(
+        'CSRF validation failed | reason=%s | host=%s | path=%s | secure=%s',
+        getattr(error, 'description', str(error)),
+        request.host,
+        request.path,
+        request.is_secure,
+    )
+    if current_user and current_user.is_authenticated:
+        flash('Die Sicherheitsprüfung ist abgelaufen. Bitte Aktion erneut ausführen.', 'warning')
+        return redirect(url_for('dashboard' if current_user.is_admin else 'portal_dashboard'))
+    return redirect(public_url_for('login', csrf='1'), code=303)
+
+
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -353,12 +444,38 @@ def close_db(exception=None):
         db.close()
 
 
+def ensure_import_schema(db):
+    """Stellt sicher, dass die EDA-Importtabellen vorhanden sind."""
+    import_schema_path = os.path.join(BASE_DIR, '..', 'schema.sql')
+    if os.path.exists(import_schema_path):
+        with open(import_schema_path) as f:
+            db.executescript(f.read())
+    for col, coldef in [
+        ('data_status', "TEXT NOT NULL DEFAULT 'final'"),
+        ('replaced_by_batch_id', 'INTEGER'),
+        ('replaced_at', 'TEXT'),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE import_batches ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
+    db.execute("UPDATE import_batches SET data_status='final' WHERE data_status IS NULL OR data_status=''")
+
+
 def init_db():
     """Schema initialisieren und Admin-User anlegen."""
     db = sqlite3.connect(DB_PATH)
     schema_path = os.path.join(BASE_DIR, 'schema_web.sql')
     with open(schema_path) as f:
         db.executescript(f.read())
+    ensure_import_schema(db)
+    # Users: member_id, role, invite_token, invite_expires vor Admin-Anlage migrieren
+    for col, coldef in [('member_id', 'INTEGER'), ('role', "TEXT DEFAULT 'member'"),
+                        ('invite_token', 'TEXT'), ('invite_expires', 'TEXT')]:
+        try:
+            db.execute(f"ALTER TABLE users ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
     # Admin-User anlegen falls nicht vorhanden
     existing = db.execute("SELECT id FROM users WHERE username='SuperAdmin'").fetchone()
     if not existing:
@@ -455,6 +572,59 @@ def init_db():
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL
     )""")
+    # Zahlungsstatus und Buchungsjournal
+    for col, coldef in [('paid', 'INTEGER DEFAULT 0'), ('paid_at', 'TEXT')]:
+        try:
+            db.execute(f"ALTER TABLE invoice_items ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
+    for table, col, coldef in [
+        ('invoices', 'data_status', "TEXT NOT NULL DEFAULT 'final'"),
+        ('import_log', 'data_status', "TEXT NOT NULL DEFAULT 'final'"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
+    db.execute("UPDATE invoices SET data_status='final' WHERE data_status IS NULL OR data_status=''")
+    db.execute("UPDATE import_log SET data_status='final' WHERE data_status IS NULL OR data_status=''")
+    db.execute("""CREATE TABLE IF NOT EXISTS payment_bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        member_id INTEGER NOT NULL,
+        amount_eur REAL NOT NULL,
+        direction TEXT NOT NULL,
+        booking_date TEXT NOT NULL,
+        recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+        recorded_by_user_id INTEGER,
+        recorded_by_username TEXT,
+        note TEXT,
+        reversed_at TEXT,
+        reversed_by_user_id INTEGER,
+        reversed_by_username TEXT,
+        reverse_note TEXT,
+        FOREIGN KEY (invoice_id) REFERENCES invoices(id),
+        FOREIGN KEY (member_id) REFERENCES members(id),
+        FOREIGN KEY (recorded_by_user_id) REFERENCES users(id),
+        FOREIGN KEY (reversed_by_user_id) REFERENCES users(id)
+    )""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_payment_bookings_member ON payment_bookings(member_id, booking_date)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_payment_bookings_invoice_member ON payment_bookings(invoice_id, member_id)")
+    db.execute("""CREATE TABLE IF NOT EXISTS invoice_carryovers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        invoice_id INTEGER NOT NULL,
+        member_id INTEGER NOT NULL,
+        source_invoice_id INTEGER NOT NULL,
+        amount_eur REAL NOT NULL,
+        description TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (invoice_id) REFERENCES invoices(id),
+        FOREIGN KEY (member_id) REFERENCES members(id),
+        FOREIGN KEY (source_invoice_id) REFERENCES invoices(id),
+        UNIQUE(invoice_id, member_id, source_invoice_id)
+    )""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_invoice_carryovers_invoice_member ON invoice_carryovers(invoice_id, member_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_invoice_carryovers_source ON invoice_carryovers(source_invoice_id, member_id)")
     # Newsletter-Tabellen
     db.execute("""CREATE TABLE IF NOT EXISTS newsletters (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -947,6 +1117,9 @@ def login():
             return redirect(url_for('dashboard'))
         return redirect(url_for('portal_dashboard'))
 
+    if request.method == 'GET' and request.args.get('csrf'):
+        flash('Die Sitzung war nicht mehr gültig. Bitte erneut anmelden.', 'warning')
+
     ip = get_real_ip()
     locked_secs = _check_login_rate(ip)
 
@@ -1109,22 +1282,35 @@ def import_data():
     if request.method == 'POST':
         files = request.files.getlist('files')
         overwrite = request.form.get('overwrite') == '1'
+        data_status = _valid_import_data_status(request.form.get('data_status'))
         results = []
         for f in files:
             if f and f.filename.lower().endswith('.xlsx'):
                 filename = secure_filename(f.filename)
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                f.save(filepath)
-                result = run_import(filepath, overwrite)
+                try:
+                    f.save(filepath)
+                    result = run_import(filepath, overwrite, data_status)
+                except Exception as e:
+                    app.logger.exception('Import upload handling failed for %s', filename)
+                    result = {
+                        'filename': filename,
+                        'status': 'error',
+                        'data_status': data_status,
+                        'records': 0,
+                        'overwritten': 0,
+                        'error': str(e),
+                        'imported_at': None,
+                    }
                 results.append(result)
                 audit_log('import', f'Datei importiert: {filename} ({result["records"]} Datensätze, Status: {result["status"]})')
         db = get_db()
         imports = db.execute(f"""
-            SELECT id, source_file, period_start, period_end, imported_at
+            SELECT id, source_file, period_start, period_end, data_status, replaced_by_batch_id, replaced_at, imported_at
             FROM import_batches ORDER BY {files_sort} {files_dir.upper()}
         """).fetchall()
         import_values = db.execute(f"""
-            SELECT id, filename, records_imported, records_overwritten, status, imported_by, imported_at
+            SELECT id, filename, records_imported, records_overwritten, status, data_status, error_message, imported_by, imported_at
             FROM import_log ORDER BY {values_sort} {values_dir.upper()}
         """).fetchall()
         return render_template('import.html', results=results, imports=imports,
@@ -1135,11 +1321,11 @@ def import_data():
     # Vorhandene Importe zeigen
     db = get_db()
     imports = db.execute(f"""
-        SELECT id, source_file, period_start, period_end, imported_at
+        SELECT id, source_file, period_start, period_end, data_status, replaced_by_batch_id, replaced_at, imported_at
         FROM import_batches ORDER BY {files_sort} {files_dir.upper()}
     """).fetchall()
     import_values = db.execute(f"""
-        SELECT id, filename, records_imported, records_overwritten, status, imported_by, imported_at
+        SELECT id, filename, records_imported, records_overwritten, status, data_status, error_message, imported_by, imported_at
         FROM import_log ORDER BY {values_sort} {values_dir.upper()}
     """).fetchall()
     return render_template('import.html', imports=imports, import_values=import_values,
@@ -1147,32 +1333,106 @@ def import_data():
                            values_sort=values_sort, values_dir=values_dir)
 
 
-def run_import(filepath, overwrite=False):
+def _valid_import_data_status(value):
+    return 'final' if value == 'final' else 'provisional'
+
+
+def _format_import_status_label(data_status):
+    return 'Endgültig' if data_status == 'final' else 'Vorläufig'
+
+
+def _active_batches_for_period(db, period_start, period_end, data_status=None):
+    params = [period_start, period_end]
+    status_filter = ''
+    if data_status:
+        status_filter = ' AND data_status=?'
+        params.append(data_status)
+    return db.execute(f"""
+        SELECT *
+        FROM import_batches
+        WHERE replaced_at IS NULL
+          AND period_start = ?
+          AND period_end = ?
+          {status_filter}
+        ORDER BY id
+    """, params).fetchall()
+
+
+def _delete_batch_measurements(db, batch_id):
+    count = db.execute("SELECT COUNT(*) FROM measurements WHERE batch_id=?", (batch_id,)).fetchone()[0]
+    db.execute("DELETE FROM measurements WHERE batch_id=?", (batch_id,))
+    return count
+
+
+def _mark_batches_replaced(db, batches, replacement_batch_id):
+    for batch in batches:
+        _delete_batch_measurements(db, batch['id'])
+        db.execute("""
+            UPDATE import_batches
+            SET replaced_by_batch_id=?, replaced_at=datetime('now')
+            WHERE id=?
+        """, (replacement_batch_id, batch['id']))
+
+
+def run_import(filepath, overwrite=False, data_status='final'):
     """Importiert eine Excel-Datei. Bei overwrite=True werden bestehende Daten überschrieben."""
     sys.path.insert(0, os.path.join(BASE_DIR, '..'))
-    from import_eda import import_file, init_db as init_import_db
+    from import_eda import import_file, parse_filename
 
+    data_status = _valid_import_data_status(data_status)
     db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
+    ensure_import_schema(db)
 
     filename = os.path.basename(filepath)
     records_overwritten = 0
-
-    if overwrite:
-        # Prüfe ob Batch mit gleichem Filename existiert
-        existing = db.execute("SELECT id FROM import_batches WHERE source_file=?",
-                              (filename,)).fetchone()
-        if existing:
-            batch_id = existing[0]
-            records_overwritten = db.execute(
-                "SELECT COUNT(*) FROM measurements WHERE batch_id=?", (batch_id,)
-            ).fetchone()[0]
-            db.execute("DELETE FROM measurements WHERE batch_id=?", (batch_id,))
-            db.execute("DELETE FROM import_batches WHERE id=?", (batch_id,))
-            db.commit()
+    new_batch_id = None
+    replacement_candidates = []
 
     try:
-        count = import_file(db, filepath)
+        info = parse_filename(filename)
+        period_start = info.get('period_start')
+        period_end = info.get('period_end')
+        if not period_start or not period_end:
+            raise ValueError('Der Zeitraum konnte aus dem Dateinamen nicht erkannt werden.')
+
+        active_final = _active_batches_for_period(db, period_start, period_end, 'final')
+        active_provisional = _active_batches_for_period(db, period_start, period_end, 'provisional')
+
+        if data_status == 'provisional' and active_final and not overwrite:
+            raise ValueError('Für diesen Zeitraum sind bereits endgültige Daten vorhanden. Vorläufige Daten werden nicht darüber importiert.')
+        if data_status == 'final' and active_final and not overwrite:
+            raise ValueError('Für diesen Zeitraum sind bereits endgültige Daten vorhanden. Zum Ersetzen bitte Überschreiben aktivieren.')
+
+        if data_status == 'final':
+            replacement_candidates = list(active_provisional)
+            if overwrite:
+                replacement_candidates.extend(active_final)
+        elif overwrite:
+            replacement_candidates = list(active_provisional)
+
+        count = import_file(filepath, db, allow_duplicate=bool(replacement_candidates or overwrite))
+        new_batch = db.execute("""
+            SELECT id
+            FROM import_batches
+            WHERE source_file=? AND period_start=? AND period_end=? AND replaced_at IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """, (filename, period_start, period_end)).fetchone()
+        if new_batch:
+            new_batch_id = new_batch['id']
+            db.execute("UPDATE import_batches SET data_status=? WHERE id=?", (data_status, new_batch_id))
+
+        if new_batch_id and replacement_candidates:
+            records_overwritten = sum(_delete_batch_measurements(db, batch['id']) for batch in replacement_candidates)
+            for batch in replacement_candidates:
+                db.execute("""
+                    UPDATE import_batches
+                    SET replaced_by_batch_id=?, replaced_at=datetime('now')
+                    WHERE id=?
+                """, (new_batch_id, batch['id']))
+
         db.commit()
         status = 'success'
         error = None
@@ -1180,17 +1440,19 @@ def run_import(filepath, overwrite=False):
         status = 'error'
         count = 0
         error = str(e)
+        app.logger.exception('Import failed for %s', filename)
     finally:
         # Log
-        cur = db.execute("""INSERT INTO import_log (filename, records_imported, records_overwritten, status, error_message, imported_by)
-                      VALUES (?, ?, ?, ?, ?, ?)""",
-                         (filename, count, records_overwritten, status, error,
-                          current_user.username if current_user.is_authenticated else 'system'))
+        cur = db.execute("""INSERT INTO import_log (filename, records_imported, records_overwritten, status, data_status, error_message, imported_by)
+                      VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                         (filename, count, records_overwritten, status, data_status, error,
+                          current_user.username if has_request_context() and current_user and current_user.is_authenticated else 'system'))
         log_row = db.execute("SELECT imported_at FROM import_log WHERE id=?", (cur.lastrowid,)).fetchone()
         db.commit()
         db.close()
 
     return {'filename': filename, 'status': status, 'records': count,
+            'data_status': data_status,
             'overwritten': records_overwritten, 'error': error,
             'imported_at': (log_row['imported_at'] if log_row else None)}
 
@@ -1413,6 +1675,148 @@ def get_price_for_date(db, target_date):
     return 12.0, 10.0  # Absoluter Fallback (aktueller Standardpreis 2026)
 
 
+def get_import_status_for_period(db, period_from, period_to):
+    """Prüft, ob fuer einen Abrechnungszeitraum nur finale aktive Importdaten vorliegen."""
+    ts_from = period_from + "T00:00:00" if "T" not in period_from else period_from
+    ts_to = period_to + "T23:45:00" if "T" not in period_to else period_to
+    batches = db.execute("""
+        SELECT id, source_file, period_start, period_end, data_status
+        FROM import_batches
+        WHERE replaced_at IS NULL
+          AND period_start <= ?
+          AND period_end >= ?
+        ORDER BY period_start, id
+    """, (ts_to, ts_from)).fetchall()
+    has_final = any(batch['data_status'] == 'final' for batch in batches)
+    provisional = [batch for batch in batches if batch['data_status'] != 'final']
+    if not batches:
+        return {
+            'data_status': 'provisional',
+            'is_final': False,
+            'reason': 'Für diesen Zeitraum wurden noch keine Messdaten importiert.',
+            'batches': [],
+            'provisional_batches': [],
+        }
+    if provisional:
+        return {
+            'data_status': 'provisional',
+            'is_final': False,
+            'reason': 'Im Zeitraum sind noch vorläufige Messdaten vorhanden.',
+            'batches': batches,
+            'provisional_batches': provisional,
+        }
+    if not has_final:
+        return {
+            'data_status': 'provisional',
+            'is_final': False,
+            'reason': 'Es wurden keine endgültigen Messdaten für diesen Zeitraum gefunden.',
+            'batches': batches,
+            'provisional_batches': [],
+        }
+    return {
+        'data_status': 'final',
+        'is_final': True,
+        'reason': '',
+        'batches': batches,
+        'provisional_batches': [],
+    }
+
+
+def invoice_finalization_blocker(db, invoice):
+    """Liefert eine Fehlermeldung, wenn eine Abrechnung nicht finalisiert/versendet werden darf."""
+    import_status = get_import_status_for_period(db, invoice['period_from'], invoice['period_to'])
+    invoice_data_status = invoice['data_status'] if 'data_status' in invoice.keys() else 'final'
+    if invoice_data_status != 'final':
+        if import_status['is_final']:
+            return 'Diese Abrechnung wurde mit vorläufigen Daten berechnet. Bitte zuerst neu berechnen, danach kann sie versendet werden.'
+        return 'Diese Abrechnung basiert auf vorläufigen Messdaten. Versand und Abschluss sind erst mit endgültigen Daten möglich.'
+    if not import_status['is_final']:
+        return import_status['reason'] or 'Für diesen Zeitraum liegen noch keine endgültigen Messdaten vor.'
+    return ''
+
+
+def get_invoice_carryovers(db, invoice_id, member_id=None):
+    """Liefert Finanzvortraege einer Abrechnung, optional fuer ein Mitglied."""
+    params = [invoice_id]
+    member_filter = ''
+    if member_id is not None:
+        member_filter = 'AND c.member_id=?'
+        params.append(member_id)
+    return db.execute(f"""
+        SELECT c.*, m.name AS member_name, m.email AS member_email,
+               src.period_from AS source_period_from,
+               src.period_to AS source_period_to
+        FROM invoice_carryovers c
+        JOIN members m ON m.id = c.member_id
+        JOIN invoices src ON src.id = c.source_invoice_id
+        WHERE c.invoice_id=?
+          {member_filter}
+        ORDER BY m.name, src.period_from, c.source_invoice_id
+    """, params).fetchall()
+
+
+def get_invoice_carryover_map(db, invoice_id):
+    """Gruppiert Vortraege nach Mitglied fuer Detailansichten und Zahlungslogik."""
+    carryovers = get_invoice_carryovers(db, invoice_id)
+    grouped = {}
+    for row in carryovers:
+        member_id = row['member_id']
+        bucket = grouped.setdefault(member_id, {'total': 0.0, 'rows': []})
+        bucket['total'] = round(bucket['total'] + row['amount_eur'], 2)
+        bucket['rows'].append(row)
+    return grouped
+
+
+def calculate_carryovers_for_period(db, period_from):
+    """Berechnet offene Vorperioden, die in eine neue Abrechnung uebernommen werden."""
+    carryovers = []
+    for row in get_payment_rows(db):
+        if row['period_to'] >= period_from:
+            continue
+        if row.get('invoice_status') not in {'sent', 'finalized'}:
+            continue
+        if row['paid'] or row.get('is_settled_by_carryover'):
+            continue
+        if abs(row['net_total']) < 0.005:
+            continue
+        carryovers.append({
+            'member_id': row['member_id'],
+            'source_invoice_id': row['invoice_id'],
+            'amount': round(row['net_total'], 2),
+            'description': 'Buchungsrückstand aus Vorperioden' if row['net_total'] > 0 else 'Guthaben aus Vorperioden',
+        })
+    return carryovers
+
+
+def save_invoice_carryovers(db, invoice_id, carryovers):
+    for carryover in carryovers:
+        db.execute("""
+            INSERT OR REPLACE INTO invoice_carryovers (
+                invoice_id, member_id, source_invoice_id, amount_eur, description
+            ) VALUES (?, ?, ?, ?, ?)
+        """, (
+            invoice_id,
+            carryover['member_id'],
+            carryover['source_invoice_id'],
+            carryover['amount'],
+            carryover.get('description') or '',
+        ))
+
+
+def invoice_recipient_rows(db, invoice_id):
+    """Mitglieder, die Positionen oder einen Finanzvortrag in der Abrechnung haben."""
+    return db.execute("""
+        SELECT m.id AS member_id, m.name, m.email
+        FROM members m
+        WHERE m.id IN (
+            SELECT member_id FROM invoice_items WHERE invoice_id=?
+            UNION
+            SELECT member_id FROM invoice_carryovers WHERE invoice_id=?
+        )
+        ORDER BY m.name
+    """, (invoice_id, invoice_id)).fetchall()
+
+
 # === Abrechnung ===
 
 @app.route('/invoices')
@@ -1444,16 +1848,18 @@ def invoice_new():
 
         # Preise für Zeitraum
         price_cons, price_gen = get_price_for_date(db, period_from)
+        import_status = get_import_status_for_period(db, period_from, period_to)
 
         # Abrechnung berechnen
         result = calculate_billing(db, period_from, period_to, price_cons, price_gen)
 
         # Speichern
         cur = db.execute("""INSERT INTO invoices (period_from, period_to, total_kwh_traded,
-                            total_income, total_expense, total_margin)
-                            VALUES (?, ?, ?, ?, ?, ?)""",
+                            total_income, total_expense, total_margin, data_status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
                          (period_from, period_to, result['total_kwh'],
-                          result['total_income'], result['total_expense'], result['total_margin']))
+                          result['total_income'], result['total_expense'], result['total_margin'],
+                          import_status['data_status']))
         invoice_id = cur.lastrowid
 
         # Einzelpositionen
@@ -1462,9 +1868,15 @@ def invoice_new():
                           VALUES (?, ?, ?, ?, ?, ?)""",
                        (invoice_id, item['member_id'], item['type'],
                         item['kwh'], item['price'], item['amount']))
+        save_invoice_carryovers(db, invoice_id, result['carryovers'])
         db.commit()
         audit_log('invoice_create', f'Abrechnung #{invoice_id} erstellt: {period_from} - {period_to} ({result["total_kwh"]:.1f} kWh)')
-        flash(f'Abrechnung #{invoice_id} erstellt ({result["total_kwh"]:.1f} kWh).', 'success')
+        carryover_total = round(sum(item['amount'] for item in result['carryovers']), 2)
+        carryover_info = f' Finanzvortrag: {carryover_total:.2f} EUR.' if result['carryovers'] else ''
+        if import_status['is_final']:
+            flash(f'Abrechnung #{invoice_id} erstellt ({result["total_kwh"]:.1f} kWh).{carryover_info}', 'success')
+        else:
+            flash(f'Vorläufige Abrechnung #{invoice_id} erstellt ({result["total_kwh"]:.1f} kWh).{carryover_info} Versand und Abschluss sind gesperrt, bis endgültige Daten importiert und die Abrechnung neu berechnet wurde.', 'warning')
         return redirect(url_for('invoice_detail', id=invoice_id))
 
     # Quartalsvorschläge
@@ -1520,7 +1932,30 @@ def invoice_detail(id):
             members_map[mid]['gen_eur'] = item['amount_eur']
             members_map[mid]['gen_price'] = item['price_per_kwh']
     for m in members_map.values():
-        m['net_eur'] = round(m['cons_eur'] - m['gen_eur'], 2)
+        m['energy_net_eur'] = round(m['cons_eur'] - m['gen_eur'], 2)
+        m['carryover_eur'] = 0.0
+        m['carryovers'] = []
+
+    carryover_map = get_invoice_carryover_map(db, id)
+    for mid, data in carryover_map.items():
+        if mid not in members_map:
+            first = data['rows'][0]
+            members_map[mid] = {
+                'member_id': mid,
+                'member_name': first['member_name'],
+                'member_email': first['member_email'],
+                'cons_kwh': 0, 'cons_eur': 0, 'cons_price': 0,
+                'gen_kwh': 0, 'gen_eur': 0, 'gen_price': 0,
+                'energy_net_eur': 0.0,
+            }
+        members_map[mid]['carryover_eur'] = data['total']
+        members_map[mid]['carryovers'] = data['rows']
+
+    for m in members_map.values():
+        m.setdefault('energy_net_eur', round(m['cons_eur'] - m['gen_eur'], 2))
+        m.setdefault('carryover_eur', 0.0)
+        m.setdefault('carryovers', [])
+        m['net_eur'] = round(m['energy_net_eur'] + m['carryover_eur'], 2)
     member_rows = sorted(members_map.values(), key=lambda x: x['member_name'])
 
     emails = db.execute("""
@@ -1538,8 +1973,12 @@ def invoice_detail(id):
     for m in member_rows:
         m['email_sent'] = m['member_id'] in sent_members
 
+    import_status = get_import_status_for_period(db, invoice['period_from'], invoice['period_to'])
+    finalization_blocker = invoice_finalization_blocker(db, invoice)
     return render_template('invoice_detail.html', invoice=invoice, items=items,
-                           member_rows=member_rows, emails=emails)
+                           member_rows=member_rows, emails=emails,
+                           import_status=import_status,
+                           finalization_blocker=finalization_blocker)
 
 
 @app.route('/invoices/<int:id>/regenerate', methods=['POST'])
@@ -1557,18 +1996,20 @@ def invoice_regenerate(id):
 
     # Aktuelle Preise für Zeitraum laden
     price_cons, price_gen = get_price_for_date(db, period_from)
+    import_status = get_import_status_for_period(db, period_from, period_to)
 
-    # Alte Items löschen
+    # Alte Items und Finanzvortraege löschen
     db.execute("DELETE FROM invoice_items WHERE invoice_id=?", (id,))
+    db.execute("DELETE FROM invoice_carryovers WHERE invoice_id=?", (id,))
 
     # Neu berechnen
     result = calculate_billing(db, period_from, period_to, price_cons, price_gen)
 
     # Invoice-Kopf aktualisieren
     db.execute("""UPDATE invoices SET total_kwh_traded=?, total_income=?, total_expense=?,
-                  total_margin=?, status='draft', finalized_at=NULL WHERE id=?""",
+                  total_margin=?, data_status=?, status='draft', finalized_at=NULL WHERE id=?""",
                (result['total_kwh'], result['total_income'], result['total_expense'],
-                result['total_margin'], id))
+                result['total_margin'], import_status['data_status'], id))
 
     # Neue Einzelpositionen
     for item in result['items']:
@@ -1576,11 +2017,15 @@ def invoice_regenerate(id):
                       VALUES (?, ?, ?, ?, ?, ?)""",
                    (id, item['member_id'], item['type'],
                     item['kwh'], item['price'], item['amount']))
+    save_invoice_carryovers(db, id, result['carryovers'])
     db.commit()
     audit_log('invoice_regenerate', f'Abrechnung #{id} neu berechnet: {period_from} - {period_to} '
               f'(Verbrauch: {price_cons} ct, Erzeugung: {price_gen} ct, {result["total_kwh"]:.1f} kWh)')
-    flash(f'Abrechnung #{id} wurde mit aktuellen Preisen '
-          f'(Verbrauch: {price_cons} ct/kWh, Erzeugung: {price_gen} ct/kWh) neu berechnet.', 'success')
+    if import_status['is_final']:
+        flash(f'Abrechnung #{id} wurde mit endgültigen Daten und aktuellen Preisen '
+              f'(Verbrauch: {price_cons} ct/kWh, Erzeugung: {price_gen} ct/kWh) neu berechnet.', 'success')
+    else:
+        flash(f'Abrechnung #{id} wurde vorläufig neu berechnet. Versand und Abschluss bleiben gesperrt, bis endgültige Daten importiert wurden.', 'warning')
     return redirect(url_for('invoice_detail', id=id))
 
 
@@ -1602,14 +2047,17 @@ def invoice_pdf(id, member_id):
         SELECT * FROM invoice_items
         WHERE invoice_id=? AND member_id=?
     """, (id, member_id)).fetchall()
+    carryovers = get_invoice_carryovers(db, id, member_id)
+    carryover_total = round(sum(row['amount_eur'] for row in carryovers), 2)
 
     # --- Nettobetrag berechnen (Bezug - Gutschrift) ---
-    net_total = 0
+    energy_net_total = 0
     for item in items:
         if item['type'] == 'consumption':
-            net_total += item['amount_eur']
+            energy_net_total += item['amount_eur']
         else:
-            net_total -= item['amount_eur']
+            energy_net_total -= item['amount_eur']
+    net_total = round(energy_net_total + carryover_total, 2)
 
     # --- EPC QR Code für Überweisung ---
     qr_data_uri = ''
@@ -1683,8 +2131,11 @@ def invoice_pdf(id, member_id):
 
     html = render_template('invoice_pdf.html',
                            invoice=invoice, member=member, items=items,
+                           carryovers=carryovers,
                            member_stats=member_stats, community_stats=community_stats,
-                           net_total=round(net_total, 2), qr_data_uri=qr_data_uri,
+                           energy_net_total=round(energy_net_total, 2),
+                           carryover_total=carryover_total,
+                           net_total=net_total, qr_data_uri=qr_data_uri,
                            savings=savings, logo_b64=logo_b64,
                            public_cfg=public_cfg,
                            pie_consumption_svg=pie_consumption_svg,
@@ -2038,13 +2489,12 @@ def invoice_send(id):
     """E-Mails an alle Mitglieder versenden."""
     db = get_db()
     invoice = db.execute("SELECT * FROM invoices WHERE id=?", (id,)).fetchone()
-    items = db.execute("""
-        SELECT ii.member_id, m.name, m.email
-        FROM invoice_items ii
-        JOIN members m ON m.id = ii.member_id
-        WHERE ii.invoice_id=?
-        GROUP BY ii.member_id
-    """, (id,)).fetchall()
+    blocker = invoice_finalization_blocker(db, invoice)
+    if blocker:
+        flash(blocker, 'danger')
+        audit_log('invoice_send_blocked', f'Rechnung {id}: Sammelversand blockiert ({blocker})')
+        return redirect(url_for('invoice_detail', id=id))
+    items = invoice_recipient_rows(db, id)
 
     sent = 0
     failed = 0
@@ -2086,6 +2536,11 @@ def invoice_send_single(id, member_id):
     db = get_db()
     invoice = db.execute("SELECT * FROM invoices WHERE id=?", (id,)).fetchone()
     member = db.execute("SELECT * FROM members WHERE id=?", (member_id,)).fetchone()
+    blocker = invoice_finalization_blocker(db, invoice)
+    if blocker:
+        flash(blocker, 'danger')
+        audit_log('invoice_send_blocked', f'Rechnung {id}: Einzelversand blockiert ({blocker})')
+        return redirect(url_for('invoice_detail', id=id))
 
     if not member['email']:
         db.execute("""INSERT INTO email_log (invoice_id, member_id, recipient_email, subject, status, error_message)
@@ -2105,10 +2560,17 @@ def invoice_send_single(id, member_id):
                     f"EEG Abrechnung {invoice['period_from']} - {invoice['period_to']}"))
         # Prüfen ob jetzt alle Mitglieder eine E-Mail erhalten haben → Status auf 'sent' setzen
         total_members = db.execute("""
-            SELECT COUNT(DISTINCT ii.member_id) FROM invoice_items ii
-            JOIN members m ON m.id = ii.member_id
-            WHERE ii.invoice_id=? AND m.email IS NOT NULL AND m.email != ''
-        """, (id,)).fetchone()[0]
+            SELECT COUNT(*) FROM (
+                SELECT m.id
+                FROM members m
+                WHERE m.id IN (
+                    SELECT member_id FROM invoice_items WHERE invoice_id=?
+                    UNION
+                    SELECT member_id FROM invoice_carryovers WHERE invoice_id=?
+                )
+                AND m.email IS NOT NULL AND m.email != ''
+            )
+        """, (id, id)).fetchone()[0]
         sent_members = db.execute("""
             SELECT COUNT(DISTINCT member_id) FROM email_log
             WHERE invoice_id=? AND status='sent'
@@ -2135,6 +2597,12 @@ def invoice_send_single(id, member_id):
 def invoice_finalize(id):
     """Abrechnung manuell auf 'sent' setzen (z.B. wenn Versand ohne System erfolgte)."""
     db = get_db()
+    invoice = db.execute("SELECT * FROM invoices WHERE id=?", (id,)).fetchone()
+    blocker = invoice_finalization_blocker(db, invoice)
+    if blocker:
+        flash(blocker, 'danger')
+        audit_log('invoice_finalize_blocked', f'Abrechnung #{id}: Abschluss blockiert ({blocker})')
+        return redirect(url_for('invoice_detail', id=id))
     db.execute("UPDATE invoices SET status='sent', finalized_at=datetime('now') WHERE id=?", (id,))
     db.commit()
     audit_log('invoice_finalize', f'Abrechnung #{id} manuell finalisiert')
@@ -2155,13 +2623,16 @@ def send_invoice_email(db, invoice, member_row):
     member = db.execute("SELECT * FROM members WHERE id=?", (member_row['member_id'],)).fetchone()
     items = db.execute("SELECT * FROM invoice_items WHERE invoice_id=? AND member_id=?",
                        (invoice['id'], member_row['member_id'])).fetchall()
+    carryovers = get_invoice_carryovers(db, invoice['id'], member_row['member_id'])
+    carryover_total = round(sum(row['amount_eur'] for row in carryovers), 2)
 
-    net_total = 0
+    energy_net_total = 0
     for it in items:
         if it['type'] == 'consumption':
-            net_total += it['amount_eur']
+            energy_net_total += it['amount_eur']
         else:
-            net_total -= it['amount_eur']
+            energy_net_total -= it['amount_eur']
+    net_total = round(energy_net_total + carryover_total, 2)
 
     qr_data_uri = ''
     if net_total > 0:
@@ -2179,8 +2650,11 @@ def send_invoice_email(db, invoice, member_row):
 
     from weasyprint import HTML
     html_content = render_template('invoice_pdf.html', invoice=invoice, member=member, items=items,
+                                   carryovers=carryovers,
                                    member_stats=member_stats, community_stats=community_stats,
-                                   net_total=round(net_total, 2), qr_data_uri=qr_data_uri,
+                                   energy_net_total=round(energy_net_total, 2),
+                                   carryover_total=carryover_total,
+                                   net_total=net_total, qr_data_uri=qr_data_uri,
                                    savings=savings, logo_b64=logo_b64, public_cfg=public_cfg)
     pdf_bytes = HTML(string=html_content, base_url=BASE_DIR).write_pdf()
 
@@ -2246,103 +2720,506 @@ def send_invoice_email(db, invoice, member_row):
 
 # === Reports ===
 
+REPORT_AGGREGATIONS = {
+    'day': {'label': 'Tag', 'strftime': '%Y-%m-%d'},
+    'month': {'label': 'Monat', 'strftime': '%Y-%m'},
+    'year': {'label': 'Jahr', 'strftime': '%Y'},
+}
+
+
+def _report_float(value):
+    return float(value or 0)
+
+
+def _report_round(value, digits=2):
+    return round(_report_float(value), digits)
+
+
+def _report_pct(part, total):
+    total = _report_float(total)
+    if total <= 0:
+        return 0.0
+    return round(_report_float(part) / total * 100.0, 1)
+
+
+def _report_ts_bounds(db):
+    row = db.execute("SELECT MIN(timestamp_start) AS min_ts, MAX(timestamp_start) AS max_ts FROM measurements").fetchone()
+    today = local_now().date()
+    min_date = (row['min_ts'][:10] if row and row['min_ts'] else today.replace(month=1, day=1).isoformat())
+    max_date = (row['max_ts'][:10] if row and row['max_ts'] else today.isoformat())
+    return min_date, max_date
+
+
+def _parse_report_date(value, fallback):
+    try:
+        return date.fromisoformat((value or '').strip()).isoformat()
+    except ValueError:
+        return fallback
+
+
+def _month_iter(start_date, end_date):
+    cur = date.fromisoformat(start_date).replace(day=1)
+    end = date.fromisoformat(end_date).replace(day=1)
+    while cur <= end:
+        yield cur
+        if cur.month == 12:
+            cur = date(cur.year + 1, 1, 1)
+        else:
+            cur = date(cur.year, cur.month + 1, 1)
+
+
+def _month_end(day):
+    from calendar import monthrange
+    return date(day.year, day.month, monthrange(day.year, day.month)[1])
+
+
+def _dt_ms(value):
+    try:
+        return int(datetime.fromisoformat(value).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
+def _build_member_report(db, member, period_from, period_to, aggregation):
+    ts_from = period_from + 'T00:00:00'
+    ts_to = period_to + 'T23:45:00'
+    agg = REPORT_AGGREGATIONS.get(aggregation, REPORT_AGGREGATIONS['month'])
+    bucket_expr = f"strftime('{agg['strftime']}', m.timestamp_start)"
+    price_cons, price_gen = get_price_for_date(db, period_from)
+    market_price_ct = 25.0
+    market_feed_ct = 4.5
+
+    params = {
+        'bezug_zp': member['bezug_zp'] or '',
+        'einspeiser_zp': member['einspeiser_zp'] or '',
+        'ts_from': ts_from,
+        'ts_to': ts_to,
+    }
+    series_rows = db.execute(f"""
+        SELECT {bucket_expr} AS bucket,
+               ROUND(SUM(CASE WHEN m.metering_point_id=:bezug_zp AND mc.code='1-1:2.9.0 G.03' THEN m.value_kwh ELSE 0 END), 3) AS eeg,
+               ROUND(SUM(CASE WHEN m.metering_point_id=:bezug_zp AND mc.code='1-1:1.9.0 G.01' THEN m.value_kwh ELSE 0 END), 3) AS grid,
+               ROUND(SUM(CASE WHEN m.metering_point_id=:einspeiser_zp AND mc.code='1-1:2.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 3) AS generation,
+               ROUND(SUM(CASE WHEN m.metering_point_id=:einspeiser_zp AND mc.code='1-1:2.9.0 P.01T' THEN m.value_kwh ELSE 0 END), 3) AS public_feed
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND (
+            (m.metering_point_id=:bezug_zp AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01'))
+            OR
+            (m.metering_point_id=:einspeiser_zp AND mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T'))
+          )
+        GROUP BY bucket
+        ORDER BY bucket
+    """, params).fetchall()
+
+    labels = []
+    eeg_values = []
+    grid_values = []
+    generation_values = []
+    public_feed_values = []
+    eeg_feed_values = []
+    total_consumption_values = []
+    eeg_share_values = []
+    cost_without_values = []
+    cost_actual_values = []
+    savings_values = []
+    cumulative_savings = []
+    running_savings = 0.0
+    for row in series_rows:
+        eeg = _report_float(row['eeg'])
+        grid = _report_float(row['grid'])
+        generation = _report_float(row['generation'])
+        public_feed = _report_float(row['public_feed'])
+        eeg_feed = max(0.0, generation - public_feed)
+        total_consumption = eeg + grid
+        cost_without = total_consumption * market_price_ct / 100.0 - generation * market_feed_ct / 100.0
+        cost_actual = grid * market_price_ct / 100.0 + eeg * price_cons / 100.0 - eeg_feed * price_gen / 100.0 - public_feed * market_feed_ct / 100.0
+        savings = cost_without - cost_actual
+        running_savings += savings
+
+        labels.append(row['bucket'])
+        eeg_values.append(round(eeg, 3))
+        grid_values.append(round(grid, 3))
+        generation_values.append(round(generation, 3))
+        public_feed_values.append(round(public_feed, 3))
+        eeg_feed_values.append(round(eeg_feed, 3))
+        total_consumption_values.append(round(total_consumption, 3))
+        eeg_share_values.append(_report_pct(eeg, total_consumption))
+        cost_without_values.append(round(cost_without, 2))
+        cost_actual_values.append(round(cost_actual, 2))
+        savings_values.append(round(savings, 2))
+        cumulative_savings.append(round(running_savings, 2))
+
+    totals = {
+        'eeg': round(sum(eeg_values), 2),
+        'grid': round(sum(grid_values), 2),
+        'consumption': round(sum(total_consumption_values), 2),
+        'generation': round(sum(generation_values), 2),
+        'public_feed': round(sum(public_feed_values), 2),
+        'eeg_feed': round(sum(eeg_feed_values), 2),
+        'cost_without': round(sum(cost_without_values), 2),
+        'cost_actual': round(sum(cost_actual_values), 2),
+        'savings': round(sum(savings_values), 2),
+    }
+    totals['eeg_share'] = _report_pct(totals['eeg'], totals['consumption'])
+    totals['autarky'] = totals['eeg_share']
+    totals['avg_savings_per_kwh'] = round(totals['savings'] / totals['consumption'], 4) if totals['consumption'] > 0 else 0
+    totals['self_consumption_quote'] = None
+
+    daily_rows = db.execute("""
+        SELECT substr(m.timestamp_start, 1, 10) AS day,
+               ROUND(SUM(CASE WHEN m.metering_point_id=:bezug_zp AND mc.code='1-1:2.9.0 G.03' THEN m.value_kwh ELSE 0 END), 3) AS eeg,
+               ROUND(SUM(CASE WHEN m.metering_point_id=:bezug_zp AND mc.code='1-1:1.9.0 G.01' THEN m.value_kwh ELSE 0 END), 3) AS grid
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.metering_point_id=:bezug_zp
+          AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01')
+        GROUP BY day
+        ORDER BY day
+    """, params).fetchall()
+    daily_shares = []
+    for row in daily_rows:
+        day_total = _report_float(row['eeg']) + _report_float(row['grid'])
+        if day_total > 0:
+            daily_shares.append({
+                'day': row['day'],
+                'eeg_share': _report_pct(row['eeg'], day_total),
+                'eeg': _report_round(row['eeg'], 2),
+                'grid': _report_round(row['grid'], 2),
+            })
+    best_day = max(daily_shares, key=lambda item: item['eeg_share'], default=None)
+    weakest_day = min(daily_shares, key=lambda item: item['eeg_share'], default=None)
+
+    heat_rows = db.execute("""
+        SELECT CAST(strftime('%w', m.timestamp_start) AS INTEGER) AS weekday,
+               CAST(strftime('%H', m.timestamp_start) AS INTEGER) AS hour,
+               ROUND(SUM(m.value_kwh), 3) AS kwh
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.metering_point_id=:bezug_zp
+          AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01')
+        GROUP BY weekday, hour
+        ORDER BY weekday, hour
+    """, params).fetchall()
+    heatmap = []
+    for row in heat_rows:
+        weekday = (int(row['weekday']) + 6) % 7
+        heatmap.append([int(row['hour']), weekday, _report_round(row['kwh'], 3)])
+
+    hourly_rows = db.execute("""
+        SELECT hour,
+               ROUND(AVG(hour_sum), 3) AS kwh
+        FROM (
+            SELECT substr(m.timestamp_start, 1, 13) AS hour_bucket,
+                   CAST(strftime('%H', m.timestamp_start) AS INTEGER) AS hour,
+                   SUM(m.value_kwh) AS hour_sum
+            FROM measurements m
+            JOIN meter_codes mc ON mc.id = m.meter_code_id
+            WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+              AND m.metering_point_id=:bezug_zp
+              AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01')
+            GROUP BY hour_bucket
+        ) hourly
+        GROUP BY hour
+        ORDER BY hour
+    """, params).fetchall()
+    typical_day = [0.0] * 24
+    for row in hourly_rows:
+        typical_day[int(row['hour'])] = _report_round(row['kwh'], 3)
+
+    peak_rows = db.execute("""
+        SELECT m.timestamp_start AS ts, ROUND(SUM(m.value_kwh), 3) AS kwh
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.metering_point_id=:bezug_zp
+          AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01')
+        GROUP BY m.timestamp_start
+        ORDER BY kwh DESC
+        LIMIT 8
+    """, params).fetchall()
+    peaks = [{'ts': row['ts'], 'kwh': _report_round(row['kwh'], 3)} for row in peak_rows]
+
+    peak_line_rows = db.execute("""
+        SELECT substr(m.timestamp_start, 1, 13) || ':00:00' AS ts, ROUND(SUM(m.value_kwh), 3) AS kwh
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.metering_point_id=:bezug_zp
+          AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01')
+        GROUP BY substr(m.timestamp_start, 1, 13)
+        ORDER BY ts
+    """, params).fetchall()
+    peak_line = [[_dt_ms(row['ts']), _report_round(row['kwh'], 3)] for row in peak_line_rows]
+    peak_markers = [[_dt_ms(row['ts']), _report_round(row['kwh'], 3)] for row in peaks]
+
+    quality_rows = db.execute("""
+        SELECT COALESCE(NULLIF(TRIM(m.quality), ''), 'unbekannt') AS quality, COUNT(*) AS cnt
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND (
+            (m.metering_point_id=:bezug_zp AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01'))
+            OR
+            (m.metering_point_id=:einspeiser_zp AND mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T'))
+          )
+        GROUP BY quality
+        ORDER BY cnt DESC
+    """, params).fetchall()
+    quality_total = sum(row['cnt'] for row in quality_rows) or 1
+    quality = [{
+        'quality': row['quality'],
+        'cnt': row['cnt'],
+        'pct': round(row['cnt'] / quality_total * 100.0, 1),
+    } for row in quality_rows]
+
+    relevant_code_count = 2 + (2 if member['einspeiser_zp'] else 0)
+    actual_by_month = {
+        row['bucket']: row['cnt']
+        for row in db.execute("""
+            SELECT strftime('%Y-%m', m.timestamp_start) AS bucket, COUNT(*) AS cnt
+            FROM measurements m
+            JOIN meter_codes mc ON mc.id = m.meter_code_id
+            WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+              AND (
+                (m.metering_point_id=:bezug_zp AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01'))
+                OR
+                (m.metering_point_id=:einspeiser_zp AND mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T'))
+              )
+            GROUP BY bucket
+        """, params).fetchall()
+    }
+    missing_by_month = []
+    for month_start in _month_iter(period_from, period_to):
+        start = max(month_start, date.fromisoformat(period_from))
+        end = min(_month_end(month_start), date.fromisoformat(period_to))
+        days = (end - start).days + 1
+        expected = max(0, days * 96 * relevant_code_count)
+        actual = actual_by_month.get(month_start.strftime('%Y-%m'), 0)
+        missing_by_month.append({
+            'month': month_start.strftime('%Y-%m'),
+            'missing': max(0, expected - actual),
+            'expected': expected,
+            'actual': actual,
+            'completeness': round(actual / expected * 100.0, 1) if expected else 0,
+        })
+    completeness = round(
+        sum(item['actual'] for item in missing_by_month) / max(1, sum(item['expected'] for item in missing_by_month)) * 100.0,
+        1
+    )
+
+    zeros = db.execute("""
+        SELECT COUNT(*)
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.value_kwh = 0
+          AND (
+            (m.metering_point_id=:bezug_zp AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01'))
+            OR
+            (m.metering_point_id=:einspeiser_zp AND mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T'))
+          )
+    """, params).fetchone()[0] or 0
+    outliers = db.execute("""
+        SELECT COUNT(*)
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND (m.value_kwh < 0 OR m.value_kwh > 100)
+          AND (
+            (m.metering_point_id=:bezug_zp AND mc.code IN ('1-1:2.9.0 G.03', '1-1:1.9.0 G.01'))
+            OR
+            (m.metering_point_id=:einspeiser_zp AND mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T'))
+          )
+    """, params).fetchone()[0] or 0
+
+    community_rows = db.execute("""
+        SELECT mb.id,
+               ROUND(SUM(CASE WHEN m.metering_point_id=mb.bezug_zp AND mc.code='1-1:2.9.0 G.03' THEN m.value_kwh ELSE 0 END), 3) AS eeg,
+               ROUND(SUM(CASE WHEN m.metering_point_id=mb.bezug_zp AND mc.code='1-1:1.9.0 G.01' THEN m.value_kwh ELSE 0 END), 3) AS grid,
+               ROUND(SUM(CASE WHEN m.metering_point_id=mb.einspeiser_zp AND mc.code='1-1:2.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 3) AS generation,
+               ROUND(SUM(CASE WHEN m.metering_point_id=mb.einspeiser_zp AND mc.code='1-1:2.9.0 P.01T' THEN m.value_kwh ELSE 0 END), 3) AS public_feed
+        FROM members mb
+        LEFT JOIN measurements m
+          ON m.timestamp_start BETWEEN :ts_from AND :ts_to
+         AND (m.metering_point_id=mb.bezug_zp OR m.metering_point_id=mb.einspeiser_zp)
+        LEFT JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE mb.active=1
+        GROUP BY mb.id
+    """, params).fetchall()
+    community_shares = []
+    community_generation = 0.0
+    community_eeg_feed = 0.0
+    for row in community_rows:
+        consumption = _report_float(row['eeg']) + _report_float(row['grid'])
+        if consumption > 0:
+            community_shares.append(_report_float(row['eeg']) / consumption * 100.0)
+        generation = _report_float(row['generation'])
+        public_feed = _report_float(row['public_feed'])
+        community_generation += generation
+        community_eeg_feed += max(0.0, generation - public_feed)
+    community_avg_eeg_share = round(sum(community_shares) / len(community_shares), 1) if community_shares else 0
+    member_generation_share = _report_pct(totals['eeg_feed'], community_eeg_feed)
+
+    evening_grid = db.execute("""
+        SELECT ROUND(SUM(m.value_kwh), 3)
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.metering_point_id=:bezug_zp
+          AND mc.code='1-1:1.9.0 G.01'
+          AND CAST(strftime('%H', m.timestamp_start) AS INTEGER) BETWEEN 17 AND 21
+    """, params).fetchone()[0] or 0
+    noon_eeg = db.execute("""
+        SELECT ROUND(SUM(m.value_kwh), 3)
+        FROM measurements m
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE m.timestamp_start BETWEEN :ts_from AND :ts_to
+          AND m.metering_point_id=:bezug_zp
+          AND mc.code='1-1:2.9.0 G.03'
+          AND CAST(strftime('%H', m.timestamp_start) AS INTEGER) BETWEEN 10 AND 15
+    """, params).fetchone()[0] or 0
+    optimisation_hints = []
+    if evening_grid > max(1.0, totals['grid'] * 0.25):
+        optimisation_hints.append('Abends wird viel Strom vom öffentlichen Netz benötigt. Geräte wie Waschmaschine, Geschirrspüler oder Boiler könnten wenn möglich früher laufen.')
+    if noon_eeg < max(1.0, totals['eeg'] * 0.25):
+        optimisation_hints.append('Rund um die Mittagszeit wird noch wenig Strom aus der Energiegemeinschaft genutzt. Verbrauch in diese Zeit zu verschieben kann helfen.')
+    if totals['eeg_share'] < community_avg_eeg_share:
+        optimisation_hints.append('Der Anteil an Strom aus der Energiegemeinschaft liegt unter dem Durchschnitt der Gemeinschaft.')
+    if not optimisation_hints:
+        optimisation_hints.append('Im gewählten Zeitraum gibt es keine auffälligen Hinweise. Die Nutzung wirkt bereits ausgewogen.')
+
+    charts = {
+        'labels': labels,
+        'eeg': eeg_values,
+        'grid': grid_values,
+        'generation': generation_values,
+        'public_feed': public_feed_values,
+        'eeg_feed': eeg_feed_values,
+        'consumption': total_consumption_values,
+        'eeg_share': eeg_share_values,
+        'cost_without': cost_without_values,
+        'cost_actual': cost_actual_values,
+        'savings': savings_values,
+        'cumulative_savings': cumulative_savings,
+        'daily_eeg_share': [[item['day'], item['eeg_share']] for item in daily_shares],
+        'heatmap': heatmap,
+        'typical_day': typical_day,
+        'peak_line': peak_line,
+        'peak_markers': peak_markers,
+        'missing_by_month': missing_by_month,
+        'quality': quality,
+        'sankey': [
+            ['Öffentliches Netz', 'Verbrauch', _report_round(totals['grid'], 2)],
+            ['EEG', 'Verbrauch', _report_round(totals['eeg'], 2)],
+            ['Erzeugung', 'EEG', _report_round(totals['eeg_feed'], 2)],
+            ['Erzeugung', 'Öffentliches Netz', _report_round(totals['public_feed'], 2)],
+        ],
+    }
+
+    return {
+        'totals': totals,
+        'charts': charts,
+        'best_day': best_day,
+        'weakest_day': weakest_day,
+        'peaks': peaks,
+        'quality_summary': {
+            'completeness': completeness,
+            'zeros': zeros,
+            'outliers': outliers,
+            'expected_code_count': relevant_code_count,
+        },
+        'community': {
+            'avg_eeg_share': community_avg_eeg_share,
+            'member_generation_share': member_generation_share,
+            'eeg_feed_total': round(community_eeg_feed, 2),
+            'generation_total': round(community_generation, 2),
+        },
+        'prices': {
+            'eeg_consumption_ct': price_cons,
+            'eeg_generation_ct': price_gen,
+            'market_consumption_ct': market_price_ct,
+            'market_feed_ct': market_feed_ct,
+            'is_estimate': True,
+        },
+        'optimisation_hints': optimisation_hints,
+        'data_notes': [
+            'Strom aus der Energiegemeinschaft ist jener Anteil, den Sie lokal von der EEG beziehen.',
+            'Strom aus dem öffentlichen Netz ist jener Anteil, der nicht durch die EEG gedeckt wurde.',
+            'Bei Erzeugern wird angezeigt, wie viel Energie an die EEG geliefert und wie viel ins öffentliche Netz abgegeben wurde.',
+            'Direkt im Haus verbrauchter PV-Strom ist mit den vorhandenen Netzbetreiber-Daten nicht exakt getrennt sichtbar.',
+            'Die Ersparnis ist eine Schätzung. Für eine exakte Berechnung braucht es einen gepflegten Vergleichstarif je Zeitraum.',
+        ],
+    }
+
+
+def _reports_response(portal=False):
+    db = get_db()
+    min_date, max_date = _report_ts_bounds(db)
+    aggregation = request.args.get('aggregation', 'month')
+    if aggregation not in REPORT_AGGREGATIONS:
+        aggregation = 'month'
+    period_from = _parse_report_date(request.args.get('date_from'), min_date)
+    period_to = _parse_report_date(request.args.get('date_to'), max_date)
+    if period_from > period_to:
+        period_from, period_to = period_to, period_from
+
+    members = db.execute("""
+        SELECT id, name, bezug_zp, einspeiser_zp
+        FROM members
+        WHERE active=1
+        ORDER BY name
+    """).fetchall()
+    if portal:
+        member_id = current_user.member_id
+        if not member_id:
+            flash('Kein Mitglied zugeordnet.', 'warning')
+            return redirect(url_for('portal_dashboard'))
+    else:
+        member_id = request.args.get('member_id', type=int)
+        if not member_id and members:
+            member_id = members[0]['id']
+    member = db.execute("SELECT * FROM members WHERE id=? AND active=1", (member_id,)).fetchone() if member_id else None
+    if not member:
+        flash('Kein aktives Mitglied für den Report gefunden.', 'warning')
+        return render_template('reports.html', members=members, selected_member=None, report=None,
+                               report_json='{}', period_from=period_from, period_to=period_to,
+                               aggregation=aggregation, aggregations=REPORT_AGGREGATIONS, portal=portal,
+                               min_date=min_date, max_date=max_date)
+
+    if portal and current_user.member_id != member['id']:
+        abort(403)
+
+    report = _build_member_report(db, member, period_from, period_to, aggregation)
+    return render_template(
+        'reports.html',
+        members=members,
+        selected_member=member,
+        report=report,
+        report_json=json.dumps(report, ensure_ascii=False),
+        period_from=period_from,
+        period_to=period_to,
+        aggregation=aggregation,
+        aggregations=REPORT_AGGREGATIONS,
+        portal=portal,
+        min_date=min_date,
+        max_date=max_date,
+    )
+
+
 @app.route('/reports')
 @admin_required
 def reports():
-    db = get_db()
+    return _reports_response(portal=False)
 
-    # Gesamtverbrauch und -erzeugung
-    total_consumption = db.execute("""
-        SELECT ROUND(SUM(m.value_kwh), 1)
-        FROM measurements m
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        WHERE mc.code = '1-1:1.9.0 G.01T'
-    """).fetchone()[0] or 0
 
-    total_generation = db.execute("""
-        SELECT ROUND(SUM(m.value_kwh), 1)
-        FROM measurements m
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        WHERE mc.code = '1-1:2.9.0 G.01T'
-    """).fetchone()[0] or 0
-
-    total_eigendeckung = db.execute("""
-        SELECT ROUND(SUM(m.value_kwh), 1)
-        FROM measurements m
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        WHERE mc.code = '1-1:2.9.0 G.03'
-    """).fetchone()[0] or 0
-
-    total_surplus = db.execute("""
-        SELECT ROUND(SUM(m.value_kwh), 1)
-        FROM measurements m
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        WHERE mc.code = '1-1:2.9.0 P.01T'
-    """).fetchone()[0] or 0
-
-    # Pro Monat
-    monthly = db.execute("""
-        SELECT
-            b.period_start as monat,
-            ROUND(SUM(CASE WHEN mc.code='1-1:1.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 1) as verbrauch,
-            ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 1) as erzeugung,
-            ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 G.03' THEN m.value_kwh ELSE 0 END), 1) as eigendeckung,
-            ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 P.01T' THEN m.value_kwh ELSE 0 END), 1) as ueberschuss
-        FROM measurements m
-        JOIN import_batches b ON b.id = m.batch_id
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        GROUP BY b.period_start
-        ORDER BY b.period_start
-    """).fetchall()
-
-    # Pro Mitglied
-    members_consumption = db.execute("""
-        SELECT
-            COALESCE(mb.name, mp.metering_point_id) as name,
-            mp.metering_point_id,
-            ROUND(SUM(CASE WHEN mc.code='1-1:1.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 1) as verbrauch,
-            ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 G.03' THEN m.value_kwh ELSE 0 END), 1) as eigendeckung
-        FROM measurements m
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        JOIN metering_points mp ON mp.metering_point_id = m.metering_point_id
-        LEFT JOIN members mb ON mb.bezug_zp = mp.metering_point_id
-        WHERE mp.energy_direction = 'CONSUMPTION'
-        GROUP BY mp.metering_point_id
-        ORDER BY eigendeckung DESC
-    """).fetchall()
-
-    members_generation = db.execute("""
-        SELECT
-            COALESCE(mb.name, mp.metering_point_id) as name,
-            mp.metering_point_id,
-            ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 1) as erzeugung,
-            ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 P.01T' THEN m.value_kwh ELSE 0 END), 1) as ueberschuss
-        FROM measurements m
-        JOIN meter_codes mc ON mc.id = m.meter_code_id
-        JOIN metering_points mp ON mp.metering_point_id = m.metering_point_id
-        LEFT JOIN members mb ON mb.einspeiser_zp = mp.metering_point_id
-        WHERE mp.energy_direction = 'GENERATION'
-          AND mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T')
-        GROUP BY mp.metering_point_id
-        ORDER BY erzeugung DESC
-    """).fetchall()
-
-    # Datenqualität
-    quality = db.execute("""
-        SELECT quality, COUNT(*) as cnt,
-               ROUND(COUNT(*)*100.0/(SELECT COUNT(*) FROM measurements), 1) as pct
-        FROM measurements GROUP BY quality ORDER BY cnt DESC
-    """).fetchall()
-
-    return render_template('reports.html',
-                           total_consumption=total_consumption,
-                           total_generation=total_generation,
-                           total_eigendeckung=total_eigendeckung,
-                           total_surplus=total_surplus,
-                           monthly=monthly,
-                           members_consumption=members_consumption,
-                           members_generation=members_generation,
-                           quality=quality)
+@app.route('/portal/reports')
+@login_required
+def portal_reports():
+    return _reports_response(portal=True)
 
 
 # === Billing Calculation ===
@@ -2420,8 +3297,11 @@ def calculate_billing(db, period_from, period_to, price_cons, price_gen):
             })
             total_expense += gen_amount
 
+    carryovers = calculate_carryovers_for_period(db, period_from)
+
     return {
         'items': items,
+        'carryovers': carryovers,
         'total_kwh': total_kwh,
         'total_income': round(total_income, 2),
         'total_expense': round(total_expense, 2),
@@ -2796,15 +3676,13 @@ def get_google_drive_status():
 
 
 def _google_redirect_uri():
-    return GOOGLE_OAUTH_REDIRECT_URI or url_for('admin_backup_google_callback', _external=True)
+    return GOOGLE_OAUTH_REDIRECT_URI or public_url_for('admin_backup_google_callback')
 
 
 def _google_redirect_uri_for_display():
     if GOOGLE_OAUTH_REDIRECT_URI:
         return GOOGLE_OAUTH_REDIRECT_URI
-    if has_request_context():
-        return url_for('admin_backup_google_callback', _external=True)
-    return ''
+    return public_url_for('admin_backup_google_callback')
 
 
 def _google_drive_flow():
@@ -2881,6 +3759,87 @@ def upload_backup_to_google_drive(db, backup_path):
     _set_setting(db, 'backup_drive_last_error', '')
     db.commit()
     return uploaded
+
+
+def _drive_query_literal(value):
+    return str(value).replace('\\', '\\\\').replace("'", "\\'")
+
+
+def _is_google_backup_name(filename):
+    return bool(_parse_backup_timestamp(str(filename or '').strip()))
+
+
+def _normalize_google_drive_backup_file(item):
+    size = item.get('size')
+    try:
+        size = int(size) if size is not None else 0
+    except (TypeError, ValueError):
+        size = 0
+    return {
+        'id': item.get('id', ''),
+        'name': item.get('name', ''),
+        'size': size,
+        'created_at': item.get('createdTime') or item.get('modifiedTime') or '',
+        'modified_at': item.get('modifiedTime') or '',
+        'web_view_link': item.get('webViewLink') or '',
+        'mime_type': item.get('mimeType') or '',
+    }
+
+
+def list_google_drive_backups(db, limit=50):
+    """Listet von dieser App erreichbare EEG-Backup-ZIP-Dateien in Google Drive."""
+    settings = get_backup_settings(db)
+    service = _google_drive_service()
+    query_parts = [
+        "trashed=false",
+        "name contains 'eeg_'",
+        "name contains '.zip'",
+    ]
+    if settings['drive_folder_id']:
+        folder_id = _drive_query_literal(settings['drive_folder_id'])
+        query_parts.append(f"'{folder_id}' in parents")
+    response = service.files().list(
+        q=' and '.join(query_parts),
+        pageSize=max(1, min(int(limit), 100)),
+        fields='files(id,name,size,createdTime,modifiedTime,webViewLink,mimeType)',
+        orderBy='createdTime desc',
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+    backups = []
+    for item in response.get('files', []):
+        if _is_google_backup_name(item.get('name')):
+            backups.append(_normalize_google_drive_backup_file(item))
+    return backups
+
+
+def trash_google_drive_backup(db, file_id):
+    """Verschiebt ein von der App verwaltbares Drive-Backup in den Papierkorb."""
+    drive_file_id = str(file_id or '').strip()
+    if not re.match(r'^[A-Za-z0-9_-]{8,}$', drive_file_id):
+        raise ValueError('Ungültige Google Drive Datei-ID.')
+
+    service = _google_drive_service()
+    metadata = service.files().get(
+        fileId=drive_file_id,
+        fields='id,name,mimeType,trashed',
+        supportsAllDrives=True,
+    ).execute()
+    backup_name = metadata.get('name') or ''
+    if metadata.get('trashed'):
+        raise ValueError('Dieses Google Drive Backup liegt bereits im Papierkorb.')
+    if not _is_google_backup_name(backup_name):
+        raise ValueError('Aus Sicherheitsgründen können nur EEG-Backup-ZIP-Dateien gelöscht werden.')
+
+    deleted = service.files().update(
+        fileId=drive_file_id,
+        body={'trashed': True},
+        fields='id,name,trashed',
+        supportsAllDrives=True,
+    ).execute()
+    _set_setting(db, 'backup_drive_last_error', '')
+    db.commit()
+    return deleted
 
 
 def apply_backup_retention(settings):
@@ -3072,12 +4031,23 @@ def admin_backup():
     """Admin-Seite fuer Backup und Restore."""
     db = get_db()
     smtp_configured, _ = _validate_mail_config(_load_mail_config(db))
+    google_drive = get_google_drive_status()
+    drive_backups = []
+    drive_backups_error = ''
+    if google_drive['connected']:
+        try:
+            drive_backups = list_google_drive_backups(db)
+        except Exception as e:
+            drive_backups_error = str(e)
+            app.logger.warning('Could not list Google Drive backups: %s', e, exc_info=True)
     return render_template(
         'admin_backup.html',
         info=get_backup_info(),
         backup_settings=get_backup_settings(db),
         backup_files=list_local_backups()[:20],
-        google_drive=get_google_drive_status(),
+        google_drive=google_drive,
+        drive_backups=drive_backups,
+        drive_backups_error=drive_backups_error,
         smtp_configured=smtp_configured,
         weekdays=[
             (0, 'Montag'),
@@ -3349,6 +4319,25 @@ def admin_backup_upload_drive():
         db.commit()
         audit_log('backup_drive_failed', f'Google Drive Upload fehlgeschlagen: {filename} ({e})')
         flash(f'Google Drive Upload fehlgeschlagen: {e}', 'danger')
+    return redirect(url_for('admin_backup'))
+
+
+@app.route('/admin/backup/google/delete', methods=['POST'])
+@admin_required
+def admin_backup_google_delete():
+    """Verschiebt eine Google Drive Backup-Datei in den Papierkorb."""
+    drive_file_id = request.form.get('drive_file_id', '')
+    try:
+        deleted = trash_google_drive_backup(get_db(), drive_file_id)
+        backup_name = deleted.get('name') or drive_file_id
+        audit_log('backup_drive_delete', f'Google Drive Backup in den Papierkorb verschoben: {backup_name} ({deleted.get("id")})')
+        flash(f'Google Drive Backup wurde in den Papierkorb verschoben: {backup_name}', 'success')
+    except Exception as e:
+        db = get_db()
+        _set_setting(db, 'backup_drive_last_error', str(e))
+        db.commit()
+        audit_log('backup_drive_delete_failed', f'Google Drive Backup konnte nicht gelöscht werden: {drive_file_id} ({e})')
+        flash(f'Google Drive Backup konnte nicht gelöscht werden: {e}', 'danger')
     return redirect(url_for('admin_backup'))
 
 
@@ -3808,48 +4797,168 @@ def admin_database_maintenance():
 
 # === Überweisungsliste / Forderungen ===
 
-@app.route('/payments')
-@admin_required
-def payments():
-    """Überweisungsliste: offene und bezahlte Forderungen."""
-    db = get_db()
-    # Alle invoice_items mit Netto-Berechnung pro Mitglied/Rechnung
-    open_items = db.execute("""
+def _parse_booking_date(value):
+    text = (value or '').strip()
+    if not text:
+        raise ValueError('Bitte ein Buchungsdatum eintragen.')
+    try:
+        booking_date = date.fromisoformat(text)
+    except ValueError as e:
+        raise ValueError('Das Buchungsdatum ist ungültig.') from e
+    if booking_date > local_now().date():
+        raise ValueError('Das Buchungsdatum darf nicht in der Zukunft liegen.')
+    if booking_date < date(2000, 1, 1):
+        raise ValueError('Das Buchungsdatum ist zu weit in der Vergangenheit.')
+    return booking_date
+
+
+def _paid_at_from_booking_date(booking_date):
+    booked_at = datetime.combine(booking_date, datetime.min.time().replace(hour=12), tzinfo=APP_TIMEZONE)
+    return booked_at.isoformat(timespec='seconds')
+
+
+def _row_reference_date(row):
+    for key in ('finalized_at', 'created_at', 'period_to'):
+        dt = to_local_datetime(row.get(key) if hasattr(row, 'get') else row[key])
+        if dt:
+            return dt.date()
+    return local_now().date()
+
+
+def _booking_due_date(row):
+    return _row_reference_date(row) + timedelta(days=7)
+
+
+def _active_payment_booking(db, invoice_id, member_id):
+    return db.execute("""
+        SELECT *
+        FROM payment_bookings
+        WHERE invoice_id=? AND member_id=? AND reversed_at IS NULL
+        ORDER BY booking_date DESC, id DESC
+        LIMIT 1
+    """, (invoice_id, member_id)).fetchone()
+
+
+def get_payment_rows(db, member_id=None):
+    """Liefert Netto-Zahlungszeilen pro Mitglied und Abrechnung."""
+    params = []
+    member_filter = ''
+    if member_id is not None:
+        member_filter = 'WHERE ii.member_id=?'
+        params.append(member_id)
+    items = db.execute(f"""
         SELECT ii.id, ii.invoice_id, ii.member_id, m.name, m.iban, m.bic, m.account_holder,
-               i.period_from, i.period_to, ii.type, ii.kwh, ii.amount_eur, ii.paid, ii.paid_at
+               i.period_from, i.period_to, i.status AS invoice_status, i.created_at, i.finalized_at,
+               ii.type, ii.kwh, ii.amount_eur, COALESCE(ii.paid, 0) AS paid, ii.paid_at
         FROM invoice_items ii
         JOIN members m ON m.id = ii.member_id
         JOIN invoices i ON i.id = ii.invoice_id
-        ORDER BY ii.paid ASC, i.period_from DESC, m.name
-    """).fetchall()
+        {member_filter}
+        ORDER BY i.period_from DESC, m.name
+    """, params).fetchall()
 
-    # Gruppierung nach Mitglied + Rechnung für Netto-Anzeige
     from collections import defaultdict
-    grouped = defaultdict(lambda: {'items': [], 'member': None, 'invoice': None})
-    for item in open_items:
-        key = (item['invoice_id'], item['member_id'])
+    grouped = defaultdict(lambda: {'items': [], 'carryovers': [], 'member': None, 'invoice': None})
+    latest_period_by_member = {}
+
+    def ensure_group(invoice_id, member_id_value, member_data, invoice_data):
+        key = (invoice_id, member_id_value)
+        grouped[key]['member'] = member_data
+        grouped[key]['invoice'] = invoice_data
+        current_latest = latest_period_by_member.get(member_id_value)
+        if current_latest is None or invoice_data['period_to'] > current_latest:
+            latest_period_by_member[member_id_value] = invoice_data['period_to']
+        return key
+
+    for item in items:
+        key = ensure_group(
+            item['invoice_id'],
+            item['member_id'],
+            {
+                'id': item['member_id'],
+                'name': item['name'],
+                'iban': item['iban'],
+                'bic': item['bic'],
+                'account_holder': item['account_holder'],
+            },
+            {
+                'id': item['invoice_id'],
+                'period_from': item['period_from'],
+                'period_to': item['period_to'],
+                'status': item['invoice_status'],
+                'created_at': item['created_at'],
+                'finalized_at': item['finalized_at'],
+            },
+        )
         grouped[key]['items'].append(item)
-        grouped[key]['member'] = {
-            'id': item['member_id'], 'name': item['name'],
-            'iban': item['iban'], 'bic': item['bic'], 'account_holder': item['account_holder']
-        }
-        grouped[key]['invoice'] = {
-            'id': item['invoice_id'], 'period_from': item['period_from'], 'period_to': item['period_to']
-        }
 
-    payment_list = []
+    carryover_params = []
+    carryover_member_filter = ''
+    if member_id is not None:
+        carryover_member_filter = 'WHERE c.member_id=?'
+        carryover_params.append(member_id)
+    carryover_rows = db.execute(f"""
+        SELECT c.*, m.name, m.iban, m.bic, m.account_holder,
+               i.period_from, i.period_to, i.status AS invoice_status, i.created_at, i.finalized_at,
+               src.period_from AS source_period_from,
+               src.period_to AS source_period_to
+        FROM invoice_carryovers c
+        JOIN members m ON m.id = c.member_id
+        JOIN invoices i ON i.id = c.invoice_id
+        JOIN invoices src ON src.id = c.source_invoice_id
+        {carryover_member_filter}
+        ORDER BY i.period_from DESC, m.name, src.period_from
+    """, carryover_params).fetchall()
+    for carryover in carryover_rows:
+        key = ensure_group(
+            carryover['invoice_id'],
+            carryover['member_id'],
+            {
+                'id': carryover['member_id'],
+                'name': carryover['name'],
+                'iban': carryover['iban'],
+                'bic': carryover['bic'],
+                'account_holder': carryover['account_holder'],
+            },
+            {
+                'id': carryover['invoice_id'],
+                'period_from': carryover['period_from'],
+                'period_to': carryover['period_to'],
+                'status': carryover['invoice_status'],
+                'created_at': carryover['created_at'],
+                'finalized_at': carryover['finalized_at'],
+            },
+        )
+        grouped[key]['carryovers'].append(carryover)
+
+    payment_rows = []
+    today = local_now().date()
     for key, data in grouped.items():
-        net = 0
-        for it in data['items']:
-            if it['type'] == 'consumption':
-                net += it['amount_eur']
+        energy_net = 0
+        for item in data['items']:
+            if item['type'] == 'consumption':
+                energy_net += item['amount_eur']
             else:
-                net -= it['amount_eur']
-        # Prüfe ob alle Items bezahlt sind
-        all_paid = all(it['paid'] for it in data['items'])
-        paid_at = data['items'][0]['paid_at'] if all_paid else None
-
-        payment_list.append({
+                energy_net -= item['amount_eur']
+        carryover_total = round(sum(item['amount_eur'] for item in data['carryovers']), 2)
+        net = round(energy_net + carryover_total, 2)
+        active_booking = _active_payment_booking(db, key[0], key[1])
+        all_paid = bool(data['items']) and all(item['paid'] for item in data['items'])
+        paid = bool(active_booking or all_paid or abs(net) < 0.005)
+        paid_at = data['items'][0]['paid_at'] if all_paid and data['items'] else None
+        booking_date = active_booking['booking_date'] if active_booking else ''
+        if not booking_date and paid_at:
+            paid_dt = to_local_datetime(paid_at)
+            booking_date = paid_dt.date().isoformat() if paid_dt else ''
+        carried_forward = db.execute("""
+            SELECT c.invoice_id, i.period_from, i.period_to
+            FROM invoice_carryovers c
+            JOIN invoices i ON i.id = c.invoice_id
+            WHERE c.source_invoice_id=? AND c.member_id=?
+            ORDER BY i.period_from DESC, c.invoice_id DESC
+            LIMIT 1
+        """, (key[0], key[1])).fetchone()
+        row = {
             'invoice_id': key[0],
             'member_id': key[1],
             'member_name': data['member']['name'],
@@ -3858,30 +4967,171 @@ def payments():
             'account_holder': data['member']['account_holder'],
             'period_from': data['invoice']['period_from'],
             'period_to': data['invoice']['period_to'],
+            'invoice_status': data['invoice']['status'],
+            'created_at': data['invoice']['created_at'],
+            'finalized_at': data['invoice']['finalized_at'],
+            'reference_date': _row_reference_date(data['invoice']),
+            'due_on': _booking_due_date(data['invoice']),
             'net_total': round(net, 2),
-            'paid': all_paid,
+            'energy_total': round(energy_net, 2),
+            'carryover_total': carryover_total,
+            'carryovers': data['carryovers'],
+            'paid': paid,
             'paid_at': paid_at,
+            'booking_date': booking_date,
+            'booking_note': active_booking['note'] if active_booking else '',
+            'booking_id': active_booking['id'] if active_booking else None,
+            'direction': 'member_to_eeg' if net > 0 else 'eeg_to_member' if net < 0 else 'balanced',
+            'is_settled_by_carryover': bool(carried_forward and not paid),
+            'carried_forward_to_invoice_id': carried_forward['invoice_id'] if carried_forward and not paid else None,
+        }
+        row['is_overdue'] = (not row['paid'] and not row['is_settled_by_carryover'] and row['net_total'] > 0 and today >= row['due_on'])
+        row['is_previous_period_open'] = (
+            not row['paid']
+            and not row['is_settled_by_carryover']
+            and latest_period_by_member.get(row['member_id']) is not None
+            and row['period_to'] < latest_period_by_member[row['member_id']]
+        )
+        payment_rows.append(row)
+
+    payment_rows.sort(key=lambda item: (
+        item['paid'],
+        not item['is_overdue'],
+        item['member_name'].lower(),
+        item['period_from'],
+    ))
+    return payment_rows
+
+
+def get_payment_row(db, invoice_id, member_id):
+    for row in get_payment_rows(db, member_id=member_id):
+        if row['invoice_id'] == invoice_id:
+            return row
+    return None
+
+
+def get_member_account_summary(db, member_id):
+    rows = get_payment_rows(db, member_id=member_id)
+    active_open_rows = [row for row in rows if not row['paid'] and not row['is_settled_by_carryover']]
+    balance = round(sum(row['net_total'] for row in active_open_rows), 2)
+    open_claims = round(sum(row['net_total'] for row in active_open_rows if row['net_total'] > 0), 2)
+    open_credits = round(sum(row['net_total'] for row in active_open_rows if row['net_total'] < 0), 2)
+    overdue_claims = round(sum(row['net_total'] for row in rows if row['is_overdue']), 2)
+    previous_open = [row for row in rows if row['is_previous_period_open']]
+
+    events = []
+    for row in rows:
+        invoice_date = _row_reference_date(row)
+        net = row['net_total']
+        events.append({
+            'sort_date': invoice_date,
+            'date': invoice_date,
+            'kind': 'invoice',
+            'label': f"Abrechnung {row['period_from']} - {row['period_to']}",
+            'invoice_id': row['invoice_id'],
+            'amount': net,
+            'status': 'gebucht' if row['paid'] else 'vorgetragen' if row['is_settled_by_carryover'] else 'offen',
+            'is_overdue': row['is_overdue'],
+            'is_previous_period_open': row['is_previous_period_open'],
         })
+        if row['is_settled_by_carryover']:
+            events.append({
+                'sort_date': invoice_date,
+                'date': invoice_date,
+                'kind': 'carryover',
+                'label': f"Vortrag in Abrechnung #{row['carried_forward_to_invoice_id']}",
+                'invoice_id': row['carried_forward_to_invoice_id'],
+                'amount': -net,
+                'status': 'vorgetragen',
+                'is_overdue': False,
+                'is_previous_period_open': False,
+            })
+        if row['paid']:
+            if row['booking_date']:
+                booking_date = date.fromisoformat(row['booking_date'])
+            else:
+                booking_date = invoice_date
+            events.append({
+                'sort_date': booking_date,
+                'date': booking_date,
+                'kind': 'booking',
+                'label': 'Zahlung gebucht' if net > 0 else 'Gutschrift ausbezahlt' if net < 0 else 'Ausgeglichen',
+                'invoice_id': row['invoice_id'],
+                'amount': -net,
+                'status': 'gebucht',
+                'is_overdue': False,
+                'is_previous_period_open': False,
+            })
 
-    # Sortieren: offene zuerst, dann nach Name
-    payment_list.sort(key=lambda x: (x['paid'], x['member_name']))
+    running = 0
+    for event in sorted(events, key=lambda item: (item['sort_date'], 0 if item['kind'] == 'invoice' else 1, item['invoice_id'])):
+        running = round(running + event['amount'], 2)
+        event['balance_after'] = running
 
-    return render_template('payments.html', payments=payment_list)
+    return {
+        'balance': balance,
+        'open_claims': open_claims,
+        'open_credits': open_credits,
+        'overdue_claims': overdue_claims,
+        'previous_open': previous_open,
+        'rows': rows,
+        'history': list(reversed(events)),
+    }
+
+
+@app.route('/payments')
+@admin_required
+def payments():
+    """Überweisungsliste: offene und bezahlte Forderungen."""
+    db = get_db()
+    payment_list = get_payment_rows(db)
+    return render_template('payments.html', payments=payment_list, today=local_now().date().isoformat())
 
 
 @app.route('/payments/mark_paid', methods=['POST'])
 @admin_required
 def payment_mark_paid():
-    """Markiert eine Forderung als bezahlt."""
+    """Bucht eine Forderung oder Gutschrift mit Bank-Buchungsdatum."""
     db = get_db()
     invoice_id = request.form.get('invoice_id', type=int)
     member_id = request.form.get('member_id', type=int)
-    db.execute("""UPDATE invoice_items SET paid=1, paid_at=datetime('now')
-                  WHERE invoice_id=? AND member_id=?""", (invoice_id, member_id))
-    db.commit()
-    member = db.execute("SELECT name FROM members WHERE id=?", (member_id,)).fetchone()
-    audit_log('payment_paid', f'Zahlung gebucht: {member["name"]}, Rechnung {invoice_id}')
-    flash(f'Zahlung von {member["name"]} als gebucht markiert.', 'success')
+    try:
+        booking_date = _parse_booking_date(request.form.get('booking_date'))
+        note = (request.form.get('booking_note') or '').strip()[:500]
+        row = get_payment_row(db, invoice_id, member_id)
+        if not row:
+            raise ValueError('Die Buchung wurde nicht gefunden.')
+        if row['paid']:
+            raise ValueError('Diese Buchung ist bereits als gebucht markiert.')
+        if row['is_settled_by_carryover']:
+            raise ValueError(f'Diese offene Buchung wurde bereits in Abrechnung #{row["carried_forward_to_invoice_id"]} vorgetragen.')
+        if abs(row['net_total']) >= 0.005:
+            db.execute("""
+                INSERT INTO payment_bookings (
+                    invoice_id, member_id, amount_eur, direction, booking_date,
+                    recorded_by_user_id, recorded_by_username, note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                invoice_id,
+                member_id,
+                row['net_total'],
+                row['direction'],
+                booking_date.isoformat(),
+                current_user.id if current_user.is_authenticated else None,
+                current_user.username if current_user.is_authenticated else None,
+                note,
+            ))
+        db.execute("""UPDATE invoice_items SET paid=1, paid_at=?
+                      WHERE invoice_id=? AND member_id=?""",
+                   (_paid_at_from_booking_date(booking_date), invoice_id, member_id))
+        db.commit()
+        action_label = 'Zahlung' if row['net_total'] > 0 else 'Gutschrift' if row['net_total'] < 0 else 'Ausgleich'
+        audit_log('payment_paid', f'{action_label} gebucht: {row["member_name"]}, Rechnung {invoice_id}, Betrag {row["net_total"]:.2f} EUR, Buchungsdatum {booking_date.isoformat()}')
+        flash(f'{action_label} für {row["member_name"]} mit Buchungsdatum {booking_date.strftime("%d.%m.%Y")} gebucht.', 'success')
+    except Exception as e:
+        db.rollback()
+        audit_log('payment_paid_failed', f'Zahlungsbuchung fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
+        flash(f'Buchung konnte nicht gespeichert werden: {e}', 'danger')
     return redirect(url_for('payments'))
 
 
@@ -3892,11 +5142,35 @@ def payment_mark_unpaid():
     db = get_db()
     invoice_id = request.form.get('invoice_id', type=int)
     member_id = request.form.get('member_id', type=int)
-    db.execute("""UPDATE invoice_items SET paid=0, paid_at=NULL
-                  WHERE invoice_id=? AND member_id=?""", (invoice_id, member_id))
-    db.commit()
-    audit_log('payment_unpaid', f'Zahlung storniert: Mitglied {member_id}, Rechnung {invoice_id}')
-    flash('Zahlung auf offen zurückgesetzt.', 'info')
+    try:
+        row = get_payment_row(db, invoice_id, member_id)
+        if not row:
+            raise ValueError('Die Buchung wurde nicht gefunden.')
+        if not row['paid']:
+            raise ValueError('Diese Buchung ist bereits offen.')
+        db.execute("""
+            UPDATE payment_bookings
+            SET reversed_at=datetime('now'),
+                reversed_by_user_id=?,
+                reversed_by_username=?,
+                reverse_note=?
+            WHERE invoice_id=? AND member_id=? AND reversed_at IS NULL
+        """, (
+            current_user.id if current_user.is_authenticated else None,
+            current_user.username if current_user.is_authenticated else None,
+            'Zahlung durch Admin auf offen zurückgesetzt',
+            invoice_id,
+            member_id,
+        ))
+        db.execute("""UPDATE invoice_items SET paid=0, paid_at=NULL
+                      WHERE invoice_id=? AND member_id=?""", (invoice_id, member_id))
+        db.commit()
+        audit_log('payment_unpaid', f'Buchung storniert: {row["member_name"]}, Rechnung {invoice_id}')
+        flash('Buchung wurde storniert und wieder als offen markiert.', 'info')
+    except Exception as e:
+        db.rollback()
+        audit_log('payment_unpaid_failed', f'Buchungsstorno fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
+        flash(f'Buchung konnte nicht zurückgesetzt werden: {e}', 'danger')
     return redirect(url_for('payments'))
 
 
@@ -3991,7 +5265,7 @@ def admin_user_create():
                 role, member_id, invite_token, invite_expires))
     db.commit()
 
-    invite_url = request.url_root.rstrip('/') + url_for('invite_accept', token=invite_token)
+    invite_url = public_url_for('invite_accept', token=invite_token)
     audit_log('user_create', f'Benutzer angelegt: {username} (Rolle: {role}, Mitglied-ID: {member_id})')
     if member['email']:
         invite_user = {
@@ -4031,7 +5305,7 @@ def admin_user_reinvite(id):
         FROM users u LEFT JOIN members m ON u.member_id = m.id
         WHERE u.id=?
     """, (id,)).fetchone()
-    invite_url = request.url_root.rstrip('/') + url_for('invite_accept', token=invite_token)
+    invite_url = public_url_for('invite_accept', token=invite_token)
     audit_log('user_reinvite', f'Neuer Einladungslink für: {user["username"]}' if user else f'Reinvite User-ID {id}')
     if invite_action == 'show':
         flash(f'Neuer Einladungslink generiert: {invite_url}', 'info')
@@ -4290,16 +5564,20 @@ def portal_dashboard():
     member_id = current_user.member_id
     if not member_id:
         flash('Kein Mitglied zugeordnet.', 'warning')
-        return render_template('portal_dashboard.html', member=None, invoices=[], stats=None)
+        return render_template('portal_dashboard.html', member=None, invoices=[], stats=None, account=None)
 
     member = db.execute("SELECT * FROM members WHERE id=?", (member_id,)).fetchone()
+    account = get_member_account_summary(db, member_id)
     # Abrechnungen des Mitglieds
     invoices = db.execute("""
         SELECT DISTINCT i.* FROM invoices i
-        JOIN invoice_items ii ON ii.invoice_id = i.id
-        WHERE ii.member_id = ?
+        WHERE i.id IN (
+            SELECT invoice_id FROM invoice_items WHERE member_id=?
+            UNION
+            SELECT invoice_id FROM invoice_carryovers WHERE member_id=?
+        )
         ORDER BY i.period_from DESC
-    """, (member_id,)).fetchall()
+    """, (member_id, member_id)).fetchall()
 
     # Letzte Abrechnung: Stats berechnen
     stats = None
@@ -4309,11 +5587,13 @@ def portal_dashboard():
         # Net total
         items = db.execute("SELECT * FROM invoice_items WHERE invoice_id=? AND member_id=?",
                            (latest['id'], member_id)).fetchall()
+        carryovers = get_invoice_carryovers(db, latest['id'], member_id)
         net = sum(i['amount_eur'] if i['type'] == 'consumption' else -i['amount_eur'] for i in items)
+        net += sum(c['amount_eur'] for c in carryovers)
         stats['net_total'] = round(net, 2)
         stats['invoice_id'] = latest['id']
 
-    return render_template('portal_dashboard.html', member=member, invoices=invoices, stats=stats)
+    return render_template('portal_dashboard.html', member=member, invoices=invoices, stats=stats, account=account)
 
 
 @app.route('/portal/data', methods=['GET', 'POST'])
@@ -4361,18 +5641,29 @@ def portal_invoices():
         flash('Kein Mitglied zugeordnet.', 'warning')
         return redirect(url_for('portal_dashboard'))
     db = get_db()
+    account = get_member_account_summary(db, current_user.member_id)
     rows = db.execute("""
         SELECT i.id, i.period_from, i.period_to, i.status, i.created_at,
-               SUM(CASE WHEN ii.type='consumption' THEN ii.amount_eur ELSE 0 END) as total_cons,
-               SUM(CASE WHEN ii.type='generation' THEN ii.amount_eur ELSE 0 END) as total_gen,
-               SUM(ii.kwh) as total_kwh
+               COALESCE(SUM(CASE WHEN ii.type='consumption' THEN ii.amount_eur ELSE 0 END), 0) as total_cons,
+               COALESCE(SUM(CASE WHEN ii.type='generation' THEN ii.amount_eur ELSE 0 END), 0) as total_gen,
+               COALESCE(SUM(ii.kwh), 0) as total_kwh
         FROM invoices i
-        JOIN invoice_items ii ON ii.invoice_id = i.id
-        WHERE ii.member_id = ?
+        LEFT JOIN invoice_items ii ON ii.invoice_id = i.id AND ii.member_id = ?
+        WHERE i.id IN (
+            SELECT invoice_id FROM invoice_items WHERE member_id=?
+            UNION
+            SELECT invoice_id FROM invoice_carryovers WHERE member_id=?
+        )
         GROUP BY i.id
         ORDER BY i.period_from DESC
-    """, (current_user.member_id,)).fetchall()
-    return render_template('portal_invoices.html', invoices=rows, member_id=current_user.member_id)
+    """, (current_user.member_id, current_user.member_id, current_user.member_id)).fetchall()
+    payment_by_invoice = {row['invoice_id']: row for row in account['rows']}
+    return render_template(
+        'portal_invoices.html',
+        invoices=rows,
+        member_id=current_user.member_id,
+        payment_by_invoice=payment_by_invoice,
+    )
 
 
 @app.route('/portal/contracts')

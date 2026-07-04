@@ -16,25 +16,48 @@
                         <th class="text-end">Gutschrift (€)</th>
                         <th class="text-end">Netto (€)</th>
                         <th>Status</th>
+                        <th>Buchung</th>
                         <th class="text-end">PDF</th>
                     </tr>
                 </thead>
                 <tbody>
                 {% for inv in invoices %}
                 {% set net = inv['total_cons'] - inv['total_gen'] %}
+                {% set pay = payment_by_invoice.get(inv['id']) %}
+                {% set display_net = pay.net_total if pay else net %}
                 <tr>
                     <td>{{ inv['id'] }}</td>
                     <td>{{ inv['period_from'] }} – {{ inv['period_to'] }}</td>
                     <td class="text-end">{{ "%.1f"|format(inv['total_kwh']) }}</td>
                     <td class="text-end">{{ "%.2f"|format(inv['total_cons']) }} €</td>
                     <td class="text-end">{% if inv['total_gen'] > 0 %}−{{ "%.2f"|format(inv['total_gen']) }} €{% else %}—{% endif %}</td>
-                    <td class="text-end {% if net > 0 %}text-danger{% elif net < 0 %}text-success{% endif %}">
-                        {% if net > 0 %}{{ "%.2f"|format(net) }} €{% elif net < 0 %}−{{ "%.2f"|format(net|abs) }} €{% else %}0,00 €{% endif %}
+                    <td class="text-end {% if display_net > 0 %}text-danger{% elif display_net < 0 %}text-success{% endif %}">
+                        {% if display_net > 0 %}{{ "%.2f"|format(display_net) }} €{% elif display_net < 0 %}−{{ "%.2f"|format(display_net|abs) }} €{% else %}0,00 €{% endif %}
+                        {% if pay and pay.carryover_total %}
+                        <br><small class="text-muted">inkl. Vorperioden {{ "%.2f"|format(pay.carryover_total) }} €</small>
+                        {% endif %}
                     </td>
                     <td>
                         <span class="badge bg-{% if inv['status'] == 'sent' %}success{% elif inv['status'] == 'finalized' %}primary{% else %}secondary{% endif %}">
                             {{ inv['status'] }}
                         </span>
+                    </td>
+                    <td>
+                        {% if pay and pay.paid %}
+                            <span class="badge bg-success">gebucht</span>
+                            {% if pay.booking_date %}<br><small class="text-muted">{{ pay.booking_date|localdate }}</small>{% endif %}
+                        {% elif pay and pay.is_settled_by_carryover %}
+                            <span class="badge bg-secondary">vorgetragen</span>
+                            <br><small class="text-muted">in #{{ pay.carried_forward_to_invoice_id }}</small>
+                        {% elif pay and pay.is_overdue %}
+                            <span class="badge bg-warning text-dark">Buchungsrückstand</span>
+                            <br><small class="text-muted">seit {{ pay.due_on.strftime('%d.%m.%Y') }}</small>
+                        {% elif pay %}
+                            <span class="badge bg-secondary">offen</span>
+                            {% if pay.is_previous_period_open %}<br><span class="badge bg-secondary">Vorperiode offen</span>{% endif %}
+                        {% else %}
+                            <span class="badge bg-light text-dark">—</span>
+                        {% endif %}
                     </td>
                     <td class="text-end">
                         <a href="{{ url_for('invoice_pdf', id=inv['id'], member_id=member_id) }}" class="btn btn-sm btn-outline-primary">
@@ -43,7 +66,7 @@
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="8" class="text-center text-muted py-4">Noch keine Abrechnungen vorhanden</td></tr>
+                <tr><td colspan="9" class="text-center text-muted py-4">Noch keine Abrechnungen vorhanden</td></tr>
                 {% endfor %}
                 </tbody>
             </table>

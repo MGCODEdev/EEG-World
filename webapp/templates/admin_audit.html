@@ -11,10 +11,12 @@
     .badge-member_create, .badge-member_edit { background: #2b7a78; color: #fff; }
     .badge-member_delete { background: #fd7e14; color: #fff; }
     .badge-price_create, .badge-price_delete { background: #6f42c1; color: #fff; }
-    .badge-invoice_create, .badge-invoice_send, .badge-invoice_send_all { background: #0d6efd; color: #fff; }
+    .badge-invoice_create, .badge-invoice_send, .badge-invoice_send_all,
+    .badge-invoice_send_blocked, .badge-invoice_finalize_blocked { background: #0d6efd; color: #fff; }
     .badge-pdf_download { background: #20c997; color: #fff; }
     .badge-pdf_access_denied { background: #dc3545; color: #fff; }
-    .badge-payment_paid, .badge-payment_unpaid { background: #ffc107; color: #212529; }
+    .badge-payment_paid, .badge-payment_unpaid,
+    .badge-payment_paid_failed, .badge-payment_unpaid_failed { background: #ffc107; color: #212529; }
     .badge-user_create, .badge-user_delete, .badge-user_role_change, .badge-user_reinvite { background: #e83e8c; color: #fff; }
     .badge-contract_upload, .badge-contract_download, .badge-contract_delete { background: #fd7e14; color: #fff; }
     .badge-invite_accept { background: #28a745; color: #fff; }
@@ -31,7 +33,8 @@
     .badge-backup_drive_client_config, .badge-backup_drive_client_config_failed,
     .badge-backup_drive_client_config_delete, .badge-backup_drive_client_config_delete_failed,
     .badge-backup_drive_token, .badge-backup_drive_token_failed,
-    .badge-backup_drive_test, .badge-backup_drive_test_failed { background: #607d8b; color: #fff; }
+    .badge-backup_drive_test, .badge-backup_drive_test_failed,
+    .badge-backup_drive_delete, .badge-backup_drive_delete_failed { background: #607d8b; color: #fff; }
     .badge-database_quality_check, .badge-database_quality_check_failed,
     .badge-database_maintenance, .badge-database_maintenance_failed { background: #0f766e; color: #fff; }
     .badge-portal_data_update { background: #009688; color: #fff; }
@@ -156,10 +159,14 @@
                             'invoice_create': 'Abrechnung erstellt',
                             'invoice_send': 'E-Mail gesendet',
                             'invoice_send_all': 'Alle E-Mails gesendet',
+                            'invoice_send_blocked': 'Versand blockiert',
+                            'invoice_finalize_blocked': 'Abschluss blockiert',
                             'pdf_download': 'PDF heruntergeladen',
                             'pdf_access_denied': 'PDF-Zugriff verweigert',
                             'payment_paid': 'Zahlung gebucht',
                             'payment_unpaid': 'Zahlung storniert',
+                            'payment_paid_failed': 'Zahlung fehlgeschlagen',
+                            'payment_unpaid_failed': 'Storno fehlgeschlagen',
                             'user_create': 'Benutzer angelegt',
                             'user_delete': 'Benutzer gelöscht',
                             'user_role_change': 'Rolle geändert',
@@ -196,6 +203,8 @@
                             'backup_drive_token_failed': 'Drive Token fehlgeschlagen',
                             'backup_drive_test': 'Drive geprüft',
                             'backup_drive_test_failed': 'Drive-Prüfung fehlgeschlagen',
+                            'backup_drive_delete': 'Drive-Backup gelöscht',
+                            'backup_drive_delete_failed': 'Drive-Backup Löschung fehlgeschlagen',
                             'database_quality_check': 'DB-Qualitätscheck',
                             'database_quality_check_failed': 'DB-Check fehlgeschlagen',
                             'database_maintenance': 'DB-Wartung',
@@ -211,15 +220,15 @@
                             {% elif action == 'import' %}<i class="bi bi-upload"></i>
                             {% elif action in ('member_create','member_edit','member_delete') %}<i class="bi bi-person"></i>
                             {% elif action in ('price_create','price_delete') %}<i class="bi bi-currency-euro"></i>
-                            {% elif action in ('invoice_create','invoice_send','invoice_send_all') %}<i class="bi bi-receipt"></i>
+                            {% elif action in ('invoice_create','invoice_send','invoice_send_all','invoice_send_blocked','invoice_finalize_blocked') %}<i class="bi bi-receipt"></i>
                             {% elif action == 'pdf_download' %}<i class="bi bi-file-earmark-pdf"></i>
                             {% elif action == 'pdf_access_denied' %}<i class="bi bi-shield-exclamation"></i>
-                            {% elif action in ('payment_paid','payment_unpaid') %}<i class="bi bi-bank"></i>
+                            {% elif action in ('payment_paid','payment_unpaid','payment_paid_failed','payment_unpaid_failed') %}<i class="bi bi-bank"></i>
                             {% elif action in ('user_create','user_delete','user_role_change','user_reinvite') %}<i class="bi bi-person-gear"></i>
                             {% elif action in ('contract_upload','contract_download','contract_delete') %}<i class="bi bi-file-earmark-text"></i>
                             {% elif action == 'invite_accept' %}<i class="bi bi-check-circle"></i>
                             {% elif action in ('settings_update',) %}<i class="bi bi-gear"></i>
-                            {% elif action in ('backup_download','backup_restore','backup_restore_failed','backup_settings_update','backup_manual','backup_manual_failed','backup_auto','backup_email','backup_email_failed','backup_email_manual','backup_email_manual_failed','backup_delete','backup_delete_failed','backup_drive_connect','backup_drive_connect_failed','backup_drive_disconnect','backup_drive_disconnect_failed','backup_drive_upload','backup_drive_failed','backup_drive_client_config','backup_drive_client_config_failed','backup_drive_client_config_delete','backup_drive_client_config_delete_failed','backup_drive_token','backup_drive_token_failed','backup_drive_test','backup_drive_test_failed') %}<i class="bi bi-archive"></i>
+                            {% elif action in ('backup_download','backup_restore','backup_restore_failed','backup_settings_update','backup_manual','backup_manual_failed','backup_auto','backup_email','backup_email_failed','backup_email_manual','backup_email_manual_failed','backup_delete','backup_delete_failed','backup_drive_connect','backup_drive_connect_failed','backup_drive_disconnect','backup_drive_disconnect_failed','backup_drive_upload','backup_drive_failed','backup_drive_client_config','backup_drive_client_config_failed','backup_drive_client_config_delete','backup_drive_client_config_delete_failed','backup_drive_token','backup_drive_token_failed','backup_drive_test','backup_drive_test_failed','backup_drive_delete','backup_drive_delete_failed') %}<i class="bi bi-archive"></i>
                             {% elif action in ('database_quality_check','database_quality_check_failed','database_maintenance','database_maintenance_failed') %}<i class="bi bi-database"></i>
                             {% elif action == 'portal_data_update' %}<i class="bi bi-pencil"></i>
                             {% else %}<i class="bi bi-dot"></i>

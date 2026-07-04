@@ -2,7 +2,14 @@
 {% block title %}Abrechnung #{{ invoice['id'] }}{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2><i class="bi bi-receipt"></i> Abrechnung #{{ invoice['id'] }}</h2>
+    <h2>
+        <i class="bi bi-receipt"></i> Abrechnung #{{ invoice['id'] }}
+        {% if invoice['data_status'] == 'final' %}
+        <span class="badge bg-success align-middle">Endgültige Daten</span>
+        {% else %}
+        <span class="badge bg-warning text-dark align-middle">Vorläufige Information</span>
+        {% endif %}
+    </h2>
     <div>
         <form method="post" action="{{ url_for('invoice_regenerate', id=invoice['id']) }}" class="d-inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -13,7 +20,9 @@
         </form>
         <form method="post" action="{{ url_for('invoice_send', id=invoice['id']) }}" class="d-inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button type="submit" class="btn btn-primary" onclick="return confirm('Abrechnung per E-Mail an alle Mitglieder senden?')">
+            <button type="submit" class="btn btn-primary"
+                    {% if finalization_blocker %}disabled title="{{ finalization_blocker }}"{% endif %}
+                    onclick="return confirm('Abrechnung per E-Mail an alle Mitglieder senden?')">
                 <i class="bi bi-envelope"></i> Per E-Mail versenden
             </button>
         </form>
@@ -21,6 +30,7 @@
         <form method="post" action="{{ url_for('invoice_finalize', id=invoice['id']) }}" class="d-inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-success ms-1"
+                    {% if finalization_blocker %}disabled title="{{ finalization_blocker }}"{% endif %}
                     onclick="return confirm('Abrechnung als finalisiert/versendet markieren?')">
                 <i class="bi bi-check2-circle"></i> Als versendet markieren
             </button>
@@ -29,6 +39,24 @@
         <a href="{{ url_for('invoices_list') }}" class="btn btn-outline-secondary ms-2">Zurück</a>
     </div>
 </div>
+
+{% if finalization_blocker %}
+<div class="alert alert-warning">
+    <i class="bi bi-shield-lock"></i>
+    <strong>Vorläufige Information, keine finale Abrechnung.</strong>
+    Diese Berechnung dient nur zur Kontrolle und Vorschau. Sie darf erst versendet oder als endgültig markiert werden,
+    wenn für den gesamten Zeitraum finale Messdaten vorliegen und die Abrechnung danach neu berechnet wurde.
+    <div class="mt-2"><strong>Abschluss und Versand gesperrt:</strong> {{ finalization_blocker }}</div>
+    {% if import_status.provisional_batches %}
+    <div class="small mt-2">
+        Vorläufige Importe:
+        {% for batch in import_status.provisional_batches %}
+            <span class="badge bg-secondary">{{ batch['source_file'] }}</span>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endif %}
 
 <div class="row g-3 mb-4">
     <div class="col-md-3">
@@ -85,6 +113,7 @@
                     <th class="text-end">Bezug €</th>
                     <th class="text-end">Einspeisung kWh</th>
                     <th class="text-end">Gutschrift €</th>
+                    <th class="text-end">Vorperioden €</th>
                     <th class="text-end"><strong>Netto €</strong></th>
                     <th></th>
                 </tr>
@@ -101,6 +130,22 @@
                 <td class="text-end">{% if m['gen_kwh'] %}{{ "%.3f"|format(m['gen_kwh']) }}{% else %}–{% endif %}</td>
                 <td class="text-end text-success">{% if m['gen_eur'] %}{{ "%.2f"|format(m['gen_eur']) }} €{% else %}–{% endif %}</td>
                 <td class="text-end">
+                    {% if m['carryover_eur'] > 0 %}
+                    <span class="text-danger">{{ "%.2f"|format(m['carryover_eur']) }} €</span>
+                    {% elif m['carryover_eur'] < 0 %}
+                    <span class="text-success">−{{ "%.2f"|format(m['carryover_eur']|abs) }} €</span>
+                    {% else %}
+                    <span class="text-muted">–</span>
+                    {% endif %}
+                    {% if m['carryovers'] %}
+                    <div class="small text-muted">
+                        {% for c in m['carryovers'] %}
+                        #{{ c['source_invoice_id'] }}{% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </td>
+                <td class="text-end">
                     {% if m['net_eur'] > 0 %}
                     <strong class="text-danger">{{ "%.2f"|format(m['net_eur']) }} €</strong>
                     <small class="text-muted">(zahlt)</small>
@@ -115,7 +160,9 @@
                     <a href="{{ url_for('invoice_pdf', id=invoice['id'], member_id=m['member_id']) }}" class="btn btn-sm btn-outline-secondary" title="PDF"><i class="bi bi-file-pdf"></i></a>
                     <form method="post" action="{{ url_for('invoice_send_single', id=invoice['id'], member_id=m['member_id']) }}" class="d-inline">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <button type="submit" class="btn btn-sm btn-outline-primary" title="E-Mail senden" onclick="return confirm('Abrechnung an {{ m['member_name'] }} senden?')"><i class="bi bi-envelope"></i></button>
+                        <button type="submit" class="btn btn-sm btn-outline-primary"
+                                {% if finalization_blocker %}disabled title="{{ finalization_blocker }}"{% else %}title="E-Mail senden"{% endif %}
+                                onclick="return confirm('Abrechnung an {{ m['member_name'] }} senden?')"><i class="bi bi-envelope"></i></button>
                     </form>
                 </td>
             </tr>
@@ -128,7 +175,8 @@
                     <td class="text-end text-danger"><strong>{{ "%.2f"|format(member_rows|sum(attribute='cons_eur')) }} €</strong></td>
                     <td class="text-end"><strong>{{ "%.1f"|format(member_rows|sum(attribute='gen_kwh')) }} kWh</strong></td>
                     <td class="text-end text-success"><strong>{{ "%.2f"|format(member_rows|sum(attribute='gen_eur')) }} €</strong></td>
-                    <td class="text-end"><strong>{{ "%.2f"|format(invoice['total_margin'] or 0) }} € Marge</strong></td>
+                    <td class="text-end"><strong>{{ "%.2f"|format(member_rows|sum(attribute='carryover_eur')) }} €</strong></td>
+                    <td class="text-end"><strong>{{ "%.2f"|format(member_rows|sum(attribute='net_eur')) }} €</strong></td>
                     <td></td>
                 </tr>
             </tfoot>

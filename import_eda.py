@@ -175,7 +175,7 @@ def parse_columns(ws) -> list:
     return columns
 
 
-def import_file(filepath: str, conn: sqlite3.Connection) -> int:
+def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool = False) -> int:
     """Importiert eine EDA-Excel-Datei."""
     filename = os.path.basename(filepath)
     print(f"\n{'='*60}")
@@ -183,12 +183,19 @@ def import_file(filepath: str, conn: sqlite3.Connection) -> int:
     print(f"{'='*60}")
 
     # Duplikat-Check
-    existing = conn.execute(
-        "SELECT id FROM import_batches WHERE source_file = ?", (filename,)
-    ).fetchone()
-    if existing:
-        print(f"  SKIP: Bereits importiert (batch_id={existing[0]})")
-        return 0
+    if not allow_duplicate:
+        try:
+            existing = conn.execute(
+                "SELECT id FROM import_batches WHERE source_file = ? AND replaced_at IS NULL",
+                (filename,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            existing = conn.execute(
+                "SELECT id FROM import_batches WHERE source_file = ?", (filename,)
+            ).fetchone()
+        if existing:
+            print(f"  SKIP: Bereits importiert (batch_id={existing[0]})")
+            return 0
 
     info = parse_filename(filename)
     print(f"  Report: {info['report_code']}, Zeitraum: {info['period_start']} - {info['period_end']}")

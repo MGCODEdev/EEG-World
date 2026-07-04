@@ -18,6 +18,7 @@
                     <th class="text-end">Einnahmen</th>
                     <th class="text-end">Ausgaben</th>
                     <th class="text-end">Marge</th>
+                    <th>Daten</th>
                     <th>Status</th>
                     <th></th>
                 </tr>
@@ -31,6 +32,13 @@
                 <td class="text-end text-success">{{ "%.2f"|format(inv['total_income'] or 0) }} €</td>
                 <td class="text-end text-danger">{{ "%.2f"|format(inv['total_expense'] or 0) }} €</td>
                 <td class="text-end"><strong>{{ "%.2f"|format(inv['total_margin'] or 0) }} €</strong></td>
+                <td>
+                    {% if inv['data_status'] == 'final' %}
+                    <span class="badge bg-success">Endgültig</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Vorläufig</span>
+                    {% endif %}
+                </td>
                 <td>
                     {% if inv['status'] == 'sent' %}
                     <span class="badge bg-success">Versendet</span>

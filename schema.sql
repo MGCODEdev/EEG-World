@@ -10,6 +10,9 @@ CREATE TABLE IF NOT EXISTS import_batches (
     period_end TEXT NOT NULL,      -- ISO datetime
     energy_community_id TEXT,     -- EC-Nummer / Gemeinschafts-ID
     grid_operator TEXT,           -- Netzbetreiber
+    data_status TEXT NOT NULL DEFAULT 'final',
+    replaced_by_batch_id INTEGER,
+    replaced_at TEXT,
     imported_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

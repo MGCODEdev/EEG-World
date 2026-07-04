@@ -100,6 +100,7 @@
                 <li class="nav-item"><a class="nav-link {% if request.endpoint == 'portal_dashboard' %}active{% endif %}" href="{{ url_for('portal_dashboard') }}"><i class="bi bi-house"></i> Übersicht</a></li>
                 <li class="nav-item"><a class="nav-link {% if request.endpoint == 'portal_data' %}active{% endif %}" href="{{ url_for('portal_data') }}"><i class="bi bi-person"></i> Meine Daten</a></li>
                 <li class="nav-item"><a class="nav-link {% if request.endpoint == 'portal_invoices' %}active{% endif %}" href="{{ url_for('portal_invoices') }}"><i class="bi bi-receipt"></i> Abrechnungen</a></li>
+                <li class="nav-item"><a class="nav-link {% if request.endpoint == 'portal_reports' %}active{% endif %}" href="{{ url_for('portal_reports') }}"><i class="bi bi-graph-up"></i> Reports</a></li>
                 <li class="nav-item"><a class="nav-link {% if request.endpoint == 'portal_contracts' %}active{% endif %}" href="{{ url_for('portal_contracts') }}"><i class="bi bi-file-earmark-text"></i> Verträge</a></li>
                 {% endif %}
             </ul>

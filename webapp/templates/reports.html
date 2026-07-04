@@ -1,168 +1,666 @@
 {% extends "base.html" %}
 {% block title %}Reports{% endblock %}
+
+{% block extra_css %}
+<style>
+    .report-page {
+        --glass-bg: rgba(255, 255, 255, .72);
+        --glass-border: rgba(43, 122, 120, .18);
+        --ink: var(--eeg-dark);
+        --accent: var(--eeg-teal);
+        --accent-2: var(--eeg-teal-light);
+        --mint-soft: rgba(222, 242, 241, .82);
+        --warn: #d99229;
+        --danger-soft: #c75252;
+        background:
+            radial-gradient(circle at 18% 8%, rgba(58, 175, 169, .18), transparent 34%),
+            linear-gradient(135deg, rgba(222, 242, 241, .72), rgba(244, 247, 246, .96) 42%, rgba(255, 255, 255, .86));
+        border-radius: 8px;
+        padding: 1rem;
+    }
+    .report-hero {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        margin-bottom: 1rem;
+    }
+    .report-title {
+        color: var(--ink);
+        font-weight: 800;
+        margin: 0;
+    }
+    .report-subtitle {
+        color: #607274;
+        margin-top: .25rem;
+    }
+    .glass-panel,
+    .glass-kpi,
+    .chart-panel {
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border);
+        box-shadow: 0 16px 44px rgba(23, 37, 42, .08);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border-radius: 8px;
+    }
+    .glass-panel {
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .glass-kpi {
+        padding: 1rem;
+        height: 100%;
+    }
+    .glass-kpi .kpi-label {
+        color: #607274;
+        font-size: .76rem;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+    }
+    .glass-kpi .kpi-value {
+        color: var(--ink);
+        font-size: 1.65rem;
+        font-weight: 800;
+        line-height: 1.1;
+        margin-top: .2rem;
+        font-variant-numeric: tabular-nums;
+    }
+    .glass-kpi .kpi-meta {
+        color: #6f7f82;
+        font-size: .82rem;
+        margin-top: .35rem;
+    }
+    .chart-panel {
+        padding: .95rem;
+        min-height: 360px;
+    }
+    .chart-title {
+        display: flex;
+        align-items: center;
+        gap: .45rem;
+        color: var(--ink);
+        font-size: 1rem;
+        font-weight: 800;
+        margin-bottom: .6rem;
+    }
+    .chart-box {
+        height: 305px;
+        min-width: 0;
+    }
+    .chart-box.tall { height: 390px; }
+    .analysis-list {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: #4f6265;
+    }
+    .hint-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: .35rem;
+        border-radius: 999px;
+        border: 1px solid rgba(43, 122, 120, .2);
+        background: rgba(222, 242, 241, .75);
+        color: var(--ink);
+        padding: .28rem .55rem;
+        margin: .15rem .2rem .15rem 0;
+        font-size: .82rem;
+    }
+    .peak-table td,
+    .peak-table th {
+        background: transparent !important;
+        vertical-align: middle;
+    }
+    .report-form .form-label {
+        color: #52666a;
+        font-weight: 700;
+        font-size: .82rem;
+    }
+    @media (max-width: 767px) {
+        .report-page { padding: .75rem; }
+        .report-hero { display: block; }
+        .chart-box,
+        .chart-box.tall { height: 300px; }
+        .glass-kpi .kpi-value { font-size: 1.35rem; }
+    }
+</style>
+{% endblock %}
+
 {% block content %}
-<h2 class="mb-4"><i class="bi bi-graph-up"></i> Reports & Auswertungen</h2>
+<div class="report-page">
+    <div class="report-hero">
+        <div>
+            <h2 class="report-title"><i class="bi bi-graph-up-arrow"></i> Energieberichte</h2>
+            {% if selected_member %}
+            <div class="report-subtitle">{{ selected_member['name'] }} · {{ period_from }} bis {{ period_to }}</div>
+            {% else %}
+            <div class="report-subtitle">Keine Daten für den gewählten Filter.</div>
+            {% endif %}
+        </div>
+        <div class="text-end">
+            <span class="hint-pill"><i class="bi bi-shield-check"></i> Nur eigene Werte sichtbar</span>
+            <span class="hint-pill"><i class="bi bi-bar-chart-line"></i> Einfach erklärt</span>
+        </div>
+    </div>
 
-<!-- Gesamtübersicht -->
-<div class="row g-3 mb-4">
-    <div class="col-md-3">
-        <div class="card stat-card h-100">
-            <div class="card-body text-center">
-                <h6 class="text-muted">Gesamtverbrauch</h6>
-                <h3>{{ "{:,.0f}".format(total_consumption) }} <small class="text-muted">kWh</small></h3>
+    <form method="get" class="glass-panel report-form">
+        <div class="row g-3 align-items-end">
+            {% if not portal %}
+            <div class="col-md-3">
+                <label class="form-label" for="member_id">Teilnehmer</label>
+                <select class="form-select" id="member_id" name="member_id">
+                    {% for member in members %}
+                    <option value="{{ member['id'] }}" {% if selected_member and member['id'] == selected_member['id'] %}selected{% endif %}>{{ member['name'] }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            <div class="col-md-2">
+                <label class="form-label" for="date_from">Von</label>
+                <input type="date" class="form-control" id="date_from" name="date_from"
+                       value="{{ period_from }}" min="{{ min_date }}" max="{{ max_date }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label" for="date_to">Bis</label>
+                <input type="date" class="form-control" id="date_to" name="date_to"
+                       value="{{ period_to }}" min="{{ min_date }}" max="{{ max_date }}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label" for="aggregation">Ansicht</label>
+                <select class="form-select" id="aggregation" name="aggregation">
+                    {% for key, cfg in aggregations.items() %}
+                    <option value="{{ key }}" {% if key == aggregation %}selected{% endif %}>{{ cfg.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary w-100"><i class="bi bi-funnel"></i> Anzeigen</button>
             </div>
         </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card h-100">
-            <div class="card-body text-center">
-                <h6 class="text-muted">Gesamterzeugung</h6>
-                <h3>{{ "{:,.0f}".format(total_generation) }} <small class="text-muted">kWh</small></h3>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card h-100">
-            <div class="card-body text-center">
-                <h6 class="text-muted">Eigendeckung (gehandelt)</h6>
-                <h3 class="text-success">{{ "{:,.0f}".format(total_eigendeckung) }} <small class="text-muted">kWh</small></h3>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card stat-card h-100">
-            <div class="card-body text-center">
-                <h6 class="text-muted">Netzüberschuss</h6>
-                <h3 class="text-warning">{{ "{:,.0f}".format(total_surplus) }} <small class="text-muted">kWh</small></h3>
-            </div>
-        </div>
-    </div>
-</div>
+    </form>
 
-<!-- Autarkiegrad -->
-<div class="card mb-4">
-    <div class="card-body">
-        <h5>Autarkiegrad der Gemeinschaft</h5>
-        {% set autarkie = (total_eigendeckung / total_consumption * 100) if total_consumption > 0 else 0 %}
-        {% set eigenverbrauch = (total_eigendeckung / total_generation * 100) if total_generation > 0 else 0 %}
-        <div class="row">
-            <div class="col-md-6">
-                <label>Autarkie (Eigendeckung / Verbrauch): <strong>{{ "%.1f"|format(autarkie) }}%</strong></label>
-                <div class="progress" style="height: 25px;">
-                    <div class="progress-bar bg-success" style="width: {{ autarkie }}%">{{ "%.1f"|format(autarkie) }}%</div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <label>Eigenverbrauch (Eigendeckung / Erzeugung): <strong>{{ "%.1f"|format(eigenverbrauch) }}%</strong></label>
-                <div class="progress" style="height: 25px;">
-                    <div class="progress-bar bg-info" style="width: {{ eigenverbrauch }}%">{{ "%.1f"|format(eigenverbrauch) }}%</div>
-                </div>
-            </div>
-        </div>
+    {% if not report %}
+    <div class="glass-panel">
+        <p class="mb-0 text-muted">Für den gewählten Zeitraum sind keine auswertbaren Messdaten vorhanden.</p>
     </div>
-</div>
+    {% else %}
 
-<!-- Monatliche Übersicht -->
-<div class="card mb-4">
-    <div class="card-header"><i class="bi bi-calendar3"></i> Monatliche Übersicht</div>
-    <div class="card-body table-responsive">
-        <table class="table table-sm">
-            <thead>
-                <tr>
-                    <th>Monat</th>
-                    <th class="text-end">Verbrauch kWh</th>
-                    <th class="text-end">Erzeugung kWh</th>
-                    <th class="text-end">Eigendeckung kWh</th>
-                    <th class="text-end">Überschuss kWh</th>
-                    <th class="text-end">Autarkie %</th>
-                </tr>
-            </thead>
-            <tbody>
-            {% for row in monthly %}
-            {% set m_autarkie = (row['eigendeckung'] / row['verbrauch'] * 100) if row['verbrauch'] > 0 else 0 %}
-            <tr>
-                <td><strong>{{ row['monat'][:7] }}</strong></td>
-                <td class="text-end">{{ "{:,.1f}".format(row['verbrauch']) }} kWh</td>
-                <td class="text-end">{{ "{:,.1f}".format(row['erzeugung']) }} kWh</td>
-                <td class="text-end text-success">{{ "{:,.1f}".format(row['eigendeckung']) }} kWh</td>
-                <td class="text-end text-warning">{{ "{:,.1f}".format(row['ueberschuss']) }} kWh</td>
-                <td class="text-end">{{ "%.1f"|format(m_autarkie) }}%</td>
-            </tr>
+    <div class="glass-panel">
+        <div class="chart-title"><i class="bi bi-search"></i> Was diese Seite zeigt</div>
+        <p class="mb-2">
+            Diese Berichte zeigen, woher Ihr Strom gekommen ist, wie viel Sie selbst erzeugt oder geliefert haben,
+            wie hoch Ihr Anteil an Strom aus der Energiegemeinschaft war und wo es einfache Verbesserungsmöglichkeiten gibt.
+        </p>
+        <ul class="analysis-list">
+            {% for note in report.data_notes %}
+            <li>{{ note }}</li>
             {% endfor %}
-            </tbody>
-        </table>
+        </ul>
     </div>
-</div>
 
-<!-- Verbraucher-Ranking -->
-<div class="row g-3 mb-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header"><i class="bi bi-lightning"></i> Verbraucher</div>
-            <div class="card-body table-responsive">
-                <table class="table table-sm">
-                    <thead><tr><th>Mitglied</th><th class="text-end">Verbrauch</th><th class="text-end">Eigendeckung</th><th class="text-end">%</th></tr></thead>
-                    <tbody>
-                    {% for m in members_consumption %}
-                    {% set pct = (m['eigendeckung'] / m['verbrauch'] * 100) if m['verbrauch'] > 0 else 0 %}
-                    <tr>
-                        <td>{{ m['name'] }}</td>
-                        <td class="text-end">{{ "{:,.0f}".format(m['verbrauch']) }} kWh</td>
-                        <td class="text-end text-success">{{ "{:,.0f}".format(m['eigendeckung']) }} kWh</td>
-                        <td class="text-end">{{ "%.1f"|format(pct) }}%</td>
-                    </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
+    <div class="row g-3 mb-3">
+        <div class="col-sm-6 col-xl-3">
+            <div class="glass-kpi">
+                <div class="kpi-label">Ihr Stromverbrauch</div>
+                <div class="kpi-value">{{ "%.1f"|format(report.totals.consumption) }} kWh</div>
+                <div class="kpi-meta">Aus der EEG {{ "%.1f"|format(report.totals.eeg) }} · vom Netz {{ "%.1f"|format(report.totals.grid) }} kWh</div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+            <div class="glass-kpi">
+                <div class="kpi-label">Anteil aus der EEG</div>
+                <div class="kpi-value">{{ "%.1f"|format(report.totals.eeg_share) }}%</div>
+                <div class="kpi-meta">Durchschnitt der Gemeinschaft {{ "%.1f"|format(report.community.avg_eeg_share) }}%</div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+            <div class="glass-kpi">
+                <div class="kpi-label">Ihre erzeugte Energie</div>
+                <div class="kpi-value">{{ "%.1f"|format(report.totals.generation) }} kWh</div>
+                <div class="kpi-meta">An die EEG {{ "%.1f"|format(report.totals.eeg_feed) }} · ins Netz {{ "%.1f"|format(report.totals.public_feed) }} kWh</div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-xl-3">
+            <div class="glass-kpi">
+                <div class="kpi-label">Geschätzter Vorteil</div>
+                <div class="kpi-value">{{ "%.2f"|format(report.totals.savings) }} €</div>
+                <div class="kpi-meta">{{ "%.3f"|format(report.totals.avg_savings_per_kwh) }} €/kWh · geschätzter Vergleich</div>
             </div>
         </div>
     </div>
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header"><i class="bi bi-sun"></i> Erzeuger</div>
-            <div class="card-body table-responsive">
-                <table class="table table-sm">
-                    <thead><tr><th>Mitglied</th><th class="text-end">Erzeugung</th><th class="text-end">Überschuss</th><th class="text-end">Geliefert</th></tr></thead>
-                    <tbody>
-                    {% for m in members_generation %}
-                    {% set delivered = m['erzeugung'] - m['ueberschuss'] %}
-                    <tr>
-                        <td>{{ m['name'] }}</td>
-                        <td class="text-end">{{ "{:,.0f}".format(m['erzeugung']) }} kWh</td>
-                        <td class="text-end text-warning">{{ "{:,.0f}".format(m['ueberschuss']) }} kWh</td>
-                        <td class="text-end text-success">{{ "{:,.0f}".format(delivered) }} kWh</td>
-                    </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
 
-<!-- Datenqualität -->
-<div class="card">
-    <div class="card-header"><i class="bi bi-shield-check"></i> Datenqualität</div>
-    <div class="card-body">
-        <div class="row">
-        {% for q in quality %}
-        <div class="col-md-4">
-            <div class="d-flex justify-content-between">
-                <span>
-                    {% if q['quality'] == 'L1' %}<span class="badge bg-success">L1</span> Echtwerte
-                    {% elif q['quality'] == 'L2' %}<span class="badge bg-warning text-dark">L2</span> Ersatzwerte
-                    {% else %}<span class="badge bg-danger">L3</span> Nicht belastbar{% endif %}
-                </span>
-                <strong>{{ "%.1f"|format(q['pct']) }}%</strong>
+    <div class="row g-3 mb-3">
+        <div class="col-xl-4">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-pie-chart"></i> Woher kam Ihr Strom?</div>
+                <div id="energySplitChart" class="chart-box"></div>
             </div>
-            <div class="progress mt-1" style="height: 8px;">
-                <div class="progress-bar {% if q['quality'] == 'L1' %}bg-success{% elif q['quality'] == 'L2' %}bg-warning{% else %}bg-danger{% endif %}"
-                     style="width: {{ q['pct'] }}%"></div>
-            </div>
-            <small class="text-muted">{{ "{:,.0f}".format(q['cnt']) }} Messwerte</small>
         </div>
-        {% endfor %}
+        <div class="col-xl-8">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-activity"></i> Entwicklung über die Zeit</div>
+                <div id="developmentChart" class="chart-box"></div>
+            </div>
         </div>
     </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-xl-8">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-calendar3"></i> Monatsvergleich</div>
+                <div id="monthlyChart" class="chart-box"></div>
+            </div>
+        </div>
+        <div class="col-xl-4">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-lightbulb"></i> Zusammenfassung</div>
+                {% set last_idx = report.charts.consumption|length - 1 %}
+                {% if report.charts.consumption|length >= 2 %}
+                    {% set last = report.charts.consumption[last_idx] %}
+                    {% set prev = report.charts.consumption[last_idx - 1] %}
+                    {% set diff = last - prev %}
+                    {% set pct = (diff / prev * 100) if prev else 0 %}
+                    <p>Im letzten angezeigten Abschnitt wurden <strong>{{ "%.1f"|format(last) }} kWh</strong> Strom verbraucht.</p>
+                    <p class="{% if diff > 0 %}text-danger{% else %}text-success{% endif %}">
+                        Unterschied zum Abschnitt davor:
+                        <strong>{% if diff > 0 %}+{% endif %}{{ "%.1f"|format(diff) }} kWh</strong>
+                        ({{ "%.1f"|format(pct) }}%).
+                    </p>
+                {% else %}
+                    <p class="text-muted">Für einen Vergleich brauchen wir mindestens zwei angezeigte Zeitabschnitte.</p>
+                {% endif %}
+                <div class="mt-3">
+                    {% if report.best_day %}
+                    <span class="hint-pill"><i class="bi bi-arrow-up-circle"></i> Höchster EEG-Anteil {{ report.best_day.day }} · {{ "%.1f"|format(report.best_day.eeg_share) }}%</span>
+                    {% endif %}
+                    {% if report.weakest_day %}
+                    <span class="hint-pill"><i class="bi bi-arrow-down-circle"></i> Niedrigster EEG-Anteil {{ report.weakest_day.day }} · {{ "%.1f"|format(report.weakest_day.eeg_share) }}%</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-xl-7">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-grid-3x3"></i> Wann wird am meisten Strom gebraucht?</div>
+                <div id="heatmapChart" class="chart-box tall"></div>
+                <div class="small text-muted mt-2">
+                    Je dunkler ein Feld ist, desto mehr Strom wurde an diesem Wochentag zu dieser Uhrzeit gebraucht.
+                </div>
+            </div>
+        </div>
+        <div class="col-xl-5">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-clock-history"></i> Typischer Tag</div>
+                <div id="typicalDayChart" class="chart-box tall"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-xl-4">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-bullseye"></i> EEG-Anteil am Verbrauch</div>
+                <div id="eegShareChart" class="chart-box"></div>
+            </div>
+        </div>
+        <div class="col-xl-8">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-diagram-3"></i> Stromfluss einfach dargestellt</div>
+                <div id="flowChart" class="chart-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-xl-6">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-currency-euro"></i> Kosten mit und ohne EEG</div>
+                <div id="costChart" class="chart-box"></div>
+            </div>
+        </div>
+        <div class="col-xl-6">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-piggy-bank"></i> Vorteil über die Zeit</div>
+                <div id="savingsChart" class="chart-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-xl-7">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-people"></i> Ihr Beitrag zur Gemeinschaft</div>
+                <div id="communityChart" class="chart-box"></div>
+            </div>
+        </div>
+        <div class="col-xl-5">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-info-circle"></i> Einfache Hinweise</div>
+                {% for hint in report.optimisation_hints %}
+                <div class="hint-pill"><i class="bi bi-lightning-charge"></i> {{ hint }}</div>
+                {% endfor %}
+                <hr>
+                <p class="mb-1"><strong>Ihr Anteil an der gelieferten EEG-Energie:</strong> {{ "%.1f"|format(report.community.member_generation_share) }}%</p>
+                <p class="mb-0 text-muted">Vergleichswerte der Gemeinschaft werden nur zusammengefasst angezeigt.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-xl-8">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-speedometer"></i> Verbrauchsspitzen</div>
+                <div id="peakChart" class="chart-box"></div>
+            </div>
+        </div>
+        <div class="col-xl-4">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-list-ol"></i> Höchste Verbrauchsmomente</div>
+                <div class="table-responsive">
+                    <table class="table table-sm peak-table">
+                        <thead><tr><th>Zeitpunkt</th><th class="text-end">Strommenge</th></tr></thead>
+                        <tbody>
+                        {% for peak in report.peaks %}
+                        <tr>
+                            <td>{{ peak.ts|localdatetime }}</td>
+                            <td class="text-end">{{ "%.3f"|format(peak.kwh) }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="2" class="text-muted">Keine auffälligen Spitzen gefunden.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-xl-4">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-shield-check"></i> Sind die Daten vollständig?</div>
+                <div class="glass-kpi mb-2">
+                    <div class="kpi-label">Vollständige Messwerte</div>
+                    <div class="kpi-value">{{ "%.1f"|format(report.quality_summary.completeness) }}%</div>
+                    <div class="kpi-meta">Nullwerte {{ report.quality_summary.zeros }} · ungewöhnliche Werte {{ report.quality_summary.outliers }}</div>
+                </div>
+                <div id="qualityChart" class="chart-box" style="height:210px"></div>
+            </div>
+        </div>
+        <div class="col-xl-8">
+            <div class="chart-panel">
+                <div class="chart-title"><i class="bi bi-exclamation-triangle"></i> Fehlende oder verspätete Messwerte</div>
+                <div id="missingChart" class="chart-box"></div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if report %}
+<script src="https://code.highcharts.com/highcharts.js"></script>
+<script src="https://code.highcharts.com/modules/heatmap.js"></script>
+<script src="https://code.highcharts.com/modules/sankey.js"></script>
+<script src="https://code.highcharts.com/modules/accessibility.js"></script>
+<script>
+const report = {{ report_json|safe }};
+const heatValues = report.charts.heatmap.map(point => point[2]);
+const heatMax = Math.max(1, ...heatValues);
+const heatmapPoints = report.charts.heatmap.map(point => ({
+    x: Number(point[0]),
+    y: Number(point[1]),
+    value: Number(point[2])
+}));
+const colors = {
+    dark: '#17252a',
+    teal: '#2b7a78',
+    tealLight: '#3aafa9',
+    mint: '#def2f1',
+    amber: '#d99229',
+    red: '#c75252',
+    blue: '#477b9e',
+    green: '#4e8a7a'
+};
+
+Highcharts.setOptions({
+    chart: {
+        backgroundColor: 'transparent',
+        style: { fontFamily: 'Arial, sans-serif' }
+    },
+    title: { text: null },
+    credits: { enabled: false },
+    legend: { itemStyle: { color: colors.dark, fontWeight: '600' } },
+    xAxis: {
+        lineColor: 'rgba(23,37,42,.18)',
+        tickColor: 'rgba(23,37,42,.18)',
+        labels: { style: { color: '#52666a' } }
+    },
+    yAxis: {
+        gridLineColor: 'rgba(23,37,42,.08)',
+        labels: { style: { color: '#52666a' } },
+        title: { style: { color: '#52666a', fontWeight: '700' } }
+    },
+    tooltip: {
+        backgroundColor: 'rgba(255,255,255,.94)',
+        borderColor: 'rgba(43,122,120,.25)',
+        borderRadius: 8,
+        shadow: true,
+        style: { color: colors.dark }
+    },
+    plotOptions: {
+        series: {
+            borderRadius: 3,
+            marker: { enabled: false },
+            states: { inactive: { opacity: .72 } }
+        }
+    }
+});
+
+function kwhTooltip() {
+    return `<span style="color:${this.color}">●</span> ${this.series.name}: <b>${Highcharts.numberFormat(this.y, 2, ',', '.')} kWh</b>`;
+}
+
+Highcharts.chart('energySplitChart', {
+    chart: { type: 'pie' },
+    tooltip: { pointFormat: '<b>{point.y:.2f} kWh</b> · {point.percentage:.1f}%' },
+    plotOptions: {
+        pie: {
+            innerSize: '64%',
+            dataLabels: { enabled: true, format: '{point.name}<br><b>{point.percentage:.0f}%</b>' }
+        }
+    },
+    series: [{
+        name: 'Stromverbrauch',
+        colors: [colors.teal, colors.amber, colors.green],
+        data: [
+            ['Strom aus der EEG', report.totals.eeg],
+            ['Strom aus dem Netz', report.totals.grid],
+            ['Direkt selbst verbraucht', 0]
+        ]
+    }]
+});
+
+Highcharts.chart('developmentChart', {
+    chart: { type: 'area' },
+    xAxis: { categories: report.charts.labels },
+    yAxis: { title: { text: 'kWh' } },
+    tooltip: { shared: true, pointFormatter: kwhTooltip },
+    plotOptions: { area: { stacking: 'normal', fillOpacity: .24 } },
+    series: [
+        { name: 'Strom aus der EEG', data: report.charts.eeg, color: colors.teal },
+        { name: 'Strom aus dem Netz', data: report.charts.grid, color: colors.amber },
+        { name: 'Selbst erzeugt', data: report.charts.generation, color: colors.tealLight, type: 'line', lineWidth: 3 }
+    ]
+});
+
+Highcharts.chart('monthlyChart', {
+    chart: { zoomType: 'x' },
+    xAxis: { categories: report.charts.labels },
+    yAxis: [{ title: { text: 'kWh' } }, { title: { text: 'EEG-Anteil %' }, opposite: true, max: 100 }],
+    tooltip: { shared: true },
+    plotOptions: { column: { stacking: 'normal' } },
+    series: [
+        { type: 'column', name: 'Strom aus der EEG', data: report.charts.eeg, color: colors.teal },
+        { type: 'column', name: 'Strom aus dem Netz', data: report.charts.grid, color: colors.amber },
+        { type: 'column', name: 'An die EEG geliefert', data: report.charts.eeg_feed, color: colors.green },
+        { type: 'line', name: 'Anteil aus der EEG', data: report.charts.eeg_share, color: colors.dark, yAxis: 1, tooltip: { valueSuffix: ' %' } }
+    ]
+});
+
+Highcharts.chart('heatmapChart', {
+    chart: { type: 'heatmap' },
+    xAxis: {
+        categories: Array.from({length: 24}, (_, i) => `${i}:00`),
+        title: { text: 'Stunde' },
+        min: -0.5,
+        max: 23.5,
+        tickInterval: 2,
+        startOnTick: false,
+        endOnTick: false
+    },
+    yAxis: {
+        categories: ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'],
+        title: { text: 'Wochentag' },
+        reversed: true,
+        min: -0.5,
+        max: 6.5,
+        startOnTick: false,
+        endOnTick: false
+    },
+    colorAxis: {
+        min: 0,
+        max: heatMax,
+        stops: [
+            [0, '#f6fbfa'],
+            [0.18, '#cfece9'],
+            [0.45, '#74c7c1'],
+            [0.72, colors.teal],
+            [1, colors.dark]
+        ]
+    },
+    tooltip: {
+        formatter: function () {
+            return `<b>${Highcharts.numberFormat(this.point.value, 2, ',', '.')} kWh</b><br>${this.series.yAxis.categories[this.point.y]} ${this.series.xAxis.categories[this.point.x]}`;
+        }
+    },
+    plotOptions: {
+        heatmap: {
+            colsize: 1,
+            rowsize: 1,
+            marker: {
+                enabled: true,
+                symbol: 'rect'
+            },
+            borderWidth: 1,
+            borderColor: 'rgba(23,37,42,.12)',
+            nullColor: '#f4f7f6'
+        }
+    },
+    series: [{
+        name: 'Stromverbrauch',
+        data: heatmapPoints,
+        colsize: 1,
+        rowsize: 1,
+        marker: {
+            enabled: true,
+            symbol: 'rect'
+        },
+        dataLabels: {
+            enabled: false
+        }
+    }]
+});
+
+Highcharts.chart('typicalDayChart', {
+    chart: { type: 'areaspline' },
+    xAxis: { categories: Array.from({length: 24}, (_, i) => `${i}:00`) },
+    yAxis: { title: { text: 'Ø kWh je Stunde' } },
+    tooltip: { pointFormat: '<b>{point.y:.3f} kWh</b>' },
+    series: [{ name: 'Typischer Stromverbrauch', data: report.charts.typical_day, color: colors.teal, fillOpacity: .22 }]
+});
+
+Highcharts.chart('eegShareChart', {
+    chart: { type: 'pie' },
+    tooltip: { pointFormat: '<b>{point.y:.2f} kWh</b> · {point.percentage:.1f}%' },
+    plotOptions: { pie: { innerSize: '68%', dataLabels: { enabled: true, format: '{point.name}<br><b>{point.percentage:.0f}%</b>' } } },
+    series: [{ name: 'Stromquelle', colors: [colors.teal, colors.amber], data: [['Aus der EEG', report.totals.eeg], ['Aus dem Netz', report.totals.grid]] }]
+});
+
+Highcharts.chart('flowChart', {
+    chart: { type: 'sankey' },
+    tooltip: { pointFormat: '<b>{point.weight:.2f} kWh</b>' },
+    series: [{
+        keys: ['from', 'to', 'weight'],
+        data: report.charts.sankey.filter(row => row[2] > 0),
+        colors: [colors.amber, colors.teal, colors.green, colors.blue],
+        name: 'Stromfluss'
+    }]
+});
+
+Highcharts.chart('costChart', {
+    chart: { type: 'bar' },
+    xAxis: { categories: ['Vergleich', 'Mit EEG'] },
+    yAxis: { title: { text: 'EUR' } },
+    tooltip: { pointFormat: '<b>{point.y:.2f} €</b>' },
+    series: [{ name: 'Geschätzter Betrag', data: [report.totals.cost_without, report.totals.cost_actual], color: colors.teal }]
+});
+
+Highcharts.chart('savingsChart', {
+    chart: { type: 'areaspline' },
+    xAxis: { categories: report.charts.labels },
+    yAxis: { title: { text: 'EUR' } },
+    tooltip: { pointFormat: '<b>{point.y:.2f} €</b>' },
+    series: [{ name: 'Gesamter Vorteil', data: report.charts.cumulative_savings, color: colors.green, fillOpacity: .24 }]
+});
+
+Highcharts.chart('communityChart', {
+    chart: { type: 'column' },
+    xAxis: { categories: report.charts.labels },
+    yAxis: { title: { text: 'kWh' } },
+    tooltip: { shared: true, pointFormatter: kwhTooltip },
+    series: [
+        { name: 'An die EEG geliefert', data: report.charts.eeg_feed, color: colors.green },
+        { name: 'Ins öffentliche Netz geliefert', data: report.charts.public_feed, color: colors.amber }
+    ]
+});
+
+Highcharts.chart('peakChart', {
+    chart: { zoomType: 'x' },
+    xAxis: { type: 'datetime' },
+    yAxis: { title: { text: 'kWh je Stunde' } },
+    tooltip: { xDateFormat: '%d.%m.%Y %H:%M', pointFormat: '<b>{point.y:.3f} kWh</b>' },
+    series: [
+        { type: 'line', name: 'Stromverbrauch pro Stunde', data: report.charts.peak_line, color: colors.teal, lineWidth: 2 },
+        { type: 'scatter', name: 'Höchste Werte', data: report.charts.peak_markers, color: colors.red, marker: { enabled: true, radius: 4, symbol: 'circle' } }
+    ]
+});
+
+Highcharts.chart('qualityChart', {
+    chart: { type: 'pie' },
+    tooltip: { pointFormat: '<b>{point.y}</b> Werte · {point.percentage:.1f}%' },
+    plotOptions: { pie: { innerSize: '58%', dataLabels: { enabled: true, format: '{point.name}: {point.percentage:.0f}%' } } },
+    series: [{
+        name: 'Qualität',
+        colors: [colors.teal, colors.amber, colors.red, colors.blue],
+        data: report.charts.quality.map(row => [row.quality, row.cnt])
+    }]
+});
+
+Highcharts.chart('missingChart', {
+    chart: { type: 'column' },
+    xAxis: { categories: report.charts.missing_by_month.map(row => row.month) },
+    yAxis: [{ title: { text: 'Anzahl' } }, { title: { text: 'Vollständigkeit %' }, opposite: true, max: 100 }],
+    tooltip: { shared: true },
+    series: [
+        { name: 'Fehlende Messwerte', data: report.charts.missing_by_month.map(row => row.missing), color: colors.red },
+        { type: 'line', name: 'Vollständige Daten', data: report.charts.missing_by_month.map(row => row.completeness), color: colors.teal, yAxis: 1, tooltip: { valueSuffix: ' %' } }
+    ]
+});
+</script>
+{% endif %}
 {% endblock %}
