@@ -19,7 +19,7 @@ from email.header import Header
 from email.utils import formataddr
 from html import escape
 from html.parser import HTMLParser
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlencode
 from zoneinfo import ZoneInfo
 
 from flask import (Flask, render_template, request, redirect, url_for,
@@ -443,16 +443,18 @@ def handle_csrf_error(error):
 @app.after_request
 def set_security_headers(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
+    embed_mode = request.args.get('embed') == '1'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN' if embed_mode else 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    frame_ancestors = "'self'" if embed_mode else "'none'"
     response.headers['Content-Security-Policy'] = (
         "default-src 'self'; "
         "base-uri 'self'; "
         "form-action 'self'; "
-        "frame-ancestors 'none'; "
+        f"frame-ancestors {frame_ancestors}; "
         "img-src 'self' data:; "
         "font-src 'self' https://cdn.jsdelivr.net data:; "
         "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
@@ -1152,6 +1154,51 @@ def _reset_login_attempts(ip):
     _login_attempts.pop(ip, None)
 
 
+def _v2_assets():
+    manifest_path = os.path.join(BASE_DIR, 'static', 'v2', '.vite', 'manifest.json')
+    if not os.path.exists(manifest_path):
+        raise RuntimeError('V2-Assets fehlen. Bitte in webapp/v2_src "npm install" und "npm run build" ausführen.')
+    with open(manifest_path, encoding='utf-8') as f:
+        manifest = json.load(f)
+    entry = manifest.get('index.html')
+    if not entry or not entry.get('file'):
+        raise RuntimeError('V2-Manifest ist unvollständig.')
+    return {
+        'js': entry['file'],
+        'css': entry.get('css', []),
+    }
+
+
+def _v2_shell_data(db):
+    public_cfg = get_public_config(db)
+    org_legal = public_cfg.get('org_legal') or DEFAULT_ORG_LEGAL
+    zvr_match = re.search(r'ZVR\D*(\d+)', org_legal, re.IGNORECASE)
+    return {
+        'user': {
+            'username': current_user.username,
+            'role': current_user.role,
+        },
+        'org': {
+            'name': public_cfg.get('org_name') or DEFAULT_ORG_NAME,
+            'legal': org_legal,
+            'zvr': f'ZVR {zvr_match.group(1)}' if zvr_match else org_legal,
+        },
+    }
+
+
+def _v2_content_path(subpath=None):
+    old_path = '/' + (subpath or '').strip('/')
+    if old_path == '/':
+        old_path = '/' if current_user.is_admin else '/portal'
+    query = {
+        key: values
+        for key, values in request.args.lists()
+        if key != 'embed'
+    }
+    query['embed'] = '1'
+    return f'{old_path}?{urlencode(query, doseq=True)}'
+
+
 # === Auth Routes ===
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -1300,6 +1347,25 @@ def dashboard():
     return render_template('dashboard.html', stats=stats,
                            imp_sort=imp_sort, imp_dir=imp_dir,
                            mon_sort=mon_sort, mon_dir=mon_dir)
+
+
+@app.route('/v2/')
+@app.route('/v2')
+@app.route('/v2/<path:subpath>')
+@login_required
+def v2_dashboard(subpath=None):
+    """Experimentelle V2-Oberflaeche, getrennt von der bestehenden Jinja-UI."""
+    db = get_db()
+    data = _v2_shell_data(db)
+    data['content_path'] = _v2_content_path(subpath)
+    data['current_path'] = '/' + (subpath or '').strip('/')
+    if data['current_path'] == '/':
+        data['current_path'] = '/' if current_user.is_admin else '/portal'
+    return render_template(
+        'v2_index.html',
+        v2_assets=_v2_assets(),
+        v2_data=data,
+    )
 
 
 # === Import ===
@@ -2203,7 +2269,8 @@ def invoice_pdf(id, member_id):
     pdf_filename = safe_invoice_pdf_filename(id, member_id, member['name'])
     pdf_bytes = HTML(string=html, base_url=BASE_DIR).write_pdf()
 
-    return send_file(io.BytesIO(pdf_bytes), as_attachment=True,
+    preview_pdf = request.args.get('preview') == '1'
+    return send_file(io.BytesIO(pdf_bytes), as_attachment=not preview_pdf,
                      download_name=pdf_filename, mimetype='application/pdf')
 
 

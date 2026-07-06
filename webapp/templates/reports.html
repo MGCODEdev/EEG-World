@@ -426,31 +426,41 @@ const colors = {
     blue: '#477b9e',
     green: '#4e8a7a'
 };
+const isV2Embed = document.body.classList.contains('embed-mode');
+const chartFontFamily = isV2Embed
+    ? 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    : 'Arial, sans-serif';
+const chartLabelStyle = isV2Embed
+    ? { color: '#52666a', fontSize: '13px', fontWeight: '400' }
+    : { color: '#52666a' };
+const chartAxisTitleStyle = isV2Embed
+    ? { color: '#52666a', fontSize: '13px', fontWeight: '500' }
+    : { color: '#52666a', fontWeight: '700' };
 
 Highcharts.setOptions({
     chart: {
         backgroundColor: 'transparent',
-        style: { fontFamily: 'Arial, sans-serif' }
+        style: { fontFamily: chartFontFamily }
     },
     title: { text: null },
     credits: { enabled: false },
-    legend: { itemStyle: { color: colors.dark, fontWeight: '600' } },
+    legend: { itemStyle: { color: colors.dark, fontWeight: isV2Embed ? '500' : '600', fontSize: isV2Embed ? '13px' : undefined } },
     xAxis: {
         lineColor: 'rgba(23,37,42,.18)',
         tickColor: 'rgba(23,37,42,.18)',
-        labels: { style: { color: '#52666a' } }
+        labels: { style: chartLabelStyle }
     },
     yAxis: {
         gridLineColor: 'rgba(23,37,42,.08)',
-        labels: { style: { color: '#52666a' } },
-        title: { style: { color: '#52666a', fontWeight: '700' } }
+        labels: { style: chartLabelStyle },
+        title: { style: chartAxisTitleStyle }
     },
     tooltip: {
         backgroundColor: 'rgba(255,255,255,.94)',
         borderColor: 'rgba(43,122,120,.25)',
         borderRadius: 8,
         shadow: true,
-        style: { color: colors.dark }
+        style: { color: colors.dark, fontSize: isV2Embed ? '13px' : undefined }
     },
     plotOptions: {
         series: {

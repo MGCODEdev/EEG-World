@@ -33,8 +33,9 @@ htmlcov/
 # Local tooling
 .venv/
 venv/
+node_modules/
+webapp/v2_src/node_modules/
 .idea/
 .vscode/
 *.swp
 *.swo
-

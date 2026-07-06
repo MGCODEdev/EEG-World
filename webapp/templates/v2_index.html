@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EEG V2 - {{ public_cfg['org_name'] if public_cfg is defined else org_name }}</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}">
+    {% for css_file in v2_assets.css %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='v2/' ~ css_file) }}">
+    {% endfor %}
+</head>
+<body>
+    <div id="root"></div>
+    <script>
+        window.EEG_V2_DATA = {{ v2_data|tojson }};
+    </script>
+    <script type="module" src="{{ url_for('static', filename='v2/' ~ v2_assets.js) }}"></script>
+</body>
+</html>
