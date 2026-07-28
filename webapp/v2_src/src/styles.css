@@ -972,6 +972,9 @@ h1 {
 .v2-price-form,
 .v2-report-form,
 .v2-audit-filter,
+.v2-cashbook-form,
+.v2-cashbook-filter,
+.v2-cashbook-category-form,
 .v2-user-form,
 .v2-contract-form,
 .v2-newsletter-form,
@@ -983,6 +986,9 @@ h1 {
 .v2-price-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
 .v2-report-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
 .v2-audit-filter :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
+.v2-cashbook-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
+.v2-cashbook-filter :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
+.v2-cashbook-category-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
 .v2-user-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
 .v2-contract-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
 .v2-newsletter-form :where(.astryx-field, .astryx-text-input, .astryx-number-input, .astryx-date-input, .astryx-selector, .astryx-file-input, .astryx-switch-field),
@@ -2122,6 +2128,89 @@ h1 {
   flex-wrap: wrap;
 }
 
+.v2-cashbook-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 1rem;
+  border: 1px solid var(--v2-line);
+  background: #fff;
+}
+
+.v2-cashbook-stats .v2-dashboard-stat:last-child {
+  border-right: 0;
+}
+
+.v2-cashbook-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(9rem, 1fr));
+  gap: .75rem;
+  align-items: end;
+  padding: 1rem;
+  background: #fff;
+}
+
+.v2-cashbook-filter {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: .75rem;
+  align-items: end;
+  padding: 1rem;
+  background: #fff;
+}
+
+.v2-cashbook-filter-actions {
+  display: flex;
+  gap: .45rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.v2-cashbook-table {
+  min-width: 82rem;
+}
+
+.v2-cashbook-reports {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.v2-cashbook-category-form {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) minmax(12rem, .8fr) auto;
+  gap: .75rem;
+  align-items: end;
+  padding: 1rem 1rem .25rem;
+  background: #fff;
+}
+
+.v2-cashbook-category-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .4rem;
+  padding: .75rem 1rem 1rem;
+  background: #fff;
+}
+
+.v2-cashbook-category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  padding: .2rem .3rem .2rem .6rem;
+  border: 1px solid var(--v2-line);
+  border-radius: 999px;
+  background: var(--v2-surface);
+  font-size: var(--v2-text-sm);
+}
+
+.v2-number-cell.is-positive {
+  color: var(--v2-positive, #146c43);
+}
+
+.v2-number-cell.is-negative {
+  color: var(--v2-negative, #b02a37);
+}
+
 .v2-audit-table {
   min-width: 74rem;
 }
@@ -3016,6 +3105,8 @@ h1 {
   .v2-native-grid,
   .v2-dashboard-stats,
   .v2-audit-stats,
+  .v2-cashbook-stats,
+  .v2-cashbook-reports,
   .v2-backup-summary,
   .v2-dashboard-grid {
     grid-template-columns: 1fr;

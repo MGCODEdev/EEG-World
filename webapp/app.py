@@ -646,6 +646,37 @@ def init_db():
         last_attempt REAL NOT NULL DEFAULT 0,
         locked_until REAL NOT NULL DEFAULT 0
     )""")
+    # Kassabuch: frei pflegbare Kategorien
+    db.execute("""CREATE TABLE IF NOT EXISTS cashbook_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        direction TEXT NOT NULL DEFAULT 'both',   -- income, expense oder both
+        active INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""")
+    for name, cat_direction, sort_order in CASHBOOK_DEFAULT_CATEGORIES:
+        db.execute("""INSERT OR IGNORE INTO cashbook_categories (name, direction, sort_order)
+                      VALUES (?, ?, ?)""", (name, cat_direction, sort_order))
+    # Kassabuch: manuelle Buchungen (Strombewegungen kommen aus payment_bookings)
+    db.execute("""CREATE TABLE IF NOT EXISTS cashbook_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_date TEXT NOT NULL,              -- ISO date
+        direction TEXT NOT NULL,               -- income oder expense
+        amount_eur REAL NOT NULL,              -- immer positiv
+        category_id INTEGER,
+        payment_method TEXT NOT NULL,          -- cash oder transfer
+        description TEXT NOT NULL,             -- Begruendung
+        counterparty TEXT,                     -- Zahler bzw. Empfaenger
+        document_number TEXT,                  -- fortlaufende Belegnummer
+        receipt_filename TEXT,
+        receipt_mimetype TEXT,
+        receipt_data BLOB,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_by TEXT,
+        FOREIGN KEY (category_id) REFERENCES cashbook_categories(id)
+    )""")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_cashbook_entries_date ON cashbook_entries(entry_date)")
     # Contracts-Tabelle
     db.execute("""CREATE TABLE IF NOT EXISTS contracts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2391,6 +2422,24 @@ def _v2_change_password_data():
     return {'type': 'change_password'}
 
 
+def _v2_cashbook_data(db):
+    filters = _cashbook_filters()
+    book = build_cashbook(db, **filters)
+    return {
+        'type': 'cashbook',
+        'today': local_now().date().isoformat(),
+        'filters': filters,
+        'entries': book['rows'],
+        'categories': book['categories'],
+        'years': book['years'],
+        'summary': book['summary'],
+        'by_category': book['by_category'],
+        'by_year': book['by_year'],
+        'directions': CASHBOOK_DIRECTIONS,
+        'methods': CASHBOOK_PAYMENT_METHODS,
+    }
+
+
 def _change_password_from_request(db):
     old_pw = request.form.get('old_password', '')
     new_pw = request.form.get('new_password', '')
@@ -2455,6 +2504,8 @@ def _v2_native_data(db, current_path):
         return _v2_invoice_detail_data(db, int(invoice_match.group(1)))
     if current_path == '/payments':
         return _v2_payments_data(db)
+    if current_path == '/kassabuch':
+        return _v2_cashbook_data(db)
     if current_path == '/newsletter':
         return _v2_newsletter_data(db)
     if current_path == '/newsletter/new':
@@ -6917,6 +6968,495 @@ def payment_mark_unpaid():
         audit_log('payment_unpaid_failed', f'Buchungsstorno fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
         flash_exception(e, 'Buchung konnte nicht zurückgesetzt werden.')
     return redirect(_payment_redirect_target())
+
+
+# ═══════════════════════════════════════════════════════
+# VEREINSKASSABUCH
+# ═══════════════════════════════════════════════════════
+
+# Startkategorien beim ersten Start; Admins koennen weitere anlegen.
+CASHBOOK_DEFAULT_CATEGORIES = [
+    ('Mitgliedsbeiträge', 'income', 10),
+    ('Förderungen und Zuschüsse', 'income', 20),
+    ('Zinserträge', 'income', 30),
+    ('Sonstige Einnahmen', 'income', 40),
+    ('Bewirtung', 'expense', 50),
+    ('Verwaltungskosten', 'expense', 60),
+    ('Bankspesen', 'expense', 70),
+    ('Versicherung', 'expense', 80),
+    ('Miete und Betriebskosten', 'expense', 90),
+    ('Sonstige Ausgaben', 'expense', 100),
+]
+CASHBOOK_DIRECTIONS = {'income': 'Einnahme', 'expense': 'Ausgabe'}
+CASHBOOK_PAYMENT_METHODS = {'cash': 'Bar', 'transfer': 'Überweisung'}
+# Strombewegungen stammen aus payment_bookings und erhalten feste Kategorien.
+CASHBOOK_ENERGY_CATEGORIES = {
+    'income': 'Stromverkauf an Mitglieder',
+    'expense': 'Stromeinkauf von Mitgliedern',
+}
+CASHBOOK_RECEIPT_MAX_BYTES = 10 * 1024 * 1024
+# Dateiendung -> (MIME-Typ, erwartete Signatur am Dateianfang)
+CASHBOOK_RECEIPT_TYPES = {
+    '.pdf': ('application/pdf', b'%PDF-'),
+    '.jpg': ('image/jpeg', b'\xff\xd8\xff'),
+    '.jpeg': ('image/jpeg', b'\xff\xd8\xff'),
+    '.png': ('image/png', b'\x89PNG\r\n\x1a\n'),
+}
+
+
+def _date_de(value):
+    """ISO-Datum als 31.12.2026; unbekannte Werte bleiben unveraendert."""
+    try:
+        return date.fromisoformat(str(value)[:10]).strftime('%d.%m.%Y')
+    except (TypeError, ValueError):
+        return str(value or '')
+
+
+def get_cashbook_categories(db, only_active=True):
+    query = "SELECT id, name, direction, active FROM cashbook_categories"
+    if only_active:
+        query += " WHERE active=1"
+    query += " ORDER BY sort_order, name"
+    return [dict(row) for row in db.execute(query).fetchall()]
+
+
+def _cashbook_manual_rows(db):
+    """Manuell erfasste Buchungen wie Bewirtung oder Verwaltungskosten."""
+    rows = db.execute("""
+        SELECT e.id, e.entry_date, e.direction, e.amount_eur, e.payment_method,
+               e.description, e.counterparty, e.document_number, e.created_by,
+               e.receipt_filename, e.category_id, c.name AS category_name
+        FROM cashbook_entries e
+        LEFT JOIN cashbook_categories c ON c.id = e.category_id
+    """).fetchall()
+    entries = []
+    for row in rows:
+        amount = round(abs(row['amount_eur'] or 0), 2)
+        entries.append({
+            'source': 'manual',
+            'id': row['id'],
+            'entry_date': row['entry_date'],
+            'direction': row['direction'],
+            'amount_eur': amount,
+            'signed_amount': amount if row['direction'] == 'income' else -amount,
+            'category': row['category_name'] or 'Ohne Kategorie',
+            'category_id': row['category_id'],
+            'payment_method': row['payment_method'],
+            'description': row['description'],
+            'counterparty': row['counterparty'] or '',
+            'document_number': row['document_number'] or '',
+            'has_receipt': bool(row['receipt_filename']),
+            'receipt_filename': row['receipt_filename'] or '',
+            'member_id': None,
+            'invoice_id': None,
+            'recorded_by': row['created_by'] or '',
+            'deletable': True,
+        })
+    return entries
+
+
+def _cashbook_energy_rows(db):
+    """Stromverkauf und -einkauf aus den nicht stornierten Zahlungsbuchungen."""
+    rows = db.execute("""
+        SELECT b.id, b.invoice_id, b.member_id, b.amount_eur, b.booking_date,
+               b.note, b.recorded_by_username, m.name AS member_name,
+               i.period_from, i.period_to
+        FROM payment_bookings b
+        JOIN members m ON m.id = b.member_id
+        LEFT JOIN invoices i ON i.id = b.invoice_id
+        WHERE b.reversed_at IS NULL
+    """).fetchall()
+    entries = []
+    for row in rows:
+        signed = round(row['amount_eur'] or 0, 2)
+        direction = 'income' if signed >= 0 else 'expense'
+        description = f'Abrechnung #{row["invoice_id"]}'
+        if row['period_from'] and row['period_to']:
+            description += f' ({_date_de(row["period_from"])} bis {_date_de(row["period_to"])})'
+        if row['note']:
+            description += f' – {row["note"]}'
+        entries.append({
+            'source': 'energy',
+            'id': row['id'],
+            'entry_date': row['booking_date'],
+            'direction': direction,
+            'amount_eur': abs(signed),
+            'signed_amount': signed,
+            'category': CASHBOOK_ENERGY_CATEGORIES[direction],
+            'category_id': None,
+            # Zahlungsbuchungen laufen immer ueber das Bankkonto.
+            'payment_method': 'transfer',
+            'description': description,
+            'counterparty': row['member_name'] or '',
+            'document_number': f'Z-{row["id"]:04d}',
+            'has_receipt': False,
+            'receipt_filename': '',
+            'member_id': row['member_id'],
+            'invoice_id': row['invoice_id'],
+            'recorded_by': row['recorded_by_username'] or '',
+            'deletable': False,
+        })
+    return entries
+
+
+def build_cashbook(db, year='', category='', direction='', method='', search=''):
+    """Fuehrt manuelle Buchungen und Strombewegungen zu einem Kassabuch zusammen.
+
+    Der laufende Saldo wird ueber alle Bewegungen berechnet und erst danach
+    gefiltert, damit ein Jahresfilter den Saldo nicht verfaelscht.
+    """
+    all_rows = _cashbook_manual_rows(db) + _cashbook_energy_rows(db)
+    all_rows.sort(key=lambda row: (row['entry_date'] or '', row['source'], row['id']))
+    balance = cash_balance = bank_balance = 0.0
+    for row in all_rows:
+        balance += row['signed_amount']
+        if row['payment_method'] == 'cash':
+            cash_balance += row['signed_amount']
+        else:
+            bank_balance += row['signed_amount']
+        row['balance'] = round(balance, 2)
+        row['entry_date_de'] = _date_de(row['entry_date'])
+    years = sorted({row['entry_date'][:4] for row in all_rows if row['entry_date']}, reverse=True)
+
+    needle = (search or '').strip().lower()
+
+    def matches(row):
+        if year and not (row['entry_date'] or '').startswith(year):
+            return False
+        if category and row['category'] != category:
+            return False
+        if direction and row['direction'] != direction:
+            return False
+        if method and row['payment_method'] != method:
+            return False
+        if needle:
+            haystack = ' '.join((row['description'], row['counterparty'],
+                                 row['category'], row['document_number'])).lower()
+            if needle not in haystack:
+                return False
+        return True
+
+    rows = [row for row in all_rows if matches(row)]
+    income_total = round(sum(row['amount_eur'] for row in rows if row['direction'] == 'income'), 2)
+    expense_total = round(sum(row['amount_eur'] for row in rows if row['direction'] == 'expense'), 2)
+
+    def aggregate(source_rows, key_name, key_func):
+        buckets = {}
+        for row in source_rows:
+            key = key_func(row)
+            bucket = buckets.setdefault(key, {key_name: key, 'income': 0.0, 'expense': 0.0, 'count': 0})
+            bucket['income' if row['direction'] == 'income' else 'expense'] += row['amount_eur']
+            bucket['count'] += 1
+        result = []
+        for bucket in buckets.values():
+            bucket['income'] = round(bucket['income'], 2)
+            bucket['expense'] = round(bucket['expense'], 2)
+            bucket['result'] = round(bucket['income'] - bucket['expense'], 2)
+            result.append(bucket)
+        return result
+
+    by_category = aggregate(rows, 'category', lambda row: row['category'])
+    by_category.sort(key=lambda item: item['income'] + item['expense'], reverse=True)
+    by_year = aggregate(all_rows, 'year', lambda row: (row['entry_date'] or '')[:4])
+    by_year.sort(key=lambda item: item['year'], reverse=True)
+
+    return {
+        'rows': list(reversed(rows)),   # neueste zuerst fuer die Anzeige
+        'rows_chronological': rows,     # aelteste zuerst fuer Export und PDF
+        'categories': get_cashbook_categories(db),
+        'years': years,
+        'by_category': by_category,
+        'by_year': by_year,
+        'summary': {
+            'income_total': income_total,
+            'expense_total': expense_total,
+            'result': round(income_total - expense_total, 2),
+            'entry_count': len(rows),
+            'cash_balance': round(cash_balance, 2),
+            'bank_balance': round(bank_balance, 2),
+            'balance': round(balance, 2),
+            'missing_receipts': len([row for row in rows
+                                     if row['source'] == 'manual' and not row['has_receipt']]),
+        },
+    }
+
+
+def _cashbook_filters():
+    return {
+        'year': (request.args.get('year') or '').strip(),
+        'category': (request.args.get('category') or '').strip(),
+        'direction': (request.args.get('direction') or '').strip(),
+        'method': (request.args.get('method') or '').strip(),
+        'search': (request.args.get('search') or '').strip(),
+    }
+
+
+def _cashbook_redirect_target():
+    next_url = request.form.get('next') or request.args.get('next')
+    if next_url and is_safe_redirect_url(next_url):
+        return next_url
+    return url_for('cashbook')
+
+
+def _read_cashbook_receipt(file):
+    """Prueft und liest einen Beleg; gibt None zurueck, wenn keiner gewaehlt wurde."""
+    if not file or not file.filename:
+        return None
+    filename = secure_filename(file.filename)
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in CASHBOOK_RECEIPT_TYPES:
+        raise ValueError('Als Beleg sind nur PDF-, JPG- und PNG-Dateien erlaubt.')
+    mimetype, signature = CASHBOOK_RECEIPT_TYPES[extension]
+    data = file.read()
+    if not data:
+        raise ValueError('Die Belegdatei ist leer.')
+    if len(data) > CASHBOOK_RECEIPT_MAX_BYTES:
+        raise ValueError(f'Der Beleg ist zu groß (max. {CASHBOOK_RECEIPT_MAX_BYTES // 1024 // 1024} MB).')
+    if not data.startswith(signature):
+        raise ValueError('Der Inhalt der Belegdatei passt nicht zur Dateiendung.')
+    return {'filename': filename, 'mimetype': mimetype, 'data': data}
+
+
+def _next_cashbook_document_number(db, entry_date):
+    """Fortlaufende Belegnummer je Jahr, z.B. 2026-0007."""
+    prefix = f'{entry_date.year}-'
+    row = db.execute("""SELECT document_number FROM cashbook_entries
+                        WHERE document_number LIKE ?
+                        ORDER BY document_number DESC LIMIT 1""", (prefix + '%',)).fetchone()
+    counter = 1
+    if row and row['document_number']:
+        try:
+            counter = int(row['document_number'].split('-', 1)[1]) + 1
+        except (IndexError, ValueError):
+            counter = 1
+    return f'{prefix}{counter:04d}'
+
+
+def _save_cashbook_entry_from_request(db):
+    """Legt eine manuelle Kassabuch-Buchung an und liefert die Belegnummer."""
+    try:
+        entry_date = date.fromisoformat((request.form.get('entry_date') or '').strip())
+    except ValueError:
+        raise ValueError('Bitte ein gültiges Buchungsdatum angeben.')
+    if entry_date > local_now().date():
+        raise ValueError('Das Buchungsdatum darf nicht in der Zukunft liegen.')
+
+    direction = request.form.get('direction', '')
+    if direction not in CASHBOOK_DIRECTIONS:
+        raise ValueError('Bitte Einnahme oder Ausgabe auswählen.')
+    payment_method = request.form.get('payment_method', '')
+    if payment_method not in CASHBOOK_PAYMENT_METHODS:
+        raise ValueError('Bitte Bar oder Überweisung auswählen.')
+
+    try:
+        amount = round(abs(float((request.form.get('amount_eur') or '').replace(',', '.').strip())), 2)
+    except ValueError:
+        raise ValueError('Bitte einen gültigen Betrag angeben.')
+    if amount <= 0:
+        raise ValueError('Der Betrag muss größer als null sein.')
+
+    description = (request.form.get('description') or '').strip()
+    if not description:
+        raise ValueError('Bitte eine Begründung zur Buchung angeben.')
+
+    category_id = request.form.get('category_id', type=int)
+    if category_id and not db.execute("SELECT 1 FROM cashbook_categories WHERE id=?",
+                                      (category_id,)).fetchone():
+        raise ValueError('Die gewählte Kategorie existiert nicht.')
+
+    receipt = _read_cashbook_receipt(request.files.get('receipt'))
+    document_number = _next_cashbook_document_number(db, entry_date)
+    db.execute("""INSERT INTO cashbook_entries
+                  (entry_date, direction, amount_eur, category_id, payment_method,
+                   description, counterparty, document_number,
+                   receipt_filename, receipt_mimetype, receipt_data, created_by)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               (entry_date.isoformat(), direction, amount, category_id or None, payment_method,
+                description, (request.form.get('counterparty') or '').strip(), document_number,
+                receipt['filename'] if receipt else None,
+                receipt['mimetype'] if receipt else None,
+                receipt['data'] if receipt else None,
+                current_user.username))
+    db.commit()
+    audit_log('cashbook_create',
+              f'Kassabuch {document_number}: {CASHBOOK_DIRECTIONS[direction]} '
+              f'{amount:.2f} EUR ({CASHBOOK_PAYMENT_METHODS[payment_method]}) – {description}')
+    return document_number
+
+
+@app.route('/kassabuch')
+@admin_required
+def cashbook():
+    """Vereinskassabuch mit allen Einnahmen und Ausgaben."""
+    db = get_db()
+    filters = _cashbook_filters()
+    return render_template('kassabuch.html',
+                           book=build_cashbook(db, **filters),
+                           filters=filters,
+                           export_args={key: value for key, value in filters.items() if value},
+                           directions=CASHBOOK_DIRECTIONS,
+                           methods=CASHBOOK_PAYMENT_METHODS,
+                           today=local_now().date().isoformat())
+
+
+@app.route('/kassabuch/new', methods=['POST'])
+@admin_required
+def cashbook_create():
+    try:
+        document_number = _save_cashbook_entry_from_request(get_db())
+        flash(f'Buchung {document_number} gespeichert.', 'success')
+    except Exception as e:
+        flash_exception(e, 'Buchung konnte nicht gespeichert werden.')
+    return redirect(_cashbook_redirect_target())
+
+
+@app.route('/kassabuch/<int:id>/delete', methods=['POST'])
+@admin_required
+def cashbook_delete(id):
+    db = get_db()
+    row = db.execute("""SELECT document_number, amount_eur, direction, description
+                        FROM cashbook_entries WHERE id=?""", (id,)).fetchone()
+    if not row:
+        flash('Buchung nicht gefunden.', 'danger')
+        return redirect(_cashbook_redirect_target())
+    db.execute("DELETE FROM cashbook_entries WHERE id=?", (id,))
+    db.commit()
+    audit_log('cashbook_delete',
+              f'Kassabuch {row["document_number"]} gelöscht: '
+              f'{CASHBOOK_DIRECTIONS.get(row["direction"], row["direction"])} '
+              f'{row["amount_eur"]:.2f} EUR – {row["description"]}')
+    flash(f'Buchung {row["document_number"]} wurde gelöscht.', 'success')
+    return redirect(_cashbook_redirect_target())
+
+
+@app.route('/kassabuch/<int:id>/beleg')
+@admin_required
+def cashbook_receipt(id):
+    db = get_db()
+    row = db.execute("""SELECT document_number, receipt_filename, receipt_mimetype, receipt_data
+                        FROM cashbook_entries WHERE id=?""", (id,)).fetchone()
+    if not row or not row['receipt_data']:
+        flash('Zu dieser Buchung ist kein Beleg hinterlegt.', 'warning')
+        return redirect(_cashbook_redirect_target())
+    audit_log('cashbook_receipt_download', f'Beleg zu Buchung {row["document_number"]} geöffnet')
+    return send_file(io.BytesIO(row['receipt_data']),
+                     mimetype=row['receipt_mimetype'] or 'application/octet-stream',
+                     as_attachment=request.args.get('preview') != '1',
+                     download_name=row['receipt_filename'] or f'beleg-{id}')
+
+
+def _cashbook_export_name(filters, suffix):
+    scope = filters.get('year') or 'gesamt'
+    return f'kassabuch-{scope}-{local_now().strftime("%Y%m%d")}.{suffix}'
+
+
+@app.route('/kassabuch/export.csv')
+@admin_required
+def cashbook_export_csv():
+    import csv
+
+    filters = _cashbook_filters()
+    book = build_cashbook(get_db(), **filters)
+
+    def eur(value):
+        return f'{value:.2f}'.replace('.', ',')
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=';')
+    writer.writerow(['Beleg-Nr', 'Datum', 'Art', 'Kategorie', 'Zahlungsart', 'Begründung',
+                     'Zahler/Empfänger', 'Einnahme EUR', 'Ausgabe EUR', 'Saldo EUR',
+                     'Beleg vorhanden', 'Erfasst von'])
+    for row in book['rows_chronological']:
+        writer.writerow([
+            row['document_number'],
+            _date_de(row['entry_date']),
+            CASHBOOK_DIRECTIONS.get(row['direction'], row['direction']),
+            row['category'],
+            CASHBOOK_PAYMENT_METHODS.get(row['payment_method'], row['payment_method']),
+            row['description'],
+            row['counterparty'],
+            eur(row['amount_eur']) if row['direction'] == 'income' else '',
+            eur(row['amount_eur']) if row['direction'] == 'expense' else '',
+            eur(row['balance']),
+            'ja' if row['has_receipt'] else '',
+            row['recorded_by'],
+        ])
+    summary = book['summary']
+    writer.writerow([])
+    writer.writerow(['Summe', '', '', '', '', '', '',
+                     eur(summary['income_total']), eur(summary['expense_total']),
+                     eur(summary['result']), '', ''])
+    writer.writerow(['Kassastand bar', eur(summary['cash_balance'])])
+    writer.writerow(['Kontostand Bank', eur(summary['bank_balance'])])
+    audit_log('cashbook_export', f'Kassabuch als CSV exportiert ({summary["entry_count"]} Buchungen)')
+    # BOM, damit Excel die Umlaute korrekt erkennt
+    return send_file(io.BytesIO(buffer.getvalue().encode('utf-8-sig')),
+                     mimetype='text/csv', as_attachment=True,
+                     download_name=_cashbook_export_name(filters, 'csv'))
+
+
+@app.route('/kassabuch/export.pdf')
+@admin_required
+def cashbook_export_pdf():
+    from weasyprint import HTML
+
+    filters = _cashbook_filters()
+    db = get_db()
+    book = build_cashbook(db, **filters)
+    html = render_template('kassabuch_pdf.html',
+                           book=book,
+                           filters=filters,
+                           directions=CASHBOOK_DIRECTIONS,
+                           methods=CASHBOOK_PAYMENT_METHODS,
+                           org=get_public_config(db),
+                           created_at=local_now())
+    pdf_bytes = HTML(string=html, base_url=BASE_DIR).write_pdf()
+    audit_log('cashbook_export', f'Kassabuch als PDF exportiert ({book["summary"]["entry_count"]} Buchungen)')
+    return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf',
+                     as_attachment=request.args.get('preview') != '1',
+                     download_name=_cashbook_export_name(filters, 'pdf'))
+
+
+@app.route('/kassabuch/kategorien', methods=['POST'])
+@admin_required
+def cashbook_category_create():
+    db = get_db()
+    name = (request.form.get('name') or '').strip()
+    direction = request.form.get('direction', 'both')
+    if not name:
+        flash('Bitte einen Namen für die Kategorie angeben.', 'danger')
+    elif direction not in {'income', 'expense', 'both'}:
+        flash('Ungültige Zuordnung für die Kategorie.', 'danger')
+    elif db.execute("SELECT 1 FROM cashbook_categories WHERE LOWER(name)=?", (name.lower(),)).fetchone():
+        flash(f'Die Kategorie "{name}" existiert bereits.', 'warning')
+    else:
+        db.execute("INSERT INTO cashbook_categories (name, direction) VALUES (?, ?)", (name, direction))
+        db.commit()
+        audit_log('cashbook_category_create', f'Kassabuch-Kategorie angelegt: {name}')
+        flash(f'Kategorie "{name}" angelegt.', 'success')
+    return redirect(_cashbook_redirect_target())
+
+
+@app.route('/kassabuch/kategorien/<int:id>/delete', methods=['POST'])
+@admin_required
+def cashbook_category_delete(id):
+    db = get_db()
+    row = db.execute("SELECT name FROM cashbook_categories WHERE id=?", (id,)).fetchone()
+    if not row:
+        flash('Kategorie nicht gefunden.', 'danger')
+        return redirect(_cashbook_redirect_target())
+    in_use = db.execute("SELECT COUNT(*) FROM cashbook_entries WHERE category_id=?", (id,)).fetchone()[0]
+    if in_use:
+        # Bereits gebuchte Kategorien bleiben erhalten, damit alte Buchungen lesbar bleiben.
+        db.execute("UPDATE cashbook_categories SET active=0 WHERE id=?", (id,))
+        flash(f'Kategorie "{row["name"]}" wird nicht mehr angeboten, '
+              f'bleibt aber bei {in_use} bestehenden Buchungen sichtbar.', 'info')
+    else:
+        db.execute("DELETE FROM cashbook_categories WHERE id=?", (id,))
+        flash(f'Kategorie "{row["name"]}" gelöscht.', 'success')
+    db.commit()
+    audit_log('cashbook_category_delete', f'Kassabuch-Kategorie entfernt: {row["name"]}')
+    return redirect(_cashbook_redirect_target())
 
 
 # ═══════════════════════════════════════════════════════

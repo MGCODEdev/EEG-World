@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Kassabuch</title>
+<style>
+    @page { size: A4 landscape; margin: 14mm 12mm; }
+    body { font-family: "DejaVu Sans", Arial, sans-serif; font-size: 8.5pt; color: #222; }
+    h1 { font-size: 15pt; margin: 0 0 2mm 0; }
+    .meta { color: #666; font-size: 8pt; margin-bottom: 5mm; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 0.4pt solid #ccc; padding: 1.4mm 1.2mm; text-align: left; vertical-align: top; }
+    th { background: #f0f0f0; border-bottom: 0.8pt solid #999; font-size: 8pt; }
+    .num { text-align: right; white-space: nowrap; }
+    .income { color: #146c43; }
+    .expense { color: #b02a37; }
+    tfoot td { font-weight: bold; border-top: 0.8pt solid #999; border-bottom: none; }
+    .summary { margin-top: 6mm; width: 60%; }
+    .summary td { border: none; padding: 0.8mm 1.2mm; }
+    .summary .label { color: #555; }
+    h2 { font-size: 11pt; margin: 8mm 0 2mm 0; page-break-after: avoid; }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+{% set s = book['summary'] %}
+<h1>Kassabuch – {{ org['org_name'] }}</h1>
+<div class="meta">
+    Zeitraum: {{ filters['year'] or 'alle Jahre' }}
+    {%- if filters['category'] %} · Kategorie: {{ filters['category'] }}{% endif %}
+    {%- if filters['direction'] %} · Art: {{ directions.get(filters['direction'], filters['direction']) }}{% endif %}
+    {%- if filters['method'] %} · Zahlungsart: {{ methods.get(filters['method'], filters['method']) }}{% endif %}
+    {%- if filters['search'] %} · Suche: „{{ filters['search'] }}“{% endif %}
+    · Erstellt am {{ created_at.strftime('%d.%m.%Y %H:%M') }}
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Beleg-Nr</th>
+            <th>Datum</th>
+            <th>Kategorie</th>
+            <th>Begründung</th>
+            <th>Zahler / Empfänger</th>
+            <th>Zahlungsart</th>
+            <th class="num">Einnahme</th>
+            <th class="num">Ausgabe</th>
+            <th class="num">Saldo</th>
+            <th>Beleg</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for row in book['rows_chronological'] %}
+        <tr>
+            <td>{{ row['document_number'] }}</td>
+            <td>{{ row['entry_date_de'] }}</td>
+            <td>{{ row['category'] }}</td>
+            <td>{{ row['description'] }}</td>
+            <td>{{ row['counterparty'] }}</td>
+            <td>{{ methods.get(row['payment_method'], row['payment_method']) }}</td>
+            <td class="num income">{% if row['direction'] == 'income' %}{{ "%.2f"|format(row['amount_eur']) }}{% endif %}</td>
+            <td class="num expense">{% if row['direction'] == 'expense' %}{{ "%.2f"|format(row['amount_eur']) }}{% endif %}</td>
+            <td class="num">{{ "%.2f"|format(row['balance']) }}</td>
+            <td>{{ 'ja' if row['has_receipt'] else '' }}</td>
+        </tr>
+    {% else %}
+        <tr><td colspan="10">Keine Buchungen für diese Auswahl.</td></tr>
+    {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <td colspan="6">Summe ({{ s['entry_count'] }} Buchungen)</td>
+            <td class="num">{{ "%.2f"|format(s['income_total']) }}</td>
+            <td class="num">{{ "%.2f"|format(s['expense_total']) }}</td>
+            <td class="num">{{ "%.2f"|format(s['result']) }}</td>
+            <td></td>
+        </tr>
+    </tfoot>
+</table>
+
+<table class="summary">
+    <tr><td class="label">Kassastand bar</td><td class="num">{{ "%.2f"|format(s['cash_balance']) }} €</td></tr>
+    <tr><td class="label">Kontostand Bank</td><td class="num">{{ "%.2f"|format(s['bank_balance']) }} €</td></tr>
+    <tr><td class="label">Gesamtsaldo</td><td class="num">{{ "%.2f"|format(s['balance']) }} €</td></tr>
+</table>
+
+<h2>Auswertung nach Kategorie</h2>
+<table>
+    <thead>
+        <tr><th>Kategorie</th><th class="num">Buchungen</th><th class="num">Einnahmen</th><th class="num">Ausgaben</th><th class="num">Ergebnis</th></tr>
+    </thead>
+    <tbody>
+    {% for row in book['by_category'] %}
+        <tr>
+            <td>{{ row['category'] }}</td>
+            <td class="num">{{ row['count'] }}</td>
+            <td class="num income">{{ "%.2f"|format(row['income']) }}</td>
+            <td class="num expense">{{ "%.2f"|format(row['expense']) }}</td>
+            <td class="num">{{ "%.2f"|format(row['result']) }}</td>
+        </tr>
+    {% else %}
+        <tr><td colspan="5">Keine Daten.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<h2>Auswertung nach Jahr</h2>
+<table>
+    <thead>
+        <tr><th>Jahr</th><th class="num">Buchungen</th><th class="num">Einnahmen</th><th class="num">Ausgaben</th><th class="num">Ergebnis</th></tr>
+    </thead>
+    <tbody>
+    {% for row in book['by_year'] %}
+        <tr>
+            <td>{{ row['year'] }}</td>
+            <td class="num">{{ row['count'] }}</td>
+            <td class="num income">{{ "%.2f"|format(row['income']) }}</td>
+            <td class="num expense">{{ "%.2f"|format(row['expense']) }}</td>
+            <td class="num">{{ "%.2f"|format(row['result']) }}</td>
+        </tr>
+    {% else %}
+        <tr><td colspan="5">Keine Daten.</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+</body>
+</html>

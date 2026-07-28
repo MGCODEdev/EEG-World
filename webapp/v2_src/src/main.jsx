@@ -86,6 +86,7 @@ const adminNavItems = [
   {label: 'Preise', path: '/prices', icon: Euro},
   {label: 'Abrechnungen', path: '/invoices', icon: ReceiptText},
   {label: 'Überweisungen', path: '/payments', icon: Banknote},
+  {label: 'Kassabuch', path: '/kassabuch', icon: BookOpenText},
   {label: 'Reports', path: '/reports', icon: ChartNoAxesCombined},
   {label: 'Newsletter', path: '/newsletter', icon: Mail},
   {type: 'section', label: 'Verwaltung'},
@@ -340,6 +341,8 @@ function V2Shell() {
       ? <NativeInvoiceDetail data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'payments'
       ? <NativePayments data={nativeData} csrfToken={security.csrf_token} />
+    : nativeData?.type === 'cashbook'
+      ? <NativeCashbook data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'newsletter'
       ? <NativeNewsletter data={nativeData} csrfToken={security.csrf_token} user={user} />
     : nativeData?.type === 'newsletter_form'
@@ -1304,6 +1307,330 @@ function NativePrices({data, csrfToken}) {
               )}
             </tbody>
           </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function NativeCashbook({data, csrfToken}) {
+  const [receiptFile, setReceiptFile] = useState(null);
+  const entries = data.entries || [];
+  const categories = data.categories || [];
+  const filters = data.filters || {};
+  const summary = data.summary || {};
+  const methods = data.methods || {};
+  const directions = data.directions || {};
+  const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value)).toString();
+  const exportSuffix = query ? `?${query}` : '';
+
+  return (
+    <div className="v2-native-page v2-cashbook-page">
+      <div className="v2-page-heading">
+        <div className="v2-page-title">
+          <BookOpenText size={34} strokeWidth={1.8} />
+          <h2>Vereinskassabuch</h2>
+        </div>
+        <div className="v2-page-actions">
+          <a className="v2-action-button" href={`/kassabuch/export.csv${exportSuffix}`}>
+            <Download size={18} />
+            <span>CSV</span>
+          </a>
+          <a className="v2-action-button" href={`/kassabuch/export.pdf${exportSuffix}`}>
+            <FileText size={18} />
+            <span>PDF</span>
+          </a>
+        </div>
+      </div>
+
+      <section className="v2-cashbook-stats" aria-label="Kassabuch Kennzahlen">
+        <DashboardStat icon={Banknote} label="Kassastand bar" value={formatCurrency(summary.cash_balance)} />
+        <DashboardStat icon={Landmark} label="Kontostand Bank" value={formatCurrency(summary.bank_balance)} />
+        <DashboardStat icon={Euro} label="Gesamtsaldo" value={formatCurrency(summary.balance)} />
+        <DashboardStat icon={ChartNoAxesCombined} label={`Ergebnis Auswahl (${formatNumber(summary.entry_count, 0)})`} value={formatSignedCurrency(summary.result)} />
+      </section>
+
+      <Card className="v2-native-card v2-cashbook-card" padding={0}>
+        <div className="v2-dashboard-card-title">
+          <Plus size={24} />
+          <h3>Neue Buchung erfassen</h3>
+        </div>
+        <form
+          className="v2-cashbook-form"
+          method="post"
+          action="/kassabuch/new"
+          encType="multipart/form-data"
+          onSubmit={(event) => {
+            if (receiptFile) {
+              submitMultipartFormWithFiles(event, [{name: 'receipt', files: receiptFile}]);
+            }
+          }}
+        >
+          <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+          <input type="hidden" name="next" value="/v2/kassabuch" />
+          <FormDateInput name="entry_date" label="Datum" defaultValue={data.today || ''} isRequired />
+          <FormSelector
+            name="direction"
+            label="Art"
+            defaultValue="expense"
+            isRequired
+            options={Object.entries(directions).map(([value, label]) => ({value, label}))}
+          />
+          <FormNumberInput name="amount_eur" label="Betrag" step={0.01} units="€" isRequired />
+          <FormSelector
+            name="payment_method"
+            label="Zahlungsart"
+            defaultValue="transfer"
+            isRequired
+            options={Object.entries(methods).map(([value, label]) => ({value, label}))}
+          />
+          <FormSelector
+            name="category_id"
+            label="Kategorie"
+            defaultValue=""
+            placeholder="Kategorie wählen"
+            options={[{value: '', label: 'Ohne Kategorie'}, ...categories.map((category) => ({value: String(category.id), label: category.name}))]}
+            hasSearch={categories.length > 8}
+            searchPlaceholder="Kategorie suchen..."
+          />
+          <FormTextInput name="description" label="Begründung" placeholder="z.B. Bewirtung Generalversammlung" isRequired />
+          <FormTextInput name="counterparty" label="Zahler / Empfänger" placeholder="optional" isOptional />
+          <FormFileInput
+            name="receipt"
+            label="Beleg"
+            description="PDF, JPG oder PNG, max. 10 MB."
+            accept=".pdf,.jpg,.jpeg,.png"
+            placeholder="Beleg auswählen"
+            onFilesChange={setReceiptFile}
+          />
+          <button type="submit" className="v2-primary-action v2-submit-action">
+            <Plus size={20} />
+            <span>Speichern</span>
+          </button>
+        </form>
+      </Card>
+
+      <Card className="v2-native-card v2-cashbook-card" padding={0}>
+        <div className="v2-dashboard-card-title">
+          <SearchIcon />
+          <h3>Filter</h3>
+        </div>
+        <form className="v2-cashbook-filter" method="get" action="/v2/kassabuch">
+          <FormSelector
+            name="year"
+            label="Jahr"
+            defaultValue={filters.year || ''}
+            options={[{value: '', label: 'Alle'}, ...(data.years || []).map((year) => ({value: year, label: year}))]}
+          />
+          <FormSelector
+            name="category"
+            label="Kategorie"
+            defaultValue={filters.category || ''}
+            options={[{value: '', label: 'Alle'}, ...(data.by_category || []).map((row) => ({value: row.category, label: row.category}))]}
+            hasSearch={(data.by_category || []).length > 8}
+            searchPlaceholder="Kategorie suchen..."
+          />
+          <FormSelector
+            name="direction"
+            label="Art"
+            defaultValue={filters.direction || ''}
+            options={[{value: '', label: 'Alle'}, ...Object.entries(directions).map(([value, label]) => ({value, label}))]}
+          />
+          <FormSelector
+            name="method"
+            label="Zahlungsart"
+            defaultValue={filters.method || ''}
+            options={[{value: '', label: 'Alle'}, ...Object.entries(methods).map(([value, label]) => ({value, label}))]}
+          />
+          <FormTextInput name="search" label="Suche" defaultValue={filters.search || ''} placeholder="Text..." isOptional />
+          <div className="v2-cashbook-filter-actions">
+            <button type="submit" className="v2-primary-action v2-submit-action">
+              <Eye size={20} />
+              <span>Filtern</span>
+            </button>
+            <a href="/v2/kassabuch" className="v2-action-button">
+              <RotateCcw size={18} />
+              <span>Zurücksetzen</span>
+            </a>
+          </div>
+        </form>
+      </Card>
+
+      <Card className="v2-native-card v2-cashbook-card" padding={0}>
+        <div className="v2-dashboard-card-title">
+          <NotebookText size={24} />
+          <h3>Bewegungen</h3>
+        </div>
+        <div className="v2-table-wrap">
+          <table className="v2-native-table v2-cashbook-table">
+            <thead>
+              <tr>
+                <th>Beleg-Nr</th>
+                <th>Datum</th>
+                <th>Kategorie</th>
+                <th>Begründung</th>
+                <th>Zahler / Empfänger</th>
+                <th>Zahlungsart</th>
+                <th>Betrag</th>
+                <th>Saldo</th>
+                <th>Beleg</th>
+                <th>Aktionen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.length ? entries.map((entry) => (
+                <tr key={`${entry.source}-${entry.id}`}>
+                  <td><strong>{entry.document_number}</strong></td>
+                  <td>{formatDate(entry.entry_date)}</td>
+                  <td>
+                    {entry.category}
+                    {entry.source === 'energy' && <><br /><span className="v2-tag is-muted">automatisch</span></>}
+                  </td>
+                  <td>{entry.description}</td>
+                  <td>{entry.counterparty || '-'}</td>
+                  <td>{methods[entry.payment_method] || entry.payment_method}</td>
+                  <td className={`v2-number-cell ${entry.direction === 'income' ? 'is-positive' : 'is-negative'}`}>
+                    {formatSignedCurrency(entry.signed_amount)}
+                  </td>
+                  <td className="v2-number-cell">{formatCurrency(entry.balance)}</td>
+                  <td>
+                    {entry.has_receipt
+                      ? <a className="v2-icon-action" href={`/kassabuch/${entry.id}/beleg`} aria-label="Beleg herunterladen" title="Beleg herunterladen"><FileText size={18} /></a>
+                      : <span className="v2-tag is-muted">-</span>}
+                  </td>
+                  <td className="v2-table-action">
+                    {entry.deletable ? (
+                      <form
+                        method="post"
+                        action={`/kassabuch/${entry.id}/delete`}
+                        onSubmit={(event) => {
+                          if (!window.confirm(`Buchung ${entry.document_number} wirklich löschen?`)) event.preventDefault();
+                        }}
+                      >
+                        <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                        <input type="hidden" name="next" value="/v2/kassabuch" />
+                        <button type="submit" className="v2-icon-action is-danger" aria-label="Buchung löschen" title="Löschen">
+                          <Trash2 size={18} />
+                        </button>
+                      </form>
+                    ) : <span className="v2-tag is-muted">aus Abrechnung</span>}
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="10"><EmptyState text="Keine Buchungen für diese Auswahl." /></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <div className="v2-cashbook-reports">
+        <Card className="v2-native-card v2-cashbook-card" padding={0}>
+          <div className="v2-dashboard-card-title">
+            <ChartNoAxesCombined size={24} />
+            <h3>Auswertung nach Kategorie</h3>
+          </div>
+          <div className="v2-table-wrap">
+            <table className="v2-native-table">
+              <thead>
+                <tr>
+                  <th>Kategorie</th>
+                  <th>Buchungen</th>
+                  <th>Einnahmen</th>
+                  <th>Ausgaben</th>
+                  <th>Ergebnis</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.by_category || []).length ? data.by_category.map((row) => (
+                  <tr key={row.category}>
+                    <td><strong>{row.category}</strong></td>
+                    <td className="v2-number-cell">{formatNumber(row.count, 0)}</td>
+                    <td className="v2-number-cell is-positive">{formatCurrency(row.income)}</td>
+                    <td className="v2-number-cell is-negative">{formatCurrency(row.expense)}</td>
+                    <td className="v2-number-cell">{formatSignedCurrency(row.result)}</td>
+                  </tr>
+                )) : <tr><td colSpan="5"><EmptyState text="Keine Daten." /></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+
+        <Card className="v2-native-card v2-cashbook-card" padding={0}>
+          <div className="v2-dashboard-card-title">
+            <Clock3 size={24} />
+            <h3>Auswertung nach Jahr</h3>
+          </div>
+          <div className="v2-table-wrap">
+            <table className="v2-native-table">
+              <thead>
+                <tr>
+                  <th>Jahr</th>
+                  <th>Buchungen</th>
+                  <th>Einnahmen</th>
+                  <th>Ausgaben</th>
+                  <th>Ergebnis</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.by_year || []).length ? data.by_year.map((row) => (
+                  <tr key={row.year}>
+                    <td><strong>{row.year}</strong></td>
+                    <td className="v2-number-cell">{formatNumber(row.count, 0)}</td>
+                    <td className="v2-number-cell is-positive">{formatCurrency(row.income)}</td>
+                    <td className="v2-number-cell is-negative">{formatCurrency(row.expense)}</td>
+                    <td className="v2-number-cell">{formatSignedCurrency(row.result)}</td>
+                  </tr>
+                )) : <tr><td colSpan="5"><EmptyState text="Keine Daten." /></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+
+      <Card className="v2-native-card v2-cashbook-card" padding={0}>
+        <div className="v2-dashboard-card-title">
+          <Settings size={24} />
+          <h3>Kategorien verwalten</h3>
+        </div>
+        <form className="v2-cashbook-category-form" method="post" action="/kassabuch/kategorien">
+          <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+          <input type="hidden" name="next" value="/v2/kassabuch" />
+          <FormTextInput name="name" label="Neue Kategorie" placeholder="z.B. Vereinsausflug" isRequired />
+          <FormSelector
+            name="direction"
+            label="Verwendung"
+            defaultValue="both"
+            options={[
+              {value: 'both', label: 'Einnahme und Ausgabe'},
+              {value: 'income', label: 'Nur Einnahme'},
+              {value: 'expense', label: 'Nur Ausgabe'},
+            ]}
+          />
+          <button type="submit" className="v2-primary-action v2-submit-action">
+            <Plus size={20} />
+            <span>Anlegen</span>
+          </button>
+        </form>
+        <div className="v2-cashbook-category-list">
+          {categories.map((category) => (
+            <span key={category.id} className="v2-cashbook-category-chip">
+              {category.name}
+              <form
+                method="post"
+                action={`/kassabuch/kategorien/${category.id}/delete`}
+                onSubmit={(event) => {
+                  if (!window.confirm(`Kategorie "${category.name}" entfernen?`)) event.preventDefault();
+                }}
+              >
+                <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                <input type="hidden" name="next" value="/v2/kassabuch" />
+                <button type="submit" className="v2-icon-action is-danger" aria-label="Kategorie entfernen" title="Entfernen">
+                  <X size={16} />
+                </button>
+              </form>
+            </span>
+          ))}
         </div>
       </Card>
     </div>
