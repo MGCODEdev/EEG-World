@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import date, timedelta
+from decimal import Decimal
 
 import app as eegapp
 
@@ -252,6 +253,30 @@ class CashbookTests(unittest.TestCase):
         # Der Saldo bleibt der Gesamtsaldo ueber alle Jahre.
         self.assertEqual(filtered['summary']['balance'], 60.0)
         self.assertEqual([row['year'] for row in filtered['by_year']], ['2026', '2025'])
+
+    def test_amounts_are_summed_in_cents(self):
+        """Krumme Betraege duerfen sich nicht zu einer Fliesskomma-Abweichung addieren."""
+        values = [0.07, 0.29, 1.13, 2.71, 8.19, 0.01, 33.33, 0.02, 5.55, 0.1, 0.2]
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            for index, value in enumerate(values, start=1):
+                db.execute("""INSERT INTO cashbook_entries
+                              (entry_date, direction, amount_eur, payment_method,
+                               description, document_number)
+                              VALUES (?, 'income', ?, 'transfer', 'Testbetrag', ?)""",
+                           ((date(2026, 1, 1) + timedelta(days=index)).isoformat(),
+                            value, f'2026-{index:04d}'))
+            db.commit()
+            book = eegapp.build_cashbook(db)
+
+        expected = sum(Decimal(str(value)) for value in values)
+        self.assertEqual(Decimal(str(book['summary']['balance'])), expected)
+        self.assertEqual(Decimal(str(book['summary']['bank_balance'])), expected)
+        self.assertEqual(Decimal(str(book['summary']['income_total'])), expected)
+        self.assertEqual(Decimal(str(book['summary']['result'])), expected)
+        # Der laufende Saldo der letzten Zeile muss demselben Wert entsprechen.
+        self.assertEqual(Decimal(str(book['rows'][0]['balance'])), expected)
+        self.assertEqual(Decimal(str(book['by_year'][0]['result'])), expected)
 
     def test_entry_can_be_deleted(self):
         client = self._client()

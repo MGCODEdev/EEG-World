@@ -6986,6 +6986,7 @@ CASHBOOK_DEFAULT_CATEGORIES = [
     ('Versicherung', 'expense', 80),
     ('Miete und Betriebskosten', 'expense', 90),
     ('Sonstige Ausgaben', 'expense', 100),
+    ('Rundungsdifferenz', 'both', 110),
 ]
 CASHBOOK_DIRECTIONS = {'income': 'Einnahme', 'expense': 'Ausgabe'}
 CASHBOOK_PAYMENT_METHODS = {'cash': 'Bar', 'transfer': 'Überweisung'}
@@ -7010,6 +7011,11 @@ def _date_de(value):
         return date.fromisoformat(str(value)[:10]).strftime('%d.%m.%Y')
     except (TypeError, ValueError):
         return str(value or '')
+
+
+def _cents(value):
+    """Betrag in ganze Cent. Summen und Salden werden so exakt gerechnet."""
+    return int(round(float(value or 0) * 100))
 
 
 def get_cashbook_categories(db, only_active=True):
@@ -7109,14 +7115,16 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
     """
     all_rows = _cashbook_manual_rows(db) + _cashbook_energy_rows(db)
     all_rows.sort(key=lambda row: (row['entry_date'] or '', row['source'], row['id']))
-    balance = cash_balance = bank_balance = 0.0
+    # In Cent rechnen, damit sich keine Fliesskomma-Abweichung aufsummiert.
+    balance = cash_balance = bank_balance = 0
     for row in all_rows:
-        balance += row['signed_amount']
+        amount_cents = _cents(row['signed_amount'])
+        balance += amount_cents
         if row['payment_method'] == 'cash':
-            cash_balance += row['signed_amount']
+            cash_balance += amount_cents
         else:
-            bank_balance += row['signed_amount']
-        row['balance'] = round(balance, 2)
+            bank_balance += amount_cents
+        row['balance'] = balance / 100
         row['entry_date_de'] = _date_de(row['entry_date'])
     years = sorted({row['entry_date'][:4] for row in all_rows if row['entry_date']}, reverse=True)
 
@@ -7139,21 +7147,22 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
         return True
 
     rows = [row for row in all_rows if matches(row)]
-    income_total = round(sum(row['amount_eur'] for row in rows if row['direction'] == 'income'), 2)
-    expense_total = round(sum(row['amount_eur'] for row in rows if row['direction'] == 'expense'), 2)
+    income_total = sum(_cents(row['amount_eur']) for row in rows if row['direction'] == 'income')
+    expense_total = sum(_cents(row['amount_eur']) for row in rows if row['direction'] == 'expense')
 
     def aggregate(source_rows, key_name, key_func):
         buckets = {}
         for row in source_rows:
             key = key_func(row)
-            bucket = buckets.setdefault(key, {key_name: key, 'income': 0.0, 'expense': 0.0, 'count': 0})
-            bucket['income' if row['direction'] == 'income' else 'expense'] += row['amount_eur']
+            bucket = buckets.setdefault(key, {key_name: key, 'income': 0, 'expense': 0, 'count': 0})
+            bucket['income' if row['direction'] == 'income' else 'expense'] += _cents(row['amount_eur'])
             bucket['count'] += 1
         result = []
         for bucket in buckets.values():
-            bucket['income'] = round(bucket['income'], 2)
-            bucket['expense'] = round(bucket['expense'], 2)
-            bucket['result'] = round(bucket['income'] - bucket['expense'], 2)
+            income_cents, expense_cents = bucket['income'], bucket['expense']
+            bucket['income'] = income_cents / 100
+            bucket['expense'] = expense_cents / 100
+            bucket['result'] = (income_cents - expense_cents) / 100
             result.append(bucket)
         return result
 
@@ -7170,13 +7179,13 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
         'by_category': by_category,
         'by_year': by_year,
         'summary': {
-            'income_total': income_total,
-            'expense_total': expense_total,
-            'result': round(income_total - expense_total, 2),
+            'income_total': income_total / 100,
+            'expense_total': expense_total / 100,
+            'result': (income_total - expense_total) / 100,
             'entry_count': len(rows),
-            'cash_balance': round(cash_balance, 2),
-            'bank_balance': round(bank_balance, 2),
-            'balance': round(balance, 2),
+            'cash_balance': cash_balance / 100,
+            'bank_balance': bank_balance / 100,
+            'balance': balance / 100,
             'missing_receipts': len([row for row in rows
                                      if row['source'] == 'manual' and not row['has_receipt']]),
         },
