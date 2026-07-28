@@ -138,24 +138,36 @@ class CashbookTests(unittest.TestCase):
         response = self._post_entry(client, description='   ')
         self.assertIn('Begründung', response.get_data(as_text=True))
 
-    def test_balance_combines_manual_entries_and_payment_bookings(self):
+    def _seed_invoice(self, db):
+        """Abrechnung mit drei Mitgliedern: gebucht neu, gebucht alt, offen."""
+        db.execute("INSERT INTO members (id, name) VALUES (1, 'Zahlendes Mitglied')")
+        db.execute("INSERT INTO members (id, name) VALUES (2, 'Einspeisendes Mitglied')")
+        db.execute("INSERT INTO members (id, name) VALUES (3, 'Offenes Mitglied')")
+        db.execute("""INSERT INTO invoices (id, period_from, period_to, status)
+                      VALUES (1, '2026-01-01', '2026-03-31', 'sent')""")
+        # Mitglied 1: ueber payment_bookings gebucht (neues Verfahren).
+        db.execute("""INSERT INTO invoice_items
+                      (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur, paid, paid_at)
+                      VALUES (1, 1, 'consumption', 1000, 20, 200.0, 1, '2026-01-10 12:00:00')""")
+        db.execute("""INSERT INTO payment_bookings
+                      (invoice_id, member_id, amount_eur, direction, booking_date)
+                      VALUES (1, 1, 200.0, 'member_to_eeg', '2026-01-10')""")
+        # Mitglied 2: nur ueber invoice_items bezahlt (altes Verfahren ohne Buchung).
+        db.execute("""INSERT INTO invoice_items
+                      (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur, paid, paid_at)
+                      VALUES (1, 2, 'generation', 500, 10, 50.0, 1, '2026-01-20 09:30:00')""")
+        # Mitglied 3: offen, dazu eine stornierte Buchung.
+        db.execute("""INSERT INTO invoice_items
+                      (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur, paid)
+                      VALUES (1, 3, 'consumption', 5000, 20, 999.0, 0)""")
+        db.execute("""INSERT INTO payment_bookings
+                      (invoice_id, member_id, amount_eur, direction, booking_date, reversed_at)
+                      VALUES (1, 3, 999.0, 'member_to_eeg', '2026-01-25', '2026-01-26')""")
+
+    def test_balance_combines_manual_entries_and_all_invoices(self):
         with eegapp.app.app_context():
             db = eegapp.get_db()
-            db.execute("INSERT INTO members (id, name) VALUES (1, 'Testmitglied')")
-            db.execute("""INSERT INTO invoices (id, period_from, period_to)
-                          VALUES (1, '2026-01-01', '2026-03-31')""")
-            # Positiver Betrag: Mitglied zahlt an die EEG (Stromverkauf).
-            db.execute("""INSERT INTO payment_bookings
-                          (invoice_id, member_id, amount_eur, direction, booking_date)
-                          VALUES (1, 1, 200.0, 'member_to_eeg', '2026-01-10')""")
-            # Negativer Betrag: EEG zahlt an das Mitglied (Stromeinkauf).
-            db.execute("""INSERT INTO payment_bookings
-                          (invoice_id, member_id, amount_eur, direction, booking_date)
-                          VALUES (1, 1, -50.0, 'eeg_to_member', '2026-01-20')""")
-            # Stornierte Buchungen zaehlen nicht mit.
-            db.execute("""INSERT INTO payment_bookings
-                          (invoice_id, member_id, amount_eur, direction, booking_date, reversed_at)
-                          VALUES (1, 1, 999.0, 'member_to_eeg', '2026-01-25', '2026-01-26')""")
+            self._seed_invoice(db)
             db.execute("""INSERT INTO cashbook_entries
                           (entry_date, direction, amount_eur, payment_method, description, document_number)
                           VALUES ('2026-02-01', 'expense', 30.0, 'cash', 'Bewirtung', '2026-0001')""")
@@ -173,6 +185,54 @@ class CashbookTests(unittest.TestCase):
         categories = {row['category'] for row in book['rows']}
         self.assertIn(eegapp.CASHBOOK_ENERGY_CATEGORIES['income'], categories)
         self.assertIn(eegapp.CASHBOOK_ENERGY_CATEGORIES['expense'], categories)
+
+    def test_invoice_paid_without_payment_booking_is_included(self):
+        """Aeltere Abrechnungen wurden ohne payment_bookings gebucht."""
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            self._seed_invoice(db)
+            db.commit()
+            rows = eegapp.build_cashbook(db)['rows']
+
+        by_member = {row['member_id']: row for row in rows}
+        self.assertIn(2, by_member)
+        self.assertEqual(by_member[2]['entry_date'], '2026-01-20')
+        self.assertEqual(by_member[2]['direction'], 'expense')
+        self.assertEqual(by_member[2]['amount_eur'], 50.0)
+
+    def test_unpaid_invoice_is_not_in_cashbook(self):
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            self._seed_invoice(db)
+            db.commit()
+            rows = eegapp.build_cashbook(db)['rows']
+        self.assertNotIn(3, {row['member_id'] for row in rows})
+
+    def test_carried_over_invoice_is_counted_only_once(self):
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            db.execute("INSERT INTO members (id, name) VALUES (1, 'Testmitglied')")
+            db.execute("""INSERT INTO invoices (id, period_from, period_to, status)
+                          VALUES (1, '2026-01-01', '2026-03-31', 'sent')""")
+            db.execute("""INSERT INTO invoices (id, period_from, period_to, status)
+                          VALUES (2, '2026-04-01', '2026-06-30', 'sent')""")
+            # Abrechnung 1 blieb offen und wurde nach Abrechnung 2 vorgetragen.
+            db.execute("""INSERT INTO invoice_items
+                          (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur, paid)
+                          VALUES (1, 1, 'consumption', 100, 20, 20.0, 0)""")
+            db.execute("""INSERT INTO invoice_carryovers
+                          (invoice_id, member_id, source_invoice_id, amount_eur)
+                          VALUES (2, 1, 1, 20.0)""")
+            db.execute("""INSERT INTO invoice_items
+                          (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur, paid, paid_at)
+                          VALUES (2, 1, 'consumption', 150, 20, 30.0, 1, '2026-07-05 12:00:00')""")
+            db.commit()
+            book = eegapp.build_cashbook(db)
+
+        self.assertEqual(book['summary']['entry_count'], 1)
+        # 30 EUR aus Abrechnung 2 plus 20 EUR Vortrag aus Abrechnung 1.
+        self.assertEqual(book['summary']['income_total'], 50.0)
+        self.assertIn('inkl. Vortrag', book['rows'][0]['description'])
 
     def test_filter_keeps_overall_balance(self):
         with eegapp.app.app_context():
@@ -205,18 +265,15 @@ class CashbookTests(unittest.TestCase):
             count = eegapp.get_db().execute("SELECT COUNT(*) FROM cashbook_entries").fetchone()[0]
         self.assertEqual(count, 0)
 
-    def test_payment_booking_cannot_be_deleted_via_cashbook(self):
+    def test_invoice_movement_cannot_be_deleted_via_cashbook(self):
         with eegapp.app.app_context():
             db = eegapp.get_db()
-            db.execute("INSERT INTO members (id, name) VALUES (1, 'Testmitglied')")
-            db.execute("""INSERT INTO invoices (id, period_from, period_to)
-                          VALUES (1, '2026-01-01', '2026-03-31')""")
-            db.execute("""INSERT INTO payment_bookings
-                          (invoice_id, member_id, amount_eur, direction, booking_date)
-                          VALUES (1, 1, 200.0, 'member_to_eeg', '2026-01-10')""")
+            self._seed_invoice(db)
             db.commit()
             rows = eegapp.build_cashbook(db)['rows']
-        self.assertFalse(rows[0]['deletable'])
+        energy_rows = [row for row in rows if row['source'] == 'energy']
+        self.assertTrue(energy_rows)
+        self.assertFalse(any(row['deletable'] for row in energy_rows))
 
     def test_category_can_be_created_and_removed(self):
         client = self._client()

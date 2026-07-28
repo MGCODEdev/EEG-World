@@ -7056,44 +7056,46 @@ def _cashbook_manual_rows(db):
 
 
 def _cashbook_energy_rows(db):
-    """Stromverkauf und -einkauf aus den nicht stornierten Zahlungsbuchungen."""
-    rows = db.execute("""
-        SELECT b.id, b.invoice_id, b.member_id, b.amount_eur, b.booking_date,
-               b.note, b.recorded_by_username, m.name AS member_name,
-               i.period_from, i.period_to
-        FROM payment_bookings b
-        JOIN members m ON m.id = b.member_id
-        LEFT JOIN invoices i ON i.id = b.invoice_id
-        WHERE b.reversed_at IS NULL
-    """).fetchall()
+    """Stromverkauf und -einkauf aus allen gebuchten Abrechnungen.
+
+    Grundlage sind die Netto-Zahlungszeilen je Mitglied und Abrechnung. Damit
+    sind auch aeltere Abrechnungen enthalten, die noch ohne payment_bookings
+    gebucht wurden. Auf Folgeabrechnungen vorgetragene Zeilen bleiben aussen
+    vor, weil ihr Betrag dort bereits enthalten ist.
+    """
+    booked_by = {row['id']: row['recorded_by_username'] for row in db.execute(
+        "SELECT id, recorded_by_username FROM payment_bookings").fetchall()}
     entries = []
-    for row in rows:
-        signed = round(row['amount_eur'] or 0, 2)
-        direction = 'income' if signed >= 0 else 'expense'
-        description = f'Abrechnung #{row["invoice_id"]}'
-        if row['period_from'] and row['period_to']:
-            description += f' ({_date_de(row["period_from"])} bis {_date_de(row["period_to"])})'
-        if row['note']:
-            description += f' – {row["note"]}'
+    for row in get_payment_rows(db):
+        amount = row['net_total']
+        if not row['paid'] or abs(amount) < 0.005:
+            continue
+        direction = 'income' if amount > 0 else 'expense'
+        description = (f'Abrechnung #{row["invoice_id"]} '
+                       f'({_date_de(row["period_from"])} bis {_date_de(row["period_to"])})')
+        if row['carryover_total']:
+            description += f', inkl. Vortrag {row["carryover_total"]:.2f} €'
+        if row['booking_note']:
+            description += f' – {row["booking_note"]}'
         entries.append({
             'source': 'energy',
-            'id': row['id'],
-            'entry_date': row['booking_date'],
+            'id': f'{row["invoice_id"]}-{row["member_id"]}',
+            'entry_date': row['booking_date'] or row['reference_date'].isoformat(),
             'direction': direction,
-            'amount_eur': abs(signed),
-            'signed_amount': signed,
+            'amount_eur': abs(amount),
+            'signed_amount': amount,
             'category': CASHBOOK_ENERGY_CATEGORIES[direction],
             'category_id': None,
-            # Zahlungsbuchungen laufen immer ueber das Bankkonto.
+            # Abrechnungen werden immer ueber das Bankkonto beglichen.
             'payment_method': 'transfer',
             'description': description,
             'counterparty': row['member_name'] or '',
-            'document_number': f'Z-{row["id"]:04d}',
+            'document_number': f'A{row["invoice_id"]}-{row["member_id"]:03d}',
             'has_receipt': False,
             'receipt_filename': '',
             'member_id': row['member_id'],
             'invoice_id': row['invoice_id'],
-            'recorded_by': row['recorded_by_username'] or '',
+            'recorded_by': booked_by.get(row['booking_id'], '') or '',
             'deletable': False,
         })
     return entries
