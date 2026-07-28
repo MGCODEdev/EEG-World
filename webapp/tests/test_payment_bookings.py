@@ -43,11 +43,13 @@ class PaymentBookingTests(unittest.TestCase):
             sess['_fresh'] = True
         return client
 
-    def _book(self, client, amount=None, booking_date=None):
+    def _book(self, client, amount=None, booking_date=None, reason='Testbuchung laut Kontoauszug'):
         data = {'invoice_id': '1', 'member_id': '1',
                 'booking_date': booking_date or date.today().isoformat()}
         if amount is not None:
             data['amount_eur'] = amount
+        if reason is not None:
+            data['change_reason'] = reason
         return client.post('/payments/mark_paid', data=data, follow_redirects=True)
 
     def _row(self):
@@ -105,7 +107,8 @@ class PaymentBookingTests(unittest.TestCase):
         booking_id = self._row()['bookings'][0]['id']
         response = client.post(f'/payments/bookings/{booking_id}/edit',
                                data={'amount_eur': '99,50',
-                                     'booking_date': date.today().isoformat()},
+                                     'booking_date': date.today().isoformat(),
+                                     'change_reason': 'Bankbeleg weicht ab'},
                                follow_redirects=True)
         self.assertEqual(response.status_code, 200)
         row = self._row()
@@ -118,7 +121,8 @@ class PaymentBookingTests(unittest.TestCase):
         self._book(client, amount='60')
         booking_id = self._row()['bookings'][0]['id']
         client.post(f'/payments/bookings/{booking_id}/edit',
-                    data={'amount_eur': '100', 'booking_date': date.today().isoformat()},
+                    data={'amount_eur': '100', 'booking_date': date.today().isoformat(),
+                          'change_reason': 'Restzahlung eingegangen'},
                     follow_redirects=True)
         self.assertTrue(self._row()['paid'])
 
@@ -126,11 +130,100 @@ class PaymentBookingTests(unittest.TestCase):
         client = self._client()
         self._book(client, amount='60')
         booking_id = self._row()['bookings'][0]['id']
-        client.post(f'/payments/bookings/{booking_id}/reverse', follow_redirects=True)
+        client.post(f'/payments/bookings/{booking_id}/reverse',
+                    data={'change_reason': 'Falsch erfasst'}, follow_redirects=True)
         row = self._row()
         self.assertEqual(row['bookings'], [])
         self.assertEqual(row['open_amount'], 100.0)
         self.assertFalse(row['paid'])
+
+    def test_edit_requires_change_reason(self):
+        client = self._client()
+        self._book(client, amount='100')
+        booking_id = self._row()['bookings'][0]['id']
+        response = client.post(f'/payments/bookings/{booking_id}/edit',
+                               data={'amount_eur': '90', 'booking_date': date.today().isoformat(),
+                                     'change_reason': 'kurz'},
+                               follow_redirects=True)
+        self.assertIn('Änderungsgrund', response.get_data(as_text=True))
+        self.assertEqual(self._row()['booked_total'], 100.0)
+
+    def test_reverse_requires_change_reason(self):
+        client = self._client()
+        self._book(client, amount='100')
+        booking_id = self._row()['bookings'][0]['id']
+        response = client.post(f'/payments/bookings/{booking_id}/reverse',
+                               data={'change_reason': ''}, follow_redirects=True)
+        self.assertIn('Änderungsgrund', response.get_data(as_text=True))
+        self.assertEqual(len(self._row()['bookings']), 1)
+
+    def test_mark_unpaid_requires_change_reason(self):
+        client = self._client()
+        self._book(client)
+        response = client.post('/payments/mark_unpaid',
+                               data={'invoice_id': '1', 'member_id': '1'},
+                               follow_redirects=True)
+        self.assertIn('Änderungsgrund', response.get_data(as_text=True))
+        self.assertTrue(self._row()['paid'])
+
+    def test_deviating_amount_requires_change_reason(self):
+        client = self._client()
+        response = self._book(client, amount='60', reason=None)
+        self.assertIn('Änderungsgrund', response.get_data(as_text=True))
+        self.assertEqual(self._row()['bookings'], [])
+
+    def test_matching_amount_needs_no_reason(self):
+        client = self._client()
+        response = self._book(client, reason=None)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self._row()['paid'])
+
+    def test_change_history_records_reason(self):
+        client = self._client()
+        self._book(client, amount='60', reason='Teilzahlung laut Kontoauszug')
+        booking_id = self._row()['bookings'][0]['id']
+        client.post(f'/payments/bookings/{booking_id}/edit',
+                    data={'amount_eur': '70', 'booking_date': date.today().isoformat(),
+                          'change_reason': 'Betrag laut Bankbeleg korrigiert'},
+                    follow_redirects=True)
+        changes = self._row()['bookings'][0]['changes']
+        self.assertEqual([c['action'] for c in changes], ['create', 'edit'])
+        self.assertEqual(changes[0]['reason'], 'Teilzahlung laut Kontoauszug')
+        self.assertEqual(changes[1]['reason'], 'Betrag laut Bankbeleg korrigiert')
+        self.assertEqual(changes[1]['old_amount_eur'], 60.0)
+        self.assertEqual(changes[1]['new_amount_eur'], 70.0)
+
+    def test_reason_is_written_to_audit_log(self):
+        client = self._client()
+        self._book(client, amount='60', reason='Teilzahlung laut Kontoauszug')
+        booking_id = self._row()['bookings'][0]['id']
+        client.post(f'/payments/bookings/{booking_id}/edit',
+                    data={'amount_eur': '70', 'booking_date': date.today().isoformat(),
+                          'change_reason': 'Betrag laut Bankbeleg korrigiert'},
+                    follow_redirects=True)
+        with eegapp.app.app_context():
+            details = [r['detail'] for r in eegapp.get_db().execute(
+                "SELECT detail FROM audit_log WHERE action LIKE 'payment%' ORDER BY id")]
+        self.assertTrue(any('Grund: Teilzahlung laut Kontoauszug' in d for d in details))
+        self.assertTrue(any('Grund: Betrag laut Bankbeleg korrigiert' in d for d in details))
+
+    def test_unchanged_edit_is_rejected(self):
+        client = self._client()
+        self._book(client, amount='100')
+        booking_id = self._row()['bookings'][0]['id']
+        response = client.post(f'/payments/bookings/{booking_id}/edit',
+                               data={'amount_eur': '100', 'booking_date': date.today().isoformat(),
+                                     'change_reason': 'Versehentlich gespeichert'},
+                               follow_redirects=True)
+        self.assertIn('unverändert', response.get_data(as_text=True))
+
+    def test_history_is_visible_on_payments_page(self):
+        client = self._client()
+        self._book(client, amount='60', reason='Teilzahlung laut Kontoauszug')
+        html = client.get('/payments').get_data(as_text=True)
+        self.assertIn('Änderungsverlauf', html)
+        self.assertIn('Teilzahlung laut Kontoauszug', html)
+        self.assertIn('data-confirm-booking', html)
 
     def test_zero_amount_is_rejected(self):
         response = self._book(self._client(), amount='0')

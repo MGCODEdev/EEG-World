@@ -677,6 +677,23 @@ def init_db():
         FOREIGN KEY (category_id) REFERENCES cashbook_categories(id)
     )""")
     db.execute("CREATE INDEX IF NOT EXISTS idx_cashbook_entries_date ON cashbook_entries(entry_date)")
+    # Aenderungshistorie der Zahlungsbuchungen inklusive Begruendung
+    db.execute("""CREATE TABLE IF NOT EXISTS payment_booking_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        booking_id INTEGER NOT NULL,
+        changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        changed_by_user_id INTEGER,
+        changed_by_username TEXT,
+        action TEXT NOT NULL,              -- create, edit, reverse
+        old_amount_eur REAL,
+        new_amount_eur REAL,
+        old_booking_date TEXT,
+        new_booking_date TEXT,
+        reason TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (booking_id) REFERENCES payment_bookings(id)
+    )""")
+    db.execute("""CREATE INDEX IF NOT EXISTS idx_payment_booking_changes_booking
+                  ON payment_booking_changes(booking_id)""")
     # Contracts-Tabelle
     db.execute("""CREATE TABLE IF NOT EXISTS contracts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1720,6 +1737,16 @@ def _v2_payments_data(db):
             'booking_date': booking['booking_date'],
             'note': booking['note'] or '',
             'recorded_by': booking['recorded_by_username'] or '',
+            'changes': [{
+                'changed_at': change['changed_at'],
+                'changed_by': change['changed_by_username'] or '',
+                'action': change['action'],
+                'old_amount_eur': change['old_amount_eur'],
+                'new_amount_eur': change['new_amount_eur'],
+                'old_booking_date': change['old_booking_date'],
+                'new_booking_date': change['new_booking_date'],
+                'reason': change['reason'] or '',
+            } for change in booking['changes']],
         } for booking in row['bookings']]
         return item
 
@@ -6670,10 +6697,67 @@ def _active_payment_bookings(db, member_id=None):
         WHERE reversed_at IS NULL {member_filter}
         ORDER BY booking_date, id
     """, params).fetchall()
+    changes = _booking_change_map(db, member_id=member_id)
     grouped = {}
     for row in rows:
-        grouped.setdefault((row['invoice_id'], row['member_id']), []).append(dict(row))
+        booking = dict(row)
+        booking['changes'] = changes.get(booking['id'], [])
+        grouped.setdefault((row['invoice_id'], row['member_id']), []).append(booking)
     return grouped
+
+
+def _booking_change_map(db, member_id=None):
+    """Aenderungshistorie je Buchung, aelteste zuerst."""
+    params = []
+    member_filter = ''
+    if member_id is not None:
+        member_filter = 'WHERE b.member_id=?'
+        params.append(member_id)
+    rows = db.execute(f"""
+        SELECT c.id, c.booking_id, c.changed_at, c.changed_by_username, c.action,
+               c.old_amount_eur, c.new_amount_eur, c.old_booking_date,
+               c.new_booking_date, c.reason
+        FROM payment_booking_changes c
+        JOIN payment_bookings b ON b.id = c.booking_id
+        {member_filter}
+        ORDER BY c.id
+    """, params).fetchall()
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row['booking_id'], []).append(dict(row))
+    return grouped
+
+
+def _record_booking_change(db, booking_id, action, reason, old=None, new=None):
+    """Schreibt einen Eintrag in die Aenderungshistorie einer Buchung."""
+    old = old or {}
+    new = new or {}
+    db.execute("""
+        INSERT INTO payment_booking_changes (
+            booking_id, changed_by_user_id, changed_by_username, action,
+            old_amount_eur, new_amount_eur, old_booking_date, new_booking_date, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        booking_id,
+        current_user.id if current_user.is_authenticated else None,
+        current_user.username if current_user.is_authenticated else None,
+        action,
+        old.get('amount'), new.get('amount'),
+        old.get('date'), new.get('date'),
+        reason or '',
+    ))
+
+
+MIN_CHANGE_REASON_LENGTH = 5
+
+
+def _require_change_reason(value):
+    """Der Aenderungsgrund ist Pflicht und wird in der Historie festgehalten."""
+    reason = (value or '').strip()
+    if len(reason) < MIN_CHANGE_REASON_LENGTH:
+        raise ValueError(f'Bitte einen Änderungsgrund mit mindestens '
+                         f'{MIN_CHANGE_REASON_LENGTH} Zeichen angeben.')
+    return reason[:500]
 
 
 def _parse_booking_amount(value):
@@ -7038,7 +7122,9 @@ def payments():
     """Überweisungsliste: offene und bezahlte Forderungen."""
     db = get_db()
     payment_list = get_payment_rows(db)
-    return render_template('payments.html', payments=payment_list, today=local_now().date().isoformat())
+    return render_template('payments.html', payments=payment_list,
+                           min_change_reason_length=MIN_CHANGE_REASON_LENGTH,
+                           today=local_now().date().isoformat())
 
 
 @app.route('/mitgliederkonten')
@@ -7098,8 +7184,13 @@ def payment_mark_paid():
             amount = row['open_amount']
         if abs(amount) < 0.005:
             raise ValueError('Der Buchungsbetrag darf nicht null sein.')
+        # Weicht der gebuchte Betrag vom offenen Betrag ab, ist eine Begruendung Pflicht.
+        deviates = abs(amount - row['open_amount']) >= 0.005
+        reason = (request.form.get('change_reason') or '').strip()[:500]
+        if deviates:
+            reason = _require_change_reason(request.form.get('change_reason'))
 
-        db.execute("""
+        cursor = db.execute("""
             INSERT INTO payment_bookings (
                 invoice_id, member_id, amount_eur, direction, booking_date,
                 recorded_by_user_id, recorded_by_username, note
@@ -7114,13 +7205,16 @@ def payment_mark_paid():
             current_user.username if current_user.is_authenticated else None,
             note,
         ))
+        _record_booking_change(db, cursor.lastrowid, 'create', reason,
+                               new={'amount': amount, 'date': booking_date.isoformat()})
         updated = _apply_booking_state(db, invoice_id, member_id, booking_date)
         db.commit()
         action_label = 'Zahlung' if amount > 0 else 'Gutschrift'
         rest = updated['open_amount'] if updated else 0.0
         audit_log('payment_paid', f'{action_label} gebucht: {row["member_name"]}, Rechnung {invoice_id}, '
                                   f'Betrag {amount:.2f} EUR, Buchungsdatum {booking_date.isoformat()}, '
-                                  f'Rest {rest:.2f} EUR')
+                                  f'Rest {rest:.2f} EUR'
+                                  + (f', Grund: {reason}' if reason else ''))
         message = (f'{action_label} über {abs(amount):.2f} € für {row["member_name"]} '
                    f'mit Buchungsdatum {booking_date.strftime("%d.%m.%Y")} gebucht.')
         if abs(rest) >= 0.005:
@@ -7158,19 +7252,27 @@ def payment_booking_edit(id):
             raise ValueError('Der Buchungsbetrag darf nicht null sein.')
         booking_date = _parse_booking_date(request.form.get('booking_date') or booking['booking_date'])
         note = (request.form.get('booking_note') or '').strip()[:500]
+        reason = _require_change_reason(request.form.get('change_reason'))
+        if (abs(amount - booking['amount_eur']) < 0.005
+                and booking_date.isoformat() == booking['booking_date']):
+            raise ValueError('Betrag und Buchungsdatum sind unverändert.')
 
         db.execute("""UPDATE payment_bookings
                       SET amount_eur=?, direction=?, booking_date=?, note=?
                       WHERE id=?""",
                    (amount, 'member_to_eeg' if amount > 0 else 'eeg_to_member',
                     booking_date.isoformat(), note, id))
+        _record_booking_change(db, id, 'edit', reason,
+                               old={'amount': booking['amount_eur'], 'date': booking['booking_date']},
+                               new={'amount': amount, 'date': booking_date.isoformat()})
         updated = _apply_booking_state(db, booking['invoice_id'], booking['member_id'], booking_date)
         db.commit()
         rest = updated['open_amount'] if updated else 0.0
         audit_log('payment_booking_edit',
                   f'Buchung #{id} geändert: {booking["member_name"]}, Rechnung {booking["invoice_id"]}, '
                   f'{booking["amount_eur"]:.2f} → {amount:.2f} EUR, '
-                  f'Buchungsdatum {booking_date.isoformat()}, Rest {rest:.2f} EUR')
+                  f'Buchungsdatum {booking["booking_date"]} → {booking_date.isoformat()}, '
+                  f'Rest {rest:.2f} EUR, Grund: {reason}')
         message = f'Buchung für {booking["member_name"]} auf {amount:.2f} € geändert.'
         if abs(rest) >= 0.005:
             message += (f' Offen bleiben {abs(rest):.2f} € '
@@ -7200,6 +7302,7 @@ def payment_booking_reverse(id):
             raise ValueError('Die Buchung wurde nicht gefunden.')
         if booking['reversed_at']:
             raise ValueError('Diese Buchung ist bereits storniert.')
+        reason = _require_change_reason(request.form.get('change_reason'))
         db.execute("""
             UPDATE payment_bookings
             SET reversed_at=datetime('now'), reversed_by_user_id=?,
@@ -7208,14 +7311,16 @@ def payment_booking_reverse(id):
         """, (
             current_user.id if current_user.is_authenticated else None,
             current_user.username if current_user.is_authenticated else None,
-            (request.form.get('reverse_note') or 'Einzelbuchung storniert').strip()[:500],
+            reason,
             id,
         ))
+        _record_booking_change(db, id, 'reverse', reason,
+                               old={'amount': booking['amount_eur'], 'date': booking['booking_date']})
         _apply_booking_state(db, booking['invoice_id'], booking['member_id'])
         db.commit()
         audit_log('payment_booking_reverse',
                   f'Buchung #{id} storniert: {booking["member_name"]}, Rechnung {booking["invoice_id"]}, '
-                  f'{booking["amount_eur"]:.2f} EUR')
+                  f'{booking["amount_eur"]:.2f} EUR, Grund: {reason}')
         flash(f'Buchung über {booking["amount_eur"]:.2f} € wurde storniert.', 'info')
     except Exception as e:
         db.rollback()
@@ -7237,6 +7342,10 @@ def payment_mark_unpaid():
             raise ValueError('Die Buchung wurde nicht gefunden.')
         if not row['paid']:
             raise ValueError('Diese Buchung ist bereits offen.')
+        reason = _require_change_reason(request.form.get('change_reason'))
+        for booking in row['bookings']:
+            _record_booking_change(db, booking['id'], 'reverse', reason,
+                                   old={'amount': booking['amount_eur'], 'date': booking['booking_date']})
         db.execute("""
             UPDATE payment_bookings
             SET reversed_at=datetime('now'),
@@ -7247,14 +7356,15 @@ def payment_mark_unpaid():
         """, (
             current_user.id if current_user.is_authenticated else None,
             current_user.username if current_user.is_authenticated else None,
-            'Zahlung durch Admin auf offen zurückgesetzt',
+            reason,
             invoice_id,
             member_id,
         ))
         db.execute("""UPDATE invoice_items SET paid=0, paid_at=NULL
                       WHERE invoice_id=? AND member_id=?""", (invoice_id, member_id))
         db.commit()
-        audit_log('payment_unpaid', f'Buchung storniert: {row["member_name"]}, Rechnung {invoice_id}')
+        audit_log('payment_unpaid', f'Buchung storniert: {row["member_name"]}, Rechnung {invoice_id}, '
+                                    f'Grund: {reason}')
         flash('Buchung wurde storniert und wieder als offen markiert.', 'info')
     except Exception as e:
         db.rollback()

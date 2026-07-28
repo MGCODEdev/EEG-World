@@ -71,10 +71,12 @@
                 <td class="text-center">
                     <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline"
                           id="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
-                          onsubmit="return confirm('Diese Zahlung wirklich mit dem eingegebenen Buchungsdatum speichern?')">
+                          data-confirm-booking data-action-label="Zahlung buchen"
+                          data-member="{{ p['member_name'] }}" data-expected="{{ "%.2f"|format(p['open_amount']) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
                         <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                        <input type="hidden" name="change_reason" value="">
                         <button type="submit" class="btn btn-sm btn-success" title="Als gebucht markieren">
                             <i class="bi bi-check-lg"></i> Gebucht
                         </button>
@@ -150,10 +152,12 @@
                 <td class="text-center">
                     <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline"
                           id="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
-                          onsubmit="return confirm('Diese Gutschrift wirklich mit dem eingegebenen Buchungsdatum speichern?')">
+                          data-confirm-booking data-action-label="Gutschrift auszahlen"
+                          data-member="{{ p['member_name'] }}" data-expected="{{ "%.2f"|format(p['open_amount']) }}">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
                         <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                        <input type="hidden" name="change_reason" value="">
                         <button type="submit" class="btn btn-sm btn-success" title="Als überwiesen markieren">
                             <i class="bi bi-check-lg"></i> Überwiesen
                         </button>
@@ -258,22 +262,98 @@
                     </td>
                     <td class="text-center">
                         <form method="post" action="{{ url_for('payment_booking_edit', id=b['id']) }}" class="d-inline"
-                              id="edit-booking-{{ b['id'] }}">
+                              id="edit-booking-{{ b['id'] }}"
+                              data-confirm-booking data-action-label="Buchung ändern"
+                              data-member="{{ p['member_name'] }}" data-original="{{ "%.2f"|format(b['amount_eur']) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="booking_note" value="{{ b['note'] or '' }}">
+                            <input type="hidden" name="change_reason" value="">
                             <button type="submit" class="btn btn-sm btn-outline-primary" title="Betrag und Datum speichern">
                                 <i class="bi bi-save"></i>
                             </button>
                         </form>
                         <form method="post" action="{{ url_for('payment_booking_reverse', id=b['id']) }}" class="d-inline"
-                              onsubmit="return confirm('Diese Buchung wirklich stornieren?')">
+                              data-confirm-booking data-action-label="Buchung stornieren"
+                              data-member="{{ p['member_name'] }}" data-original="{{ "%.2f"|format(b['amount_eur']) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="change_reason" value="">
                             <button type="submit" class="btn btn-sm btn-outline-warning" title="Diese Buchung stornieren">
                                 <i class="bi bi-arrow-counterclockwise"></i>
                             </button>
                         </form>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" title="Änderungsverlauf anzeigen"
+                                data-bs-toggle="modal" data-bs-target="#history-{{ b['id'] }}">
+                            <i class="bi bi-clock-history"></i>
+                            {% if b['changes']|selectattr('reason')|list|length > 1 %}
+                            <span class="badge bg-secondary">{{ b['changes']|selectattr('reason')|list|length }}</span>
+                            {% endif %}
+                        </button>
                     </td>
                 </tr>
+                <tr class="d-none"><td colspan="5">
+                    <div class="modal fade" id="history-{{ b['id'] }}" tabindex="-1" aria-hidden="true">
+                        <div class="modal-dialog modal-lg modal-dialog-centered">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title">
+                                        <i class="bi bi-clock-history"></i>
+                                        Änderungsverlauf – {{ p['member_name'] }}, Abrechnung #{{ p['invoice_id'] }}
+                                    </h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+                                </div>
+                                <div class="modal-body">
+                                    {% if b['note'] %}
+                                    <p class="mb-3"><strong>Notiz zur Buchung:</strong> {{ b['note'] }}</p>
+                                    {% endif %}
+                                    <table class="table table-sm mb-0">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th>Zeitpunkt</th>
+                                                <th>Vorgang</th>
+                                                <th>Änderung</th>
+                                                <th>Grund</th>
+                                                <th>Benutzer</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                        {% for c in b['changes'] %}
+                                            <tr>
+                                                <td><small>{{ c['changed_at']|localdatetime }}</small></td>
+                                                <td>
+                                                    {% if c['action'] == 'create' %}<span class="badge bg-success">angelegt</span>
+                                                    {% elif c['action'] == 'edit' %}<span class="badge bg-primary">geändert</span>
+                                                    {% else %}<span class="badge bg-warning text-dark">storniert</span>{% endif %}
+                                                </td>
+                                                <td>
+                                                    <small>
+                                                    {% if c['old_amount_eur'] is not none and c['new_amount_eur'] is not none %}
+                                                        {{ "%.2f"|format(c['old_amount_eur']) }} € → {{ "%.2f"|format(c['new_amount_eur']) }} €
+                                                    {% elif c['new_amount_eur'] is not none %}
+                                                        {{ "%.2f"|format(c['new_amount_eur']) }} €
+                                                    {% elif c['old_amount_eur'] is not none %}
+                                                        {{ "%.2f"|format(c['old_amount_eur']) }} €
+                                                    {% endif %}
+                                                    {% if c['old_booking_date'] and c['new_booking_date'] and c['old_booking_date'] != c['new_booking_date'] %}
+                                                        <br>{{ c['old_booking_date']|localdate }} → {{ c['new_booking_date']|localdate }}
+                                                    {% endif %}
+                                                    </small>
+                                                </td>
+                                                <td>{% if c['reason'] %}{{ c['reason'] }}{% else %}<span class="text-muted">–</span>{% endif %}</td>
+                                                <td><small>{{ c['changed_by_username'] or '–' }}</small></td>
+                                            </tr>
+                                        {% else %}
+                                            <tr><td colspan="5" class="text-muted text-center py-3">Keine Änderungen aufgezeichnet.</td></tr>
+                                        {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Schließen</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </td></tr>
                 {% endfor %}
             {% endfor %}
             {% for p in payments if p['paid'] and not p['bookings'] and p['net_total']|abs >= 0.005 %}
@@ -284,10 +364,12 @@
                     <td><small>{% if p['paid_at'] %}{{ p['paid_at']|localdate }}{% else %}–{% endif %}</small></td>
                     <td class="text-center">
                         <form method="post" action="{{ url_for('payment_mark_unpaid') }}" class="d-inline"
-                              onsubmit="return confirm('Diese Buchung wirklich stornieren und wieder auf offen setzen?')">
+                              data-confirm-booking data-action-label="Buchung zurücksetzen"
+                              data-member="{{ p['member_name'] }}" data-original="{{ "%.2f"|format(p['net_total']) }}">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
                             <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                            <input type="hidden" name="change_reason" value="">
                             <button type="submit" class="btn btn-sm btn-outline-warning" title="Zurücksetzen">
                                 <i class="bi bi-arrow-counterclockwise"></i>
                             </button>
@@ -302,4 +384,157 @@
         </table>
     </div>
 </div>
+
+<!-- Sicherheitsabfrage mit Pflicht-Änderungsgrund -->
+<div class="modal fade" id="bookingConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-shield-exclamation"></i> <span id="bookingConfirmTitle">Änderung bestätigen</span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2" id="bookingConfirmLead"></p>
+                <table class="table table-sm mb-3"><tbody id="bookingConfirmDetails"></tbody></table>
+                <div id="bookingConfirmWarning" class="alert alert-warning py-2 d-none"></div>
+                <label class="form-label" for="bookingConfirmReason">
+                    Änderungsgrund <span id="bookingConfirmReasonRequired" class="text-danger">*</span>
+                </label>
+                <textarea class="form-control" id="bookingConfirmReason" rows="3"
+                          placeholder="z.B. Betrag laut Kontoauszug vom 28.07.2026"></textarea>
+                <div class="form-text">
+                    Der Grund wird bei der Buchung im Änderungsverlauf und im Audit-Log gespeichert.
+                </div>
+                <div class="text-danger small mt-2 d-none" id="bookingConfirmError"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+                <button type="button" class="btn btn-primary" id="bookingConfirmSubmit">
+                    <i class="bi bi-check-lg"></i> Bestätigen
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+    const MIN_REASON = {{ min_change_reason_length }};
+    const modalEl = document.getElementById('bookingConfirmModal');
+    if (!modalEl) return;
+    const modal = new bootstrap.Modal(modalEl);
+    const titleEl = document.getElementById('bookingConfirmTitle');
+    const leadEl = document.getElementById('bookingConfirmLead');
+    const detailsEl = document.getElementById('bookingConfirmDetails');
+    const warningEl = document.getElementById('bookingConfirmWarning');
+    const reasonEl = document.getElementById('bookingConfirmReason');
+    const requiredEl = document.getElementById('bookingConfirmReasonRequired');
+    const errorEl = document.getElementById('bookingConfirmError');
+    let activeForm = null;
+    let reasonRequired = true;
+
+    function euro(value) {
+        return Number(value).toFixed(2).replace('.', ',') + ' €';
+    }
+
+    // Felder eines Formulars inklusive der ueber form="..." verknuepften Eingaben.
+    function collectFields(form) {
+        const values = {};
+        form.querySelectorAll('input, textarea').forEach(function (field) {
+            if (field.name) values[field.name] = field.value;
+        });
+        if (form.id) {
+            document.querySelectorAll('[form="' + form.id + '"]').forEach(function (field) {
+                if (field.name) values[field.name] = field.value;
+            });
+        }
+        return values;
+    }
+
+    function addRow(label, value) {
+        const tr = document.createElement('tr');
+        const th = document.createElement('th');
+        th.className = 'text-muted fw-normal';
+        th.style.width = '48%';
+        th.textContent = label;
+        const td = document.createElement('td');
+        td.className = 'text-end';
+        td.innerHTML = value;
+        tr.append(th, td);
+        detailsEl.append(tr);
+    }
+
+    function prepare(form, values) {
+        detailsEl.innerHTML = '';
+        warningEl.classList.add('d-none');
+        errorEl.classList.add('d-none');
+        titleEl.textContent = form.dataset.actionLabel || 'Änderung bestätigen';
+        leadEl.textContent = (form.dataset.actionLabel || 'Änderung')
+            + ' für ' + (form.dataset.member || 'dieses Mitglied') + '?';
+
+        const amount = values.amount_eur !== undefined && values.amount_eur !== ''
+            ? Number(values.amount_eur) : null;
+        const original = form.dataset.original !== undefined ? Number(form.dataset.original) : null;
+        const expected = form.dataset.expected !== undefined ? Number(form.dataset.expected) : null;
+
+        if (amount !== null) addRow('Betrag', '<strong>' + euro(amount) + '</strong>');
+        else if (original !== null) addRow('Betrag', '<strong>' + euro(original) + '</strong>');
+        if (values.booking_date) addRow('Buchungsdatum', values.booking_date);
+        if (original !== null && amount !== null && Math.abs(amount - original) >= 0.005) {
+            addRow('Bisher gebucht', euro(original));
+        }
+        if (expected !== null) {
+            addRow('Offen laut Abrechnung', euro(expected));
+            if (amount !== null && Math.abs(amount - expected) >= 0.005) {
+                const rest = expected - amount;
+                addRow('Danach offen', '<strong>' + euro(rest) + '</strong>');
+                warningEl.textContent = 'Der Betrag weicht vom offenen Betrag ab. '
+                    + 'Die Differenz von ' + euro(rest) + ' bleibt am Mitgliedskonto stehen '
+                    + 'und wird in die nächste Abrechnung übernommen.';
+                warningEl.classList.remove('d-none');
+            }
+        }
+
+        // Pflicht: bei jeder Aenderung einer bestehenden Buchung sowie bei
+        // Abweichung vom offenen Betrag.
+        reasonRequired = original !== null || expected === null
+            || (amount !== null && Math.abs(amount - expected) >= 0.005);
+        requiredEl.classList.toggle('d-none', !reasonRequired);
+        reasonEl.value = '';
+    }
+
+    document.querySelectorAll('form[data-confirm-booking]').forEach(function (form) {
+        form.addEventListener('submit', function (event) {
+            if (form.dataset.confirmed === '1') return;
+            event.preventDefault();
+            activeForm = form;
+            prepare(form, collectFields(form));
+            modal.show();
+        });
+    });
+
+    document.getElementById('bookingConfirmSubmit').addEventListener('click', function () {
+        if (!activeForm) return;
+        const reason = reasonEl.value.trim();
+        if (reasonRequired && reason.length < MIN_REASON) {
+            errorEl.textContent = 'Bitte einen Änderungsgrund mit mindestens '
+                + MIN_REASON + ' Zeichen angeben.';
+            errorEl.classList.remove('d-none');
+            reasonEl.focus();
+            return;
+        }
+        const field = activeForm.querySelector('input[name="change_reason"]');
+        if (field) field.value = reason;
+        activeForm.dataset.confirmed = '1';
+        // Fokus aus dem Dialog nehmen, bevor er ausgeblendet wird.
+        if (document.activeElement) document.activeElement.blur();
+        modal.hide();
+        activeForm.submit();
+    });
+
+    modalEl.addEventListener('shown.bs.modal', function () { reasonEl.focus(); });
+})();
+</script>
 {% endblock %}

@@ -2027,6 +2027,7 @@ function NativePayments({data, csrfToken}) {
         <input type="hidden" name="next" value="/v2/payments" />
         <input type="hidden" name="invoice_id" value={row.invoice_id} />
         <input type="hidden" name="member_id" value={row.member_id} />
+        <input type="hidden" name="change_reason" value="" />
         <button type="submit" className="v2-icon-action is-warning" aria-label="Buchung zurücksetzen" title="Zurücksetzen">
           <RotateCcw size={18} />
         </button>
@@ -2219,7 +2220,18 @@ function confirmPaymentBooking(event, label) {
 function confirmPaymentReset(event) {
   if (!window.confirm('Diese Buchung wirklich stornieren und wieder auf offen setzen?')) {
     event.preventDefault();
+    return;
   }
+  const reason = window.prompt(
+    'Änderungsgrund (mindestens 5 Zeichen).\n'
+    + 'Der Grund wird bei der Buchung angezeigt und im Audit-Log gespeichert.', '');
+  if (reason === null || reason.trim().length < 5) {
+    if (reason !== null) window.alert('Bitte einen Änderungsgrund mit mindestens 5 Zeichen angeben.');
+    event.preventDefault();
+    return;
+  }
+  const field = event.currentTarget.querySelector('input[name="change_reason"]');
+  if (field) field.value = reason.trim();
 }
 
 function confirmBackupDelete(event, name, actionLabel) {
