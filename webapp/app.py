@@ -7230,6 +7230,77 @@ def payment_mark_paid():
     return redirect(_payment_redirect_target())
 
 
+@app.route('/payments/legacy_booking', methods=['POST'])
+@admin_required
+def payment_legacy_booking():
+    """Traegt fuer einen Altbestand den tatsaechlich gebuchten Betrag nach.
+
+    Aeltere Abrechnungen wurden ohne Buchungssatz bezahlt; ihr Betrag ist nur
+    aus den Positionen abgeleitet und damit nicht korrigierbar. Hier wird der
+    Buchungssatz mit dem echten Betrag vom Kontoauszug nachgetragen.
+    """
+    db = get_db()
+    invoice_id = request.form.get('invoice_id', type=int)
+    member_id = request.form.get('member_id', type=int)
+    try:
+        row = get_payment_row(db, invoice_id, member_id)
+        if not row:
+            raise ValueError('Die Buchung wurde nicht gefunden.')
+        if row['bookings']:
+            raise ValueError('Für diese Zeile gibt es bereits einen Buchungssatz. '
+                             'Bitte den Betrag dort korrigieren.')
+        if not row['paid']:
+            raise ValueError('Diese Zeile ist offen und kann normal gebucht werden.')
+        amount = _parse_booking_amount(request.form.get('amount_eur'))
+        if amount is None:
+            raise ValueError('Bitte einen Buchungsbetrag angeben.')
+        if abs(amount) < 0.005:
+            raise ValueError('Der Buchungsbetrag darf nicht null sein.')
+        booking_date = _parse_booking_date(
+            request.form.get('booking_date')
+            or (row['booking_date'] or local_now().date().isoformat()))
+        reason = _require_change_reason(request.form.get('change_reason'))
+
+        cursor = db.execute("""
+            INSERT INTO payment_bookings (
+                invoice_id, member_id, amount_eur, direction, booking_date,
+                recorded_by_user_id, recorded_by_username, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            invoice_id,
+            member_id,
+            amount,
+            'member_to_eeg' if amount > 0 else 'eeg_to_member',
+            booking_date.isoformat(),
+            current_user.id if current_user.is_authenticated else None,
+            current_user.username if current_user.is_authenticated else None,
+            (request.form.get('booking_note') or '').strip()[:500],
+        ))
+        _record_booking_change(db, cursor.lastrowid, 'migrate', reason,
+                               old={'amount': row['net_total'], 'date': row['booking_date']},
+                               new={'amount': amount, 'date': booking_date.isoformat()})
+        updated = _apply_booking_state(db, invoice_id, member_id, booking_date)
+        db.commit()
+        rest = updated['open_amount'] if updated else 0.0
+        audit_log('payment_legacy_booking',
+                  f'Altbestand nachgetragen: {row["member_name"]}, Rechnung {invoice_id}, '
+                  f'abgerechnet {row["net_total"]:.2f} EUR, gebucht {amount:.2f} EUR, '
+                  f'Buchungsdatum {booking_date.isoformat()}, Rest {rest:.2f} EUR, Grund: {reason}')
+        message = (f'Buchung für {row["member_name"]} mit {amount:.2f} € nachgetragen.')
+        if abs(rest) >= 0.005:
+            message += (f' Offen bleiben {abs(rest):.2f} € '
+                        f'({"Restforderung" if rest > 0 else "Guthaben des Mitglieds"}).')
+            flash(message, 'warning')
+        else:
+            flash(message, 'success')
+    except Exception as e:
+        db.rollback()
+        audit_log('payment_legacy_booking_failed',
+                  f'Nachtrag fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
+        flash_exception(e, 'Buchung konnte nicht nachgetragen werden.')
+    return redirect(_payment_redirect_target())
+
+
 @app.route('/payments/bookings/<int:id>/edit', methods=['POST'])
 @admin_required
 def payment_booking_edit(id):

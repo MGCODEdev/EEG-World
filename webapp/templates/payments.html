@@ -321,6 +321,7 @@
                                                 <td><small>{{ c['changed_at']|localdatetime }}</small></td>
                                                 <td>
                                                     {% if c['action'] == 'create' %}<span class="badge bg-success">angelegt</span>
+                                                    {% elif c['action'] == 'migrate' %}<span class="badge bg-info text-dark">nachgetragen</span>
                                                     {% elif c['action'] == 'edit' %}<span class="badge bg-primary">geändert</span>
                                                     {% else %}<span class="badge bg-warning text-dark">storniert</span>{% endif %}
                                                 </td>
@@ -357,12 +358,38 @@
                 {% endfor %}
             {% endfor %}
             {% for p in payments if p['paid'] and not p['bookings'] and p['net_total']|abs >= 0.005 %}
+                {% set legacy_id = 'legacy-' ~ p['invoice_id'] ~ '-' ~ p['member_id'] %}
                 <tr>
-                    <td>{{ p['member_name'] }}<br><span class="badge bg-light text-dark border">Altbestand</span></td>
+                    <td>
+                        {{ p['member_name'] }}
+                        <br><span class="badge bg-light text-dark border"
+                                  title="ohne Buchungssatz bezahlt, Betrag aus den Positionen abgeleitet">Altbestand</span>
+                    </td>
                     <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
-                    <td class="text-end"><span class="text-muted">{{ "%.2f"|format(p['net_total']) }} €</span></td>
-                    <td><small>{% if p['paid_at'] %}{{ p['paid_at']|localdate }}{% else %}–{% endif %}</small></td>
+                    <td class="text-end" style="min-width: 8rem">
+                        <input type="number" name="amount_eur" step="0.01" value="{{ "%.2f"|format(p['net_total']) }}"
+                               class="form-control form-control-sm text-end" form="{{ legacy_id }}" required>
+                        <small class="text-muted">Soll: {{ "%.2f"|format(p['net_total']) }} €</small>
+                    </td>
+                    <td style="min-width: 9rem">
+                        <input type="date" name="booking_date"
+                               value="{{ p['booking_date'] or today }}"
+                               max="{{ today }}" class="form-control form-control-sm" form="{{ legacy_id }}" required>
+                    </td>
                     <td class="text-center">
+                        <form method="post" action="{{ url_for('payment_legacy_booking') }}" class="d-inline"
+                              id="{{ legacy_id }}"
+                              data-confirm-booking data-action-label="Buchung nachtragen"
+                              data-member="{{ p['member_name'] }}" data-original="{{ "%.2f"|format(p['net_total']) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
+                            <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                            <input type="hidden" name="change_reason" value="">
+                            <button type="submit" class="btn btn-sm btn-outline-primary"
+                                    title="Tatsächlichen Betrag als Buchung nachtragen">
+                                <i class="bi bi-save"></i>
+                            </button>
+                        </form>
                         <form method="post" action="{{ url_for('payment_mark_unpaid') }}" class="d-inline"
                               data-confirm-booking data-action-label="Buchung zurücksetzen"
                               data-member="{{ p['member_name'] }}" data-original="{{ "%.2f"|format(p['net_total']) }}">

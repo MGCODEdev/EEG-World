@@ -225,6 +225,98 @@ class PaymentBookingTests(unittest.TestCase):
         self.assertIn('Teilzahlung laut Kontoauszug', html)
         self.assertIn('data-confirm-booking', html)
 
+    def _make_legacy(self):
+        """Altbestand: bezahlt ohne Buchungssatz, wie vor Einfuehrung der Buchungen."""
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            db.execute("""UPDATE invoice_items SET paid=1, paid_at='2026-05-27 10:00:00'
+                          WHERE invoice_id=1 AND member_id=1""")
+            db.commit()
+
+    def test_legacy_row_has_no_bookings_but_counts_as_paid(self):
+        self._make_legacy()
+        row = self._row()
+        self.assertTrue(row['paid'])
+        self.assertEqual(row['bookings'], [])
+        self.assertEqual(row['booked_total'], 100.0)
+        self.assertEqual(row['booking_date'], '2026-05-27')
+
+    def test_legacy_booking_can_be_added_with_real_amount(self):
+        self._make_legacy()
+        client = self._client()
+        response = client.post('/payments/legacy_booking',
+                               data={'invoice_id': '1', 'member_id': '1',
+                                     'amount_eur': '100,01',
+                                     'booking_date': '2026-05-27',
+                                     'change_reason': 'Kontoauszug: ein Cent zu viel überwiesen'},
+                               follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        row = self._row()
+        self.assertEqual(len(row['bookings']), 1)
+        self.assertEqual(row['booked_total'], 100.01)
+        self.assertEqual(row['open_amount'], -0.01)
+        self.assertFalse(row['paid'])
+
+    def test_legacy_booking_records_history_and_audit(self):
+        self._make_legacy()
+        client = self._client()
+        client.post('/payments/legacy_booking',
+                    data={'invoice_id': '1', 'member_id': '1', 'amount_eur': '100.01',
+                          'booking_date': '2026-05-27',
+                          'change_reason': 'Kontoauszug weicht um einen Cent ab'},
+                    follow_redirects=True)
+        change = self._row()['bookings'][0]['changes'][0]
+        self.assertEqual(change['action'], 'migrate')
+        self.assertEqual(change['old_amount_eur'], 100.0)
+        self.assertEqual(change['new_amount_eur'], 100.01)
+        self.assertEqual(change['reason'], 'Kontoauszug weicht um einen Cent ab')
+        with eegapp.app.app_context():
+            details = [r['detail'] for r in eegapp.get_db().execute(
+                "SELECT detail FROM audit_log WHERE action='payment_legacy_booking'")]
+        self.assertTrue(any('Kontoauszug weicht um einen Cent ab' in d for d in details))
+
+    def test_legacy_booking_requires_reason(self):
+        self._make_legacy()
+        client = self._client()
+        response = client.post('/payments/legacy_booking',
+                               data={'invoice_id': '1', 'member_id': '1',
+                                     'amount_eur': '100.01', 'booking_date': '2026-05-27'},
+                               follow_redirects=True)
+        self.assertIn('Änderungsgrund', response.get_data(as_text=True))
+        self.assertEqual(self._row()['bookings'], [])
+
+    def test_legacy_booking_rejected_when_booking_exists(self):
+        client = self._client()
+        self._book(client)
+        response = client.post('/payments/legacy_booking',
+                               data={'invoice_id': '1', 'member_id': '1',
+                                     'amount_eur': '99', 'booking_date': date.today().isoformat(),
+                                     'change_reason': 'Korrektur versucht'},
+                               follow_redirects=True)
+        self.assertIn('bereits einen Buchungssatz', response.get_data(as_text=True))
+        self.assertEqual(self._row()['booked_total'], 100.0)
+
+    def test_legacy_row_is_editable_on_payments_page(self):
+        self._make_legacy()
+        html = self._client().get('/payments').get_data(as_text=True)
+        self.assertIn('Altbestand', html)
+        self.assertIn('/payments/legacy_booking', html)
+        self.assertIn('id="legacy-1-1"', html)
+
+    def test_legacy_correction_creates_credit_in_member_account(self):
+        self._make_legacy()
+        client = self._client()
+        client.post('/payments/legacy_booking',
+                    data={'invoice_id': '1', 'member_id': '1', 'amount_eur': '100.01',
+                          'booking_date': '2026-05-27',
+                          'change_reason': 'Kontoauszug: ein Cent zu viel'},
+                    follow_redirects=True)
+        with eegapp.app.app_context():
+            account = eegapp.get_member_account_overview(eegapp.get_db())[0]
+            book = eegapp.build_cashbook(eegapp.get_db())
+        self.assertEqual(account['balance'], -0.01)
+        self.assertEqual(book['summary']['bank_balance'], 100.01)
+
     def test_zero_amount_is_rejected(self):
         response = self._book(self._client(), amount='0')
         self.assertIn('darf nicht null sein', response.get_data(as_text=True))
