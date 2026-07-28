@@ -1703,8 +1703,9 @@ def _v2_payments_data(db):
     fields = (
         'invoice_id', 'member_id', 'member_name', 'iban', 'bic', 'account_holder',
         'period_from', 'period_to', 'invoice_status', 'net_total', 'energy_total',
-        'carryover_total', 'paid', 'paid_at', 'booking_date', 'booking_note',
-        'direction', 'is_settled_by_carryover', 'carried_forward_to_invoice_id',
+        'carryover_total', 'booked_total', 'open_amount', 'is_partially_booked',
+        'paid', 'paid_at', 'booking_date', 'booking_note', 'booking_id',
+        'direction', 'open_direction', 'is_settled_by_carryover', 'carried_forward_to_invoice_id',
         'is_overdue', 'is_previous_period_open',
     )
 
@@ -1713,6 +1714,13 @@ def _v2_payments_data(db):
         for key in ('reference_date', 'due_on'):
             value = row.get(key)
             item[key] = value.isoformat() if hasattr(value, 'isoformat') else value
+        item['bookings'] = [{
+            'id': booking['id'],
+            'amount_eur': booking['amount_eur'],
+            'booking_date': booking['booking_date'],
+            'note': booking['note'] or '',
+            'recorded_by': booking['recorded_by_username'] or '',
+        } for booking in row['bookings']]
         return item
 
     active_open = [row for row in rows if not row['paid'] and not row['is_settled_by_carryover']]
@@ -1720,14 +1728,28 @@ def _v2_payments_data(db):
         'type': 'payments',
         'today': local_now().date().isoformat(),
         'summary': {
-            'open_claims_count': len([row for row in active_open if row['net_total'] > 0]),
-            'open_credits_count': len([row for row in active_open if row['net_total'] < 0]),
+            'open_claims_count': len([row for row in active_open if row['open_amount'] > 0]),
+            'open_credits_count': len([row for row in active_open if row['open_amount'] < 0]),
             'overdue_count': len([row for row in rows if row['is_overdue']]),
             'paid_count': len([row for row in rows if row['paid']]),
-            'open_claims_total': round(sum(row['net_total'] for row in active_open if row['net_total'] > 0), 2),
-            'open_credits_total': round(sum(row['net_total'] for row in active_open if row['net_total'] < 0), 2),
+            'open_claims_total': round(sum(row['open_amount'] for row in active_open if row['open_amount'] > 0), 2),
+            'open_credits_total': round(sum(row['open_amount'] for row in active_open if row['open_amount'] < 0), 2),
         },
         'payments': [serialize(row) for row in rows],
+    }
+
+
+def _v2_member_accounts_data(db):
+    accounts = get_member_account_overview(db)
+    return {
+        'type': 'member_accounts',
+        'accounts': accounts,
+        'summary': {
+            'claims': round(sum(a['balance'] for a in accounts if a['balance'] > 0), 2),
+            'credits': round(sum(a['balance'] for a in accounts if a['balance'] < 0), 2),
+            'balance': round(sum(a['balance'] for a in accounts), 2),
+            'overdue': round(sum(a['overdue'] for a in accounts), 2),
+        },
     }
 
 
@@ -2506,6 +2528,8 @@ def _v2_native_data(db, current_path):
         return _v2_payments_data(db)
     if current_path == '/kassabuch':
         return _v2_cashbook_data(db)
+    if current_path == '/mitgliederkonten':
+        return _v2_member_accounts_data(db)
     if current_path == '/newsletter':
         return _v2_newsletter_data(db)
     if current_path == '/newsletter/new':
@@ -3458,7 +3482,11 @@ def get_invoice_carryover_map(db, invoice_id):
 
 
 def calculate_carryovers_for_period(db, period_from):
-    """Berechnet offene Vorperioden, die in eine neue Abrechnung uebernommen werden."""
+    """Berechnet offene Vorperioden, die in eine neue Abrechnung uebernommen werden.
+
+    Uebernommen wird der offene Restbetrag. Bei einer Unterzahlung bleibt die
+    Restforderung offen, bei einer Ueberzahlung wird das Guthaben vorgetragen.
+    """
     carryovers = []
     for row in get_payment_rows(db):
         if row['period_to'] >= period_from:
@@ -3467,13 +3495,19 @@ def calculate_carryovers_for_period(db, period_from):
             continue
         if row['paid'] or row.get('is_settled_by_carryover'):
             continue
-        if abs(row['net_total']) < 0.005:
+        if abs(row['open_amount']) < 0.005:
             continue
+        if row['booked_total']:
+            description = ('Restforderung aus Vorperioden' if row['open_amount'] > 0
+                           else 'Überzahlung aus Vorperioden')
+        else:
+            description = ('Buchungsrückstand aus Vorperioden' if row['open_amount'] > 0
+                           else 'Guthaben aus Vorperioden')
         carryovers.append({
             'member_id': row['member_id'],
             'source_invoice_id': row['invoice_id'],
-            'amount': round(row['net_total'], 2),
-            'description': 'Buchungsrückstand aus Vorperioden' if row['net_total'] > 0 else 'Guthaben aus Vorperioden',
+            'amount': round(row['open_amount'], 2),
+            'description': description,
         })
     return carryovers
 
@@ -6618,14 +6652,62 @@ def _booking_due_date(row):
     return _row_reference_date(row) + timedelta(days=7)
 
 
-def _active_payment_booking(db, invoice_id, member_id):
-    return db.execute("""
-        SELECT *
+def _active_payment_bookings(db, member_id=None):
+    """Nicht stornierte Buchungen, gruppiert nach Abrechnung und Mitglied.
+
+    Je Abrechnungszeile sind mehrere Buchungen moeglich: Teilzahlungen,
+    Nachzahlungen und die Rueckerstattung eines Guthabens.
+    """
+    params = []
+    member_filter = ''
+    if member_id is not None:
+        member_filter = 'AND member_id=?'
+        params.append(member_id)
+    rows = db.execute(f"""
+        SELECT id, invoice_id, member_id, amount_eur, direction, booking_date,
+               note, recorded_at, recorded_by_username
         FROM payment_bookings
-        WHERE invoice_id=? AND member_id=? AND reversed_at IS NULL
-        ORDER BY booking_date DESC, id DESC
-        LIMIT 1
-    """, (invoice_id, member_id)).fetchone()
+        WHERE reversed_at IS NULL {member_filter}
+        ORDER BY booking_date, id
+    """, params).fetchall()
+    grouped = {}
+    for row in rows:
+        grouped.setdefault((row['invoice_id'], row['member_id']), []).append(dict(row))
+    return grouped
+
+
+def _parse_booking_amount(value):
+    """Betrag mit Komma oder Punkt; None, wenn nichts eingegeben wurde."""
+    text = (value or '').strip().replace('€', '').replace(' ', '')
+    if not text:
+        return None
+    try:
+        return round(float(text.replace(',', '.')), 2)
+    except ValueError as e:
+        raise ValueError('Der Buchungsbetrag ist ungültig.') from e
+
+
+def _iso_to_date(value):
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_booking_state(db, invoice_id, member_id, booking_date=None):
+    """Setzt das Bezahlt-Kennzeichen der Positionen nach jeder Buchungsaenderung."""
+    row = get_payment_row(db, invoice_id, member_id)
+    if not row:
+        return None
+    if row['paid']:
+        reference = booking_date or _iso_to_date(row['booking_date']) or local_now().date()
+        db.execute("""UPDATE invoice_items SET paid=1, paid_at=?
+                      WHERE invoice_id=? AND member_id=?""",
+                   (_paid_at_from_booking_date(reference), invoice_id, member_id))
+    else:
+        db.execute("""UPDATE invoice_items SET paid=0, paid_at=NULL
+                      WHERE invoice_id=? AND member_id=?""", (invoice_id, member_id))
+    return row
 
 
 def get_payment_rows(db, member_id=None):
@@ -6722,6 +6804,7 @@ def get_payment_rows(db, member_id=None):
 
     payment_rows = []
     today = local_now().date()
+    bookings_map = _active_payment_bookings(db, member_id=member_id)
     for key, data in grouped.items():
         energy_net = 0
         for item in data['items']:
@@ -6731,11 +6814,21 @@ def get_payment_rows(db, member_id=None):
                 energy_net -= item['amount_eur']
         carryover_total = round(sum(item['amount_eur'] for item in data['carryovers']), 2)
         net = round(energy_net + carryover_total, 2)
-        active_booking = _active_payment_booking(db, key[0], key[1])
+        bookings = bookings_map.get(key, [])
+        booked_total = round(sum(booking['amount_eur'] for booking in bookings), 2)
         all_paid = bool(data['items']) and all(item['paid'] for item in data['items'])
-        paid = bool(active_booking or all_paid or abs(net) < 0.005)
+        if bookings:
+            open_amount = round(net - booked_total, 2)
+        elif all_paid:
+            # Altbestand: vor Einfuehrung der Buchungssaetze bezahlt.
+            booked_total = net
+            open_amount = 0.0
+        else:
+            open_amount = net
+        paid = abs(open_amount) < 0.005
         paid_at = data['items'][0]['paid_at'] if all_paid and data['items'] else None
-        booking_date = active_booking['booking_date'] if active_booking else ''
+        last_booking = bookings[-1] if bookings else None
+        booking_date = last_booking['booking_date'] if last_booking else ''
         if not booking_date and paid_at:
             paid_dt = to_local_datetime(paid_at)
             booking_date = paid_dt.date().isoformat() if paid_dt else ''
@@ -6765,16 +6858,22 @@ def get_payment_rows(db, member_id=None):
             'energy_total': round(energy_net, 2),
             'carryover_total': carryover_total,
             'carryovers': data['carryovers'],
+            'bookings': bookings,
+            'booked_total': booked_total,
+            'open_amount': open_amount,
+            'is_partially_booked': bool(bookings) and not paid,
             'paid': paid,
             'paid_at': paid_at,
             'booking_date': booking_date,
-            'booking_note': active_booking['note'] if active_booking else '',
-            'booking_id': active_booking['id'] if active_booking else None,
+            'booking_note': last_booking['note'] if last_booking else '',
+            'booking_id': last_booking['id'] if last_booking else None,
             'direction': 'member_to_eeg' if net > 0 else 'eeg_to_member' if net < 0 else 'balanced',
+            'open_direction': ('member_to_eeg' if open_amount > 0
+                               else 'eeg_to_member' if open_amount < 0 else 'balanced'),
             'is_settled_by_carryover': bool(carried_forward and not paid),
             'carried_forward_to_invoice_id': carried_forward['invoice_id'] if carried_forward and not paid else None,
         }
-        row['is_overdue'] = (not row['paid'] and not row['is_settled_by_carryover'] and row['net_total'] > 0 and today >= row['due_on'])
+        row['is_overdue'] = (not row['paid'] and not row['is_settled_by_carryover'] and row['open_amount'] > 0 and today >= row['due_on'])
         row['is_previous_period_open'] = (
             not row['paid']
             and not row['is_settled_by_carryover']
@@ -6802,10 +6901,10 @@ def get_payment_row(db, invoice_id, member_id):
 def get_member_account_summary(db, member_id):
     rows = get_payment_rows(db, member_id=member_id)
     active_open_rows = [row for row in rows if not row['paid'] and not row['is_settled_by_carryover']]
-    balance = round(sum(row['net_total'] for row in active_open_rows), 2)
-    open_claims = round(sum(row['net_total'] for row in active_open_rows if row['net_total'] > 0), 2)
-    open_credits = round(sum(row['net_total'] for row in active_open_rows if row['net_total'] < 0), 2)
-    overdue_claims = round(sum(row['net_total'] for row in rows if row['is_overdue']), 2)
+    balance = round(sum(row['open_amount'] for row in active_open_rows), 2)
+    open_claims = round(sum(row['open_amount'] for row in active_open_rows if row['open_amount'] > 0), 2)
+    open_credits = round(sum(row['open_amount'] for row in active_open_rows if row['open_amount'] < 0), 2)
+    overdue_claims = round(sum(row['open_amount'] for row in rows if row['is_overdue']), 2)
     previous_open = [row for row in rows if row['is_previous_period_open']]
 
     events = []
@@ -6830,21 +6929,33 @@ def get_member_account_summary(db, member_id):
                 'kind': 'carryover',
                 'label': f"Vortrag in Abrechnung #{row['carried_forward_to_invoice_id']}",
                 'invoice_id': row['carried_forward_to_invoice_id'],
-                'amount': -net,
+                'amount': -row['open_amount'],
                 'status': 'vorgetragen',
                 'is_overdue': False,
                 'is_previous_period_open': False,
             })
-        if row['paid']:
-            if row['booking_date']:
-                booking_date = date.fromisoformat(row['booking_date'])
-            else:
-                booking_date = invoice_date
+        for booking in row['bookings']:
+            booking_date = _iso_to_date(booking['booking_date']) or invoice_date
+            amount = booking['amount_eur']
             events.append({
                 'sort_date': booking_date,
                 'date': booking_date,
                 'kind': 'booking',
-                'label': 'Zahlung gebucht' if net > 0 else 'Gutschrift ausbezahlt' if net < 0 else 'Ausgeglichen',
+                'label': 'Zahlung gebucht' if amount > 0 else 'Gutschrift ausbezahlt',
+                'invoice_id': row['invoice_id'],
+                'amount': -amount,
+                'status': 'gebucht',
+                'is_overdue': False,
+                'is_previous_period_open': False,
+            })
+        if not row['bookings'] and row['paid'] and abs(net) >= 0.005:
+            # Altbestand ohne Buchungssatz
+            booking_date = _iso_to_date(row['booking_date']) or invoice_date
+            events.append({
+                'sort_date': booking_date,
+                'date': booking_date,
+                'kind': 'booking',
+                'label': 'Zahlung gebucht' if net > 0 else 'Gutschrift ausbezahlt',
                 'invoice_id': row['invoice_id'],
                 'amount': -net,
                 'status': 'gebucht',
@@ -6868,6 +6979,52 @@ def get_member_account_summary(db, member_id):
     }
 
 
+def get_member_account_overview(db):
+    """Kontosaldo je Mitglied fuer die Adminuebersicht.
+
+    Positiver Saldo: das Mitglied schuldet der EEG Geld.
+    Negativer Saldo: die EEG schuldet dem Mitglied Geld.
+    """
+    rows = get_payment_rows(db)
+    accounts = {}
+    for row in rows:
+        account = accounts.setdefault(row['member_id'], {
+            'member_id': row['member_id'],
+            'member_name': row['member_name'],
+            'iban': row['iban'],
+            'account_holder': row['account_holder'],
+            'invoiced_total': 0,
+            'booked_total': 0,
+            'balance': 0,
+            'overdue': 0,
+            'open_rows': 0,
+            'deviating_rows': 0,
+            'carried_rows': 0,
+            'last_booking_date': '',
+        })
+        account['invoiced_total'] += _cents(row['net_total'])
+        account['booked_total'] += _cents(row['booked_total'])
+        if row['is_settled_by_carryover']:
+            account['carried_rows'] += 1
+        elif not row['paid']:
+            account['balance'] += _cents(row['open_amount'])
+            account['open_rows'] += 1
+            if row['is_partially_booked']:
+                account['deviating_rows'] += 1
+        if row['is_overdue']:
+            account['overdue'] += _cents(row['open_amount'])
+        if row['booking_date'] > account['last_booking_date']:
+            account['last_booking_date'] = row['booking_date']
+
+    result = []
+    for account in accounts.values():
+        for key in ('invoiced_total', 'booked_total', 'balance', 'overdue'):
+            account[key] = account[key] / 100
+        result.append(account)
+    result.sort(key=lambda item: (-abs(item['balance']), item['member_name'].lower()))
+    return result
+
+
 def _payment_redirect_target():
     next_url = request.form.get('next') or request.args.get('next')
     if next_url and is_safe_redirect_url(next_url):
@@ -6884,50 +7041,186 @@ def payments():
     return render_template('payments.html', payments=payment_list, today=local_now().date().isoformat())
 
 
+@app.route('/mitgliederkonten')
+@admin_required
+def member_accounts():
+    """Kontosaldo aller Mitglieder."""
+    db = get_db()
+    accounts = get_member_account_overview(db)
+    totals = {
+        'claims': round(sum(a['balance'] for a in accounts if a['balance'] > 0), 2),
+        'credits': round(sum(a['balance'] for a in accounts if a['balance'] < 0), 2),
+        'balance': round(sum(a['balance'] for a in accounts), 2),
+        'overdue': round(sum(a['overdue'] for a in accounts), 2),
+    }
+    return render_template('member_accounts.html', accounts=accounts, totals=totals)
+
+
+@app.route('/mitgliederkonten/<int:id>')
+@admin_required
+def member_account_detail(id):
+    """Kontoauszug eines Mitglieds mit allen Buchungen."""
+    db = get_db()
+    member = db.execute("SELECT * FROM members WHERE id=?", (id,)).fetchone()
+    if not member:
+        flash('Mitglied nicht gefunden.', 'danger')
+        return redirect(url_for('member_accounts'))
+    return render_template('member_account_detail.html',
+                           member=member,
+                           account=get_member_account_summary(db, id),
+                           today=local_now().date().isoformat())
+
+
 @app.route('/payments/mark_paid', methods=['POST'])
 @admin_required
 def payment_mark_paid():
-    """Bucht eine Forderung oder Gutschrift mit Bank-Buchungsdatum."""
+    """Bucht eine Forderung oder Gutschrift mit Bank-Buchungsdatum.
+
+    Ohne Betragsangabe wird der offene Restbetrag gebucht. Weicht die
+    Ueberweisung davon ab, kann der tatsaechliche Betrag eingetragen werden;
+    die Differenz bleibt als Restforderung oder Guthaben am Mitgliedskonto.
+    """
     db = get_db()
     invoice_id = request.form.get('invoice_id', type=int)
     member_id = request.form.get('member_id', type=int)
     try:
         booking_date = _parse_booking_date(request.form.get('booking_date'))
         note = (request.form.get('booking_note') or '').strip()[:500]
+        amount = _parse_booking_amount(request.form.get('amount_eur'))
         row = get_payment_row(db, invoice_id, member_id)
         if not row:
             raise ValueError('Die Buchung wurde nicht gefunden.')
-        if row['paid']:
-            raise ValueError('Diese Buchung ist bereits als gebucht markiert.')
         if row['is_settled_by_carryover']:
             raise ValueError(f'Diese offene Buchung wurde bereits in Abrechnung #{row["carried_forward_to_invoice_id"]} vorgetragen.')
-        if abs(row['net_total']) >= 0.005:
-            db.execute("""
-                INSERT INTO payment_bookings (
-                    invoice_id, member_id, amount_eur, direction, booking_date,
-                    recorded_by_user_id, recorded_by_username, note
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                invoice_id,
-                member_id,
-                row['net_total'],
-                row['direction'],
-                booking_date.isoformat(),
-                current_user.id if current_user.is_authenticated else None,
-                current_user.username if current_user.is_authenticated else None,
-                note,
-            ))
-        db.execute("""UPDATE invoice_items SET paid=1, paid_at=?
-                      WHERE invoice_id=? AND member_id=?""",
-                   (_paid_at_from_booking_date(booking_date), invoice_id, member_id))
+        if amount is None:
+            if row['paid']:
+                raise ValueError('Diese Buchung ist bereits vollständig gebucht.')
+            amount = row['open_amount']
+        if abs(amount) < 0.005:
+            raise ValueError('Der Buchungsbetrag darf nicht null sein.')
+
+        db.execute("""
+            INSERT INTO payment_bookings (
+                invoice_id, member_id, amount_eur, direction, booking_date,
+                recorded_by_user_id, recorded_by_username, note
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            invoice_id,
+            member_id,
+            amount,
+            'member_to_eeg' if amount > 0 else 'eeg_to_member',
+            booking_date.isoformat(),
+            current_user.id if current_user.is_authenticated else None,
+            current_user.username if current_user.is_authenticated else None,
+            note,
+        ))
+        updated = _apply_booking_state(db, invoice_id, member_id, booking_date)
         db.commit()
-        action_label = 'Zahlung' if row['net_total'] > 0 else 'Gutschrift' if row['net_total'] < 0 else 'Ausgleich'
-        audit_log('payment_paid', f'{action_label} gebucht: {row["member_name"]}, Rechnung {invoice_id}, Betrag {row["net_total"]:.2f} EUR, Buchungsdatum {booking_date.isoformat()}')
-        flash(f'{action_label} für {row["member_name"]} mit Buchungsdatum {booking_date.strftime("%d.%m.%Y")} gebucht.', 'success')
+        action_label = 'Zahlung' if amount > 0 else 'Gutschrift'
+        rest = updated['open_amount'] if updated else 0.0
+        audit_log('payment_paid', f'{action_label} gebucht: {row["member_name"]}, Rechnung {invoice_id}, '
+                                  f'Betrag {amount:.2f} EUR, Buchungsdatum {booking_date.isoformat()}, '
+                                  f'Rest {rest:.2f} EUR')
+        message = (f'{action_label} über {abs(amount):.2f} € für {row["member_name"]} '
+                   f'mit Buchungsdatum {booking_date.strftime("%d.%m.%Y")} gebucht.')
+        if abs(rest) >= 0.005:
+            message += (f' Offen bleiben {abs(rest):.2f} € '
+                        f'({"Restforderung" if rest > 0 else "Guthaben des Mitglieds"}).')
+            flash(message, 'warning')
+        else:
+            flash(message, 'success')
     except Exception as e:
         db.rollback()
         audit_log('payment_paid_failed', f'Zahlungsbuchung fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
         flash_exception(e, 'Buchung konnte nicht gespeichert werden.')
+    return redirect(_payment_redirect_target())
+
+
+@app.route('/payments/bookings/<int:id>/edit', methods=['POST'])
+@admin_required
+def payment_booking_edit(id):
+    """Korrigiert Betrag, Buchungsdatum oder Notiz einer bestehenden Buchung."""
+    db = get_db()
+    try:
+        booking = db.execute("""
+            SELECT b.*, m.name AS member_name
+            FROM payment_bookings b JOIN members m ON m.id = b.member_id
+            WHERE b.id=?
+        """, (id,)).fetchone()
+        if not booking:
+            raise ValueError('Die Buchung wurde nicht gefunden.')
+        if booking['reversed_at']:
+            raise ValueError('Eine stornierte Buchung kann nicht mehr bearbeitet werden.')
+        amount = _parse_booking_amount(request.form.get('amount_eur'))
+        if amount is None:
+            raise ValueError('Bitte einen Buchungsbetrag angeben.')
+        if abs(amount) < 0.005:
+            raise ValueError('Der Buchungsbetrag darf nicht null sein.')
+        booking_date = _parse_booking_date(request.form.get('booking_date') or booking['booking_date'])
+        note = (request.form.get('booking_note') or '').strip()[:500]
+
+        db.execute("""UPDATE payment_bookings
+                      SET amount_eur=?, direction=?, booking_date=?, note=?
+                      WHERE id=?""",
+                   (amount, 'member_to_eeg' if amount > 0 else 'eeg_to_member',
+                    booking_date.isoformat(), note, id))
+        updated = _apply_booking_state(db, booking['invoice_id'], booking['member_id'], booking_date)
+        db.commit()
+        rest = updated['open_amount'] if updated else 0.0
+        audit_log('payment_booking_edit',
+                  f'Buchung #{id} geändert: {booking["member_name"]}, Rechnung {booking["invoice_id"]}, '
+                  f'{booking["amount_eur"]:.2f} → {amount:.2f} EUR, '
+                  f'Buchungsdatum {booking_date.isoformat()}, Rest {rest:.2f} EUR')
+        message = f'Buchung für {booking["member_name"]} auf {amount:.2f} € geändert.'
+        if abs(rest) >= 0.005:
+            message += (f' Offen bleiben {abs(rest):.2f} € '
+                        f'({"Restforderung" if rest > 0 else "Guthaben des Mitglieds"}).')
+            flash(message, 'warning')
+        else:
+            flash(message, 'success')
+    except Exception as e:
+        db.rollback()
+        audit_log('payment_booking_edit_failed', f'Buchungsänderung fehlgeschlagen: Buchung {id} ({e})')
+        flash_exception(e, 'Buchung konnte nicht geändert werden.')
+    return redirect(_payment_redirect_target())
+
+
+@app.route('/payments/bookings/<int:id>/reverse', methods=['POST'])
+@admin_required
+def payment_booking_reverse(id):
+    """Storniert eine einzelne Buchung, andere Buchungen bleiben bestehen."""
+    db = get_db()
+    try:
+        booking = db.execute("""
+            SELECT b.*, m.name AS member_name
+            FROM payment_bookings b JOIN members m ON m.id = b.member_id
+            WHERE b.id=?
+        """, (id,)).fetchone()
+        if not booking:
+            raise ValueError('Die Buchung wurde nicht gefunden.')
+        if booking['reversed_at']:
+            raise ValueError('Diese Buchung ist bereits storniert.')
+        db.execute("""
+            UPDATE payment_bookings
+            SET reversed_at=datetime('now'), reversed_by_user_id=?,
+                reversed_by_username=?, reverse_note=?
+            WHERE id=?
+        """, (
+            current_user.id if current_user.is_authenticated else None,
+            current_user.username if current_user.is_authenticated else None,
+            (request.form.get('reverse_note') or 'Einzelbuchung storniert').strip()[:500],
+            id,
+        ))
+        _apply_booking_state(db, booking['invoice_id'], booking['member_id'])
+        db.commit()
+        audit_log('payment_booking_reverse',
+                  f'Buchung #{id} storniert: {booking["member_name"]}, Rechnung {booking["invoice_id"]}, '
+                  f'{booking["amount_eur"]:.2f} EUR')
+        flash(f'Buchung über {booking["amount_eur"]:.2f} € wurde storniert.', 'info')
+    except Exception as e:
+        db.rollback()
+        audit_log('payment_booking_reverse_failed', f'Buchungsstorno fehlgeschlagen: Buchung {id} ({e})')
+        flash_exception(e, 'Buchung konnte nicht storniert werden.')
     return redirect(_payment_redirect_target())
 
 
@@ -7064,46 +7357,62 @@ def _cashbook_manual_rows(db):
 def _cashbook_energy_rows(db):
     """Stromverkauf und -einkauf aus allen gebuchten Abrechnungen.
 
-    Grundlage sind die Netto-Zahlungszeilen je Mitglied und Abrechnung. Damit
-    sind auch aeltere Abrechnungen enthalten, die noch ohne payment_bookings
-    gebucht wurden. Auf Folgeabrechnungen vorgetragene Zeilen bleiben aussen
-    vor, weil ihr Betrag dort bereits enthalten ist.
+    Massgeblich ist der tatsaechlich gebuchte Betrag: jede Zahlungsbuchung ist
+    eine echte Kontobewegung. Aeltere Abrechnungen ohne Buchungssatz werden aus
+    den bezahlten Positionen abgeleitet. Offene Restbetraege stehen nicht im
+    Kassabuch, sondern am Mitgliedskonto.
     """
-    booked_by = {row['id']: row['recorded_by_username'] for row in db.execute(
-        "SELECT id, recorded_by_username FROM payment_bookings").fetchall()}
     entries = []
     for row in get_payment_rows(db):
-        amount = row['net_total']
-        if not row['paid'] or abs(amount) < 0.005:
-            continue
-        direction = 'income' if amount > 0 else 'expense'
-        description = (f'Abrechnung #{row["invoice_id"]} '
-                       f'({_date_de(row["period_from"])} bis {_date_de(row["period_to"])})')
-        if row['carryover_total']:
-            description += f', inkl. Vortrag {row["carryover_total"]:.2f} €'
-        if row['booking_note']:
-            description += f' – {row["booking_note"]}'
-        entries.append({
-            'source': 'energy',
-            'id': f'{row["invoice_id"]}-{row["member_id"]}',
-            'entry_date': row['booking_date'] or row['reference_date'].isoformat(),
-            'direction': direction,
-            'amount_eur': abs(amount),
-            'signed_amount': amount,
-            'category': CASHBOOK_ENERGY_CATEGORIES[direction],
-            'category_id': None,
-            # Abrechnungen werden immer ueber das Bankkonto beglichen.
-            'payment_method': 'transfer',
-            'description': description,
-            'counterparty': row['member_name'] or '',
-            'document_number': f'A{row["invoice_id"]}-{row["member_id"]:03d}',
-            'has_receipt': False,
-            'receipt_filename': '',
-            'member_id': row['member_id'],
-            'invoice_id': row['invoice_id'],
-            'recorded_by': booked_by.get(row['booking_id'], '') or '',
-            'deletable': False,
-        })
+        period = f'({_date_de(row["period_from"])} bis {_date_de(row["period_to"])})'
+        movements = [{
+            'key': booking['id'],
+            'amount': booking['amount_eur'],
+            'date': booking['booking_date'],
+            'note': booking['note'],
+            'user': booking['recorded_by_username'],
+        } for booking in row['bookings']]
+        if not movements and row['paid'] and abs(row['net_total']) >= 0.005:
+            movements.append({
+                'key': 'alt',
+                'amount': row['net_total'],
+                'date': row['booking_date'] or row['reference_date'].isoformat(),
+                'note': '',
+                'user': '',
+            })
+        for movement in movements:
+            amount = round(movement['amount'] or 0, 2)
+            if abs(amount) < 0.005:
+                continue
+            direction = 'income' if amount > 0 else 'expense'
+            description = f'Abrechnung #{row["invoice_id"]} {period}'
+            if row['carryover_total']:
+                description += f', inkl. Vortrag {row["carryover_total"]:.2f} €'
+            if len(movements) > 1:
+                description += ', Teilbuchung'
+            if movement['note']:
+                description += f' – {movement["note"]}'
+            entries.append({
+                'source': 'energy',
+                'id': f'{row["invoice_id"]}-{row["member_id"]}-{movement["key"]}',
+                'entry_date': movement['date'] or row['reference_date'].isoformat(),
+                'direction': direction,
+                'amount_eur': abs(amount),
+                'signed_amount': amount,
+                'category': CASHBOOK_ENERGY_CATEGORIES[direction],
+                'category_id': None,
+                # Abrechnungen werden immer ueber das Bankkonto beglichen.
+                'payment_method': 'transfer',
+                'description': description,
+                'counterparty': row['member_name'] or '',
+                'document_number': f'A{row["invoice_id"]}-{row["member_id"]:03d}',
+                'has_receipt': False,
+                'receipt_filename': '',
+                'member_id': row['member_id'],
+                'invoice_id': row['invoice_id'],
+                'recorded_by': movement['user'] or '',
+                'deletable': False,
+            })
     return entries
 
 

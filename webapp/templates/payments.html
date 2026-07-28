@@ -4,10 +4,10 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2><i class="bi bi-bank"></i> Überweisungen & Forderungen</h2>
     <div>
-        <span class="badge bg-danger me-2">{{ payments|selectattr('paid', 'equalto', false)|rejectattr('is_settled_by_carryover')|selectattr('net_total', 'gt', 0)|list|length }} offen (Forderungen)</span>
+        <span class="badge bg-danger me-2">{{ payments|selectattr('paid', 'equalto', false)|rejectattr('is_settled_by_carryover')|selectattr('open_amount', 'gt', 0)|list|length }} offen (Forderungen)</span>
         <span class="badge bg-warning text-dark me-2">{{ payments|selectattr('is_overdue')|list|length }} Buchungsrückstand</span>
         <span class="badge bg-success me-2">{{ payments|selectattr('paid')|list|length }} gebucht</span>
-        <span class="badge bg-info">{{ payments|selectattr('paid', 'equalto', false)|rejectattr('is_settled_by_carryover')|selectattr('net_total', 'lt', 0)|list|length }} offen (Gutschriften)</span>
+        <span class="badge bg-info">{{ payments|selectattr('paid', 'equalto', false)|rejectattr('is_settled_by_carryover')|selectattr('open_amount', 'lt', 0)|list|length }} offen (Gutschriften)</span>
     </div>
 </div>
 
@@ -30,8 +30,8 @@
             </thead>
             <tbody>
             {% set ns = namespace(total=0) %}
-            {% for p in payments if not p['paid'] and not p['is_settled_by_carryover'] and p['net_total'] > 0 %}
-            {% set ns.total = ns.total + p['net_total'] %}
+            {% for p in payments if not p['paid'] and not p['is_settled_by_carryover'] and p['open_amount'] > 0 %}
+            {% set ns.total = ns.total + p['open_amount'] %}
             <tr class="{% if p['is_overdue'] %}table-warning{% endif %}">
                 <td>
                     <strong>{{ p['member_name'] }}</strong>
@@ -48,7 +48,12 @@
                         <br><small class="text-muted">aktiv seit {{ p['due_on'].strftime('%d.%m.%Y') }}</small>
                     {% endif %}
                 </td>
-                <td class="text-end"><strong class="text-danger">{{ "%.2f"|format(p['net_total']) }} €</strong></td>
+                <td class="text-end">
+                    <strong class="text-danger">{{ "%.2f"|format(p['open_amount']) }} €</strong>
+                    {% if p['is_partially_booked'] %}
+                    <br><small class="text-muted">Rest von {{ "%.2f"|format(p['net_total']) }} €<br>bereits gebucht: {{ "%.2f"|format(p['booked_total']) }} €</small>
+                    {% endif %}
+                </td>
                 <td>
                     <small class="text-muted">EEG-Abr. {{ p['invoice_id'] }}/{{ p['period_from'][:4] }} – {{ p['member_name'] }}</small>
                     {% if p['carryover_total'] %}
@@ -57,7 +62,11 @@
                 </td>
                 <td>
                     <input type="date" name="booking_date" value="{{ today }}" max="{{ today }}"
-                           class="form-control form-control-sm" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}" required>
+                           class="form-control form-control-sm mb-1" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}" required>
+                    <input type="number" name="amount_eur" step="0.01" value="{{ "%.2f"|format(p['open_amount']) }}"
+                           class="form-control form-control-sm" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
+                           title="Tatsächlich überwiesener Betrag" required>
+                    <small class="text-muted">tatsächlich überwiesen</small>
                 </td>
                 <td class="text-center">
                     <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline"
@@ -108,12 +117,17 @@
             </thead>
             <tbody>
             {% set ns2 = namespace(total=0) %}
-            {% for p in payments if not p['paid'] and not p['is_settled_by_carryover'] and p['net_total'] < 0 %}
-            {% set ns2.total = ns2.total + p['net_total'] %}
+            {% for p in payments if not p['paid'] and not p['is_settled_by_carryover'] and p['open_amount'] < 0 %}
+            {% set ns2.total = ns2.total + p['open_amount'] %}
             <tr>
                 <td><strong>{{ p['member_name'] }}</strong></td>
                 <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
-                <td class="text-end"><strong class="text-success">{{ "%.2f"|format(p['net_total']|abs) }} €</strong></td>
+                <td class="text-end">
+                    <strong class="text-success">{{ "%.2f"|format(p['open_amount']|abs) }} €</strong>
+                    {% if p['is_partially_booked'] %}
+                    <br><small class="text-muted">Rest von {{ "%.2f"|format(p['net_total']|abs) }} €<br>bereits gebucht: {{ "%.2f"|format(p['booked_total']|abs) }} €</small>
+                    {% endif %}
+                </td>
                 <td>
                     {% if p['carryover_total'] %}
                     <small class="text-muted">davon Vorperioden: {{ "%.2f"|format(p['carryover_total']) }} €</small><br>
@@ -127,7 +141,11 @@
                 </td>
                 <td>
                     <input type="date" name="booking_date" value="{{ today }}" max="{{ today }}"
-                           class="form-control form-control-sm" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}" required>
+                           class="form-control form-control-sm mb-1" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}" required>
+                    <input type="number" name="amount_eur" step="0.01" value="{{ "%.2f"|format(p['open_amount']) }}"
+                           class="form-control form-control-sm" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
+                           title="Tatsächlich ausbezahlter Betrag, negativ" required>
+                    <small class="text-muted">tatsächlich ausbezahlt (negativ)</small>
                 </td>
                 <td class="text-center">
                     <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline"
@@ -201,58 +219,85 @@
 <div class="card">
     <div class="card-header bg-success text-white">
         <i class="bi bi-check-circle"></i> Gebuchte Zahlungen
+        <small>– Betrag und Datum können korrigiert werden, eine Differenz bleibt am Mitgliedskonto offen</small>
     </div>
     <div class="card-body table-responsive p-0">
-        <table class="table table-sm table-hover mb-0">
+        <table class="table table-sm table-hover mb-0 align-middle">
             <thead class="table-light">
                 <tr>
                     <th>Mitglied</th>
                     <th>Zeitraum</th>
-                    <th class="text-end">Betrag</th>
+                    <th class="text-end">Gebuchter Betrag</th>
                     <th>Gebucht am</th>
                     <th class="text-center">Aktion</th>
                 </tr>
             </thead>
             <tbody>
-            {% for p in payments if p['paid'] %}
-            <tr>
-                <td>{{ p['member_name'] }}</td>
-                <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
-                <td class="text-end">
-                    {% if p['net_total'] > 0 %}
-                    <span class="text-muted">+{{ "%.2f"|format(p['net_total']) }} €</span>
-                    {% elif p['net_total'] < 0 %}
-                    <span class="text-muted">−{{ "%.2f"|format(p['net_total']|abs) }} €</span>
-                    {% else %}
-                    <span class="text-muted">0,00 €</span>
-                    {% endif %}
-                </td>
-                <td>
-                    <small>
-                        {% if p['booking_date'] %}
-                            {{ p['booking_date']|localdate }}
-                        {% elif p['paid_at'] %}
-                            {{ p['paid_at']|localdate }}
-                        {% else %}
-                            –
+            {% set booked = payments|selectattr('bookings')|list %}
+            {% for p in booked %}
+                {% for b in p['bookings'] %}
+                <tr>
+                    <td>
+                        {{ p['member_name'] }}
+                        {% if p['bookings']|length > 1 %}
+                        <br><span class="badge bg-light text-dark border">Teilbuchung {{ loop.index }}/{{ p['bookings']|length }}</span>
                         {% endif %}
-                    </small>
-                </td>
-                <td class="text-center">
-                    <form method="post" action="{{ url_for('payment_mark_unpaid') }}" class="d-inline"
-                          onsubmit="return confirm('Diese Buchung wirklich stornieren und wieder auf offen setzen?')">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                        <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
-                        <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
-                        <button type="submit" class="btn btn-sm btn-outline-warning" title="Zurücksetzen">
-                            <i class="bi bi-arrow-counterclockwise"></i>
-                        </button>
-                    </form>
-                </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="5" class="text-center text-muted py-3">Noch keine Zahlungen gebucht</td></tr>
+                        {% if not p['paid'] %}
+                        <br><small class="text-warning-emphasis">offen: {{ "%.2f"|format(p['open_amount']) }} €</small>
+                        {% endif %}
+                    </td>
+                    <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
+                    <td class="text-end" style="min-width: 8rem">
+                        <input type="number" name="amount_eur" step="0.01" value="{{ "%.2f"|format(b['amount_eur']) }}"
+                               class="form-control form-control-sm text-end" form="edit-booking-{{ b['id'] }}" required>
+                        <small class="text-muted">Soll: {{ "%.2f"|format(p['net_total']) }} €</small>
+                    </td>
+                    <td style="min-width: 9rem">
+                        <input type="date" name="booking_date" value="{{ b['booking_date'] }}" max="{{ today }}"
+                               class="form-control form-control-sm" form="edit-booking-{{ b['id'] }}" required>
+                    </td>
+                    <td class="text-center">
+                        <form method="post" action="{{ url_for('payment_booking_edit', id=b['id']) }}" class="d-inline"
+                              id="edit-booking-{{ b['id'] }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="booking_note" value="{{ b['note'] or '' }}">
+                            <button type="submit" class="btn btn-sm btn-outline-primary" title="Betrag und Datum speichern">
+                                <i class="bi bi-save"></i>
+                            </button>
+                        </form>
+                        <form method="post" action="{{ url_for('payment_booking_reverse', id=b['id']) }}" class="d-inline"
+                              onsubmit="return confirm('Diese Buchung wirklich stornieren?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-warning" title="Diese Buchung stornieren">
+                                <i class="bi bi-arrow-counterclockwise"></i>
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
             {% endfor %}
+            {% for p in payments if p['paid'] and not p['bookings'] and p['net_total']|abs >= 0.005 %}
+                <tr>
+                    <td>{{ p['member_name'] }}<br><span class="badge bg-light text-dark border">Altbestand</span></td>
+                    <td><small>{{ p['period_from'] }} – {{ p['period_to'] }}</small></td>
+                    <td class="text-end"><span class="text-muted">{{ "%.2f"|format(p['net_total']) }} €</span></td>
+                    <td><small>{% if p['paid_at'] %}{{ p['paid_at']|localdate }}{% else %}–{% endif %}</small></td>
+                    <td class="text-center">
+                        <form method="post" action="{{ url_for('payment_mark_unpaid') }}" class="d-inline"
+                              onsubmit="return confirm('Diese Buchung wirklich stornieren und wieder auf offen setzen?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="invoice_id" value="{{ p['invoice_id'] }}">
+                            <input type="hidden" name="member_id" value="{{ p['member_id'] }}">
+                            <button type="submit" class="btn btn-sm btn-outline-warning" title="Zurücksetzen">
+                                <i class="bi bi-arrow-counterclockwise"></i>
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+            {% if not booked and not payments|selectattr('paid')|list %}
+            <tr><td colspan="5" class="text-center text-muted py-3">Noch keine Zahlungen gebucht</td></tr>
+            {% endif %}
             </tbody>
         </table>
     </div>

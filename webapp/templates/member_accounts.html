@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Mitgliedskonten{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2><i class="bi bi-person-vcard"></i> Mitgliedskonten</h2>
+    <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('payments') }}">
+        <i class="bi bi-bank"></i> Zur Überweisungsliste
+    </a>
+</div>
+
+<div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Offene Forderungen</div>
+                <div class="fs-4 fw-semibold text-danger">{{ "%.2f"|format(totals['claims']) }} €</div>
+                <div class="small text-muted">Mitglieder schulden der EEG</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Offene Guthaben</div>
+                <div class="fs-4 fw-semibold text-success">{{ "%.2f"|format(totals['credits']|abs) }} €</div>
+                <div class="small text-muted">EEG schuldet Mitgliedern</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Saldo gesamt</div>
+                <div class="fs-4 fw-semibold {% if totals['balance'] < 0 %}text-success{% else %}text-danger{% endif %}">
+                    {{ "%.2f"|format(totals['balance']) }} €
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-6 col-lg-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Davon im Buchungsrückstand</div>
+                <div class="fs-4 fw-semibold text-warning">{{ "%.2f"|format(totals['overdue']) }} €</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <i class="bi bi-list-columns"></i> Kontosaldo je Mitglied
+        <small class="text-muted">– positiver Saldo: Mitglied schuldet der EEG · negativer Saldo: Guthaben des Mitglieds</small>
+    </div>
+    <div class="card-body table-responsive p-0">
+        <table class="table table-sm table-hover mb-0 align-middle">
+            <thead class="table-light">
+                <tr>
+                    <th>Mitglied</th>
+                    <th class="text-end">Abgerechnet</th>
+                    <th class="text-end">Gebucht</th>
+                    <th class="text-end">Saldo</th>
+                    <th>Status</th>
+                    <th>Letzte Buchung</th>
+                    <th class="text-center">Konto</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for a in accounts %}
+                <tr class="{% if a['overdue'] %}table-warning{% endif %}">
+                    <td>
+                        <strong>{{ a['member_name'] }}</strong>
+                        {% if not a['iban'] and a['balance'] < 0 %}
+                        <br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> keine IBAN hinterlegt</small>
+                        {% endif %}
+                    </td>
+                    <td class="text-end"><small>{{ "%.2f"|format(a['invoiced_total']) }} €</small></td>
+                    <td class="text-end"><small>{{ "%.2f"|format(a['booked_total']) }} €</small></td>
+                    <td class="text-end">
+                        {% if a['balance'] > 0 %}
+                        <strong class="text-danger">{{ "%.2f"|format(a['balance']) }} €</strong>
+                        {% elif a['balance'] < 0 %}
+                        <strong class="text-success">−{{ "%.2f"|format(a['balance']|abs) }} €</strong>
+                        {% else %}
+                        <span class="text-muted">0,00 €</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if a['balance']|abs < 0.005 %}
+                        <span class="badge bg-success">ausgeglichen</span>
+                        {% elif a['balance'] > 0 %}
+                        <span class="badge bg-danger">Forderung</span>
+                        {% else %}
+                        <span class="badge bg-info">Guthaben</span>
+                        {% endif %}
+                        {% if a['deviating_rows'] %}
+                        <span class="badge bg-warning text-dark"
+                              title="gebuchter Betrag weicht vom abgerechneten ab">{{ a['deviating_rows'] }}× Abweichung</span>
+                        {% endif %}
+                        {% if a['overdue'] %}
+                        <span class="badge bg-warning text-dark">Rückstand</span>
+                        {% endif %}
+                    </td>
+                    <td><small>{% if a['last_booking_date'] %}{{ a['last_booking_date']|localdate }}{% else %}–{% endif %}</small></td>
+                    <td class="text-center">
+                        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('member_account_detail', id=a['member_id']) }}"
+                           title="Kontoauszug öffnen">
+                            <i class="bi bi-journal-text"></i>
+                        </a>
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="7" class="text-center text-muted py-4">Noch keine Abrechnungen vorhanden.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

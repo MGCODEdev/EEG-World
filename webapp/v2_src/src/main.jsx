@@ -86,6 +86,7 @@ const adminNavItems = [
   {label: 'Preise', path: '/prices', icon: Euro},
   {label: 'Abrechnungen', path: '/invoices', icon: ReceiptText},
   {label: 'Überweisungen', path: '/payments', icon: Banknote},
+  {label: 'Mitgliedskonten', path: '/mitgliederkonten', icon: Landmark},
   {label: 'Kassabuch', path: '/kassabuch', icon: BookOpenText},
   {label: 'Reports', path: '/reports', icon: ChartNoAxesCombined},
   {label: 'Newsletter', path: '/newsletter', icon: Mail},
@@ -343,6 +344,8 @@ function V2Shell() {
       ? <NativePayments data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'cashbook'
       ? <NativeCashbook data={nativeData} csrfToken={security.csrf_token} />
+    : nativeData?.type === 'member_accounts'
+      ? <NativeMemberAccounts data={nativeData} />
     : nativeData?.type === 'newsletter'
       ? <NativeNewsletter data={nativeData} csrfToken={security.csrf_token} user={user} />
     : nativeData?.type === 'newsletter_form'
@@ -1304,6 +1307,87 @@ function NativePrices({data, csrfToken}) {
                 );
               }) : (
                 <tr><td colSpan="7"><EmptyState text="Noch keine Preise angelegt." /></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function NativeMemberAccounts({data}) {
+  const accounts = data.accounts || [];
+  const summary = data.summary || {};
+
+  return (
+    <div className="v2-native-page v2-member-accounts-page">
+      <div className="v2-page-heading">
+        <div className="v2-page-title">
+          <Landmark size={34} strokeWidth={1.8} />
+          <h2>Mitgliedskonten</h2>
+        </div>
+        <div className="v2-page-actions">
+          <a className="v2-action-button" href="/v2/payments">
+            <Banknote size={18} />
+            <span>Überweisungen</span>
+          </a>
+        </div>
+      </div>
+
+      <section className="v2-cashbook-stats" aria-label="Kontenkennzahlen">
+        <DashboardStat icon={ReceiptText} label="Offene Forderungen" value={formatCurrency(summary.claims)} />
+        <DashboardStat icon={Euro} label="Offene Guthaben" value={formatCurrency(Math.abs(summary.credits || 0))} />
+        <DashboardStat icon={Landmark} label="Saldo gesamt" value={formatSignedCurrency(summary.balance)} />
+        <DashboardStat icon={Clock3} label="Im Buchungsrückstand" value={formatCurrency(summary.overdue)} />
+      </section>
+
+      <Card className="v2-native-card" padding={0}>
+        <div className="v2-dashboard-card-title">
+          <Users size={24} />
+          <h3>Kontosaldo je Mitglied</h3>
+        </div>
+        <div className="v2-table-wrap">
+          <table className="v2-native-table">
+            <thead>
+              <tr>
+                <th>Mitglied</th>
+                <th>Abgerechnet</th>
+                <th>Gebucht</th>
+                <th>Saldo</th>
+                <th>Status</th>
+                <th>Letzte Buchung</th>
+                <th>Konto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.length ? accounts.map((account) => (
+                <tr key={account.member_id}>
+                  <td><strong>{account.member_name}</strong></td>
+                  <td className="v2-number-cell">{formatCurrency(account.invoiced_total)}</td>
+                  <td className="v2-number-cell">{formatCurrency(account.booked_total)}</td>
+                  <td className={`v2-number-cell ${account.balance > 0 ? 'is-negative' : account.balance < 0 ? 'is-positive' : ''}`}>
+                    {formatSignedCurrency(account.balance)}
+                  </td>
+                  <td>
+                    {Math.abs(account.balance) < 0.005
+                      ? <span className="v2-tag is-muted">ausgeglichen</span>
+                      : account.balance > 0
+                        ? <span className="v2-tag is-warning">Forderung</span>
+                        : <span className="v2-tag">Guthaben</span>}
+                    {Boolean(account.deviating_rows) && <> <span className="v2-tag is-warning">{account.deviating_rows}× Abweichung</span></>}
+                    {Boolean(account.overdue) && <> <span className="v2-tag is-warning">Rückstand</span></>}
+                  </td>
+                  <td>{account.last_booking_date ? formatDate(account.last_booking_date) : '-'}</td>
+                  <td className="v2-table-action">
+                    <a className="v2-icon-action" href={`/mitgliederkonten/${account.member_id}`}
+                       aria-label="Kontoauszug öffnen" title="Kontoauszug öffnen">
+                      <NotebookText size={18} />
+                    </a>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan="7"><EmptyState text="Noch keine Abrechnungen vorhanden." /></td></tr>
               )}
             </tbody>
           </table>
