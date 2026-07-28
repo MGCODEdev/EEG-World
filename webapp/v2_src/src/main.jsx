@@ -3375,15 +3375,15 @@ function NativeChangePassword({csrfToken, user}) {
           <KeyIcon />
           <div>
             <h3>Neues Passwort setzen</h3>
-            <p>Mindestens 6 Zeichen. Verwende ein eigenes, nicht wiederverwendetes Passwort.</p>
+            <p>Mindestens 12 Zeichen. Eine Passphrase aus mehreren Wörtern ist sicher und leicht zu merken.</p>
           </div>
         </div>
         <form className="v2-settings-form" method="post" action="/v2/change-password">
           <input type="hidden" name="csrf_token" value={csrfToken || ''} />
           <div className="v2-form-section">
             <FormTextInput name="old_password" label="Altes Passwort" type="password" isRequired />
-            <FormTextInput name="new_password" label="Neues Passwort" type="password" minLength={6} isRequired />
-            <FormTextInput name="confirm_password" label="Neues Passwort bestätigen" type="password" minLength={6} isRequired />
+            <FormTextInput name="new_password" label="Neues Passwort" type="password" minLength={12} isRequired />
+            <FormTextInput name="confirm_password" label="Neues Passwort bestätigen" type="password" minLength={12} isRequired />
           </div>
           <div className="v2-form-actions">
             <button type="submit" className="v2-primary-action v2-submit-action">

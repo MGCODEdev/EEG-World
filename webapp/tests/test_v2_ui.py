@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 
 import app as eegapp
@@ -5,8 +7,22 @@ import app as eegapp
 
 class V2UITests(unittest.TestCase):
     def setUp(self):
+        # Eigene Datenbank pro Test: init_db() wuerde sonst gegen die
+        # Produktivdatenbank laufen.
+        self.tmp = tempfile.NamedTemporaryFile(delete=False)
+        self.tmp.close()
+        self.original_db_path = eegapp.DB_PATH
+        eegapp.DB_PATH = self.tmp.name
         eegapp.init_db()
         eegapp.app.config['WTF_CSRF_ENABLED'] = False
+
+    def tearDown(self):
+        eegapp.DB_PATH = self.original_db_path
+        for suffix in ('', '-wal', '-shm'):
+            try:
+                os.unlink(self.tmp.name + suffix)
+            except OSError:
+                pass
 
     def _admin_id(self):
         with eegapp.app.app_context():

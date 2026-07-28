@@ -41,7 +41,9 @@ except ImportError:
 
 # App-Pfad setzen
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, '..', 'eeg_data.db')
+# EEG_DB_PATH erlaubt es Tests und Wartungsskripten, gezielt auf eine andere
+# Datenbank zu zeigen, statt versehentlich die Produktivdatenbank zu treffen.
+DB_PATH = os.environ.get('EEG_DB_PATH') or os.path.join(BASE_DIR, '..', 'eeg_data.db')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, '..', 'data')
 INVOICE_FOLDER = os.path.join(BASE_DIR, 'invoices')
 BACKUP_FOLDER = os.path.join(BASE_DIR, '..', 'backups')
@@ -64,6 +66,14 @@ app.config['SESSION_COOKIE_SECURE'] = _IS_PRODUCTION
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_PATH'] = '/'
+# Absolute Obergrenze einer Sitzung (auch bei durchgehender Aktivitaet).
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
+    hours=int(os.environ.get('EEG_SESSION_MAX_HOURS', '8')))
+app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+# Zusaetzliche Abmeldung nach Inaktivitaet.
+SESSION_IDLE_TIMEOUT_SECONDS = int(os.environ.get('EEG_SESSION_IDLE_MINUTES', '60')) * 60
+# Ab dieser Groesse des WAL-Journals warnt der Admin-Bereich.
+WAL_WARN_BYTES = int(os.environ.get('EEG_WAL_WARN_MB', '500')) * 1024 * 1024
 if os.environ.get('EEG_SESSION_COOKIE_DOMAIN'):
     app.config['SESSION_COOKIE_DOMAIN'] = os.environ['EEG_SESSION_COOKIE_DOMAIN']
 
@@ -205,6 +215,7 @@ def inject_template_globals():
         'org_address': public_cfg['org_address'],
         'org_legal': public_cfg['org_legal'],
         'timezone_name': getattr(APP_TIMEZONE, 'key', 'Europe/Vienna'),
+        'min_password_length': MIN_PASSWORD_LENGTH,
     }
 
 
@@ -279,6 +290,60 @@ def is_safe_redirect_url(target):
     ref = urlparse(request.host_url)
     test = urlparse(urljoin(request.host_url, target))
     return test.scheme in {'http', 'https'} and ref.netloc == test.netloc
+
+
+# === Passwortrichtlinie ===
+# Orientiert an NIST SP 800-63B: Laenge schlaegt Sonderzeichen-Pflicht.
+MIN_PASSWORD_LENGTH = int(os.environ.get('EEG_MIN_PASSWORD_LENGTH', '12'))
+
+# Auswahl der in Leaks am haeufigsten auftauchenden Passwoerter.
+_WEAK_PASSWORDS = {
+    '123456789012', '1234567890123', 'passwort1234', 'password1234',
+    'passwort2024', 'passwort2025', 'passwort2026', 'password2024',
+    'password2025', 'password2026', 'qwertzuiopas', 'qwertyuiopas',
+    'administrator', 'willkommen12', 'willkommen123', 'sommer2025!',
+    'geheim123456', 'iloveyou1234', 'letmein12345', 'trustno1234',
+}
+
+
+def validate_password(password, username=None):
+    """Prueft ein neues Passwort. Liefert eine Fehlermeldung oder '' bei OK."""
+    password = password or ''
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return (f'Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen haben. '
+                'Eine Passphrase aus mehreren Woertern ist am einfachsten zu merken.')
+    normalized = password.strip().lower()
+    if normalized in _WEAK_PASSWORDS:
+        return 'Dieses Passwort ist zu leicht zu erraten. Bitte ein anderes waehlen.'
+    if len(set(normalized)) < 5:
+        return 'Passwort besteht aus zu wenigen unterschiedlichen Zeichen.'
+    if username and len(username) >= 3 and username.strip().lower() in normalized:
+        return 'Passwort darf den Benutzernamen nicht enthalten.'
+    return ''
+
+
+# === Fehlerausgabe ===
+class UserError(Exception):
+    """Fachlicher Fehler, dessen Text dem Nutzer gezeigt werden darf."""
+
+
+# Fachliche Validierungsfehler werden im Projekt bereits als ValueError geworfen.
+_USER_SAFE_EXCEPTIONS = (UserError, ValueError)
+
+
+def flash_exception(exc, fallback='Aktion fehlgeschlagen.', category='danger'):
+    """Zeigt fachliche Fehler im Klartext, technische nur mit Referenz-ID.
+
+    Technische Details (Dateipfade, SQL, SMTP-Antworten) landen ausschliesslich
+    im Serverlog und koennen ueber die Referenz zugeordnet werden.
+    """
+    if isinstance(exc, _USER_SAFE_EXCEPTIONS):
+        flash(str(exc), category)
+        return None
+    ref = secrets.token_hex(4)
+    app.logger.exception('Fehler %s (%s)', ref, fallback)
+    flash(f'{fallback} (Referenz: {ref})', category)
+    return ref
 
 
 def public_base_url():
@@ -567,6 +632,20 @@ def init_db():
     # Bestehende admins markieren
     db.execute("UPDATE users SET role='admin' WHERE is_admin=1 AND (role IS NULL OR role='')")
     db.execute("UPDATE users SET role='member' WHERE is_admin=0 AND (role IS NULL OR role='')")
+    # Erzwungener Passwortwechsel: Bestandsadmins einmalig markieren, weil ihre
+    # Passwoerter noch unter der alten Mindestlaenge von 6 Zeichen entstanden sind.
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN password_change_required INTEGER DEFAULT 0")
+        db.execute("UPDATE users SET password_change_required=1 WHERE is_admin=1")
+    except sqlite3.OperationalError:
+        pass
+    # Persistente Login-Sperre (ueberlebt Neustarts)
+    db.execute("""CREATE TABLE IF NOT EXISTS login_attempts (
+        ip TEXT PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0,
+        last_attempt REAL NOT NULL DEFAULT 0,
+        locked_until REAL NOT NULL DEFAULT 0
+    )""")
     # Contracts-Tabelle
     db.execute("""CREATE TABLE IF NOT EXISTS contracts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1128,38 +1207,150 @@ def audit_page_views(response):
 
 
 # === Login Security ===
-_login_attempts = {}  # {ip: {'count': int, 'last': float, 'locked_until': float}}
+# Die Zaehler liegen in der Datenbank, damit eine Sperre einen Neustart oder ein
+# Deployment ueberlebt (frueher: Prozessspeicher, nach jedem Restart zurueckgesetzt).
 MAX_LOGIN_ATTEMPTS = 5
 LOCKOUT_SECONDS = 300  # 5 Minuten
+LOGIN_ATTEMPT_RESET_SECONDS = 900  # Zaehler nach 15 Minuten Ruhe zuruecksetzen
+
+
+def _login_attempt_row(ip):
+    try:
+        return get_db().execute(
+            "SELECT count, last_attempt, locked_until FROM login_attempts WHERE ip=?",
+            (ip,)).fetchone()
+    except sqlite3.Error:
+        app.logger.exception('Login-Sperrtabelle nicht lesbar')
+        return None
 
 
 def _check_login_rate(ip):
     """Prüft ob eine IP gesperrt ist. Gibt verbleibende Sekunden zurück, oder 0."""
-    import time
-    info = _login_attempts.get(ip, {})
-    locked_until = info.get('locked_until', 0)
-    if locked_until > time.time():
-        return int(locked_until - time.time())
-    return 0
+    row = _login_attempt_row(ip)
+    if not row:
+        return 0
+    remaining = (row['locked_until'] or 0) - time.time()
+    return int(remaining) if remaining > 0 else 0
+
+
+def _login_attempt_count(ip):
+    """Aktuelle Anzahl Fehlversuche innerhalb des Beobachtungsfensters."""
+    row = _login_attempt_row(ip)
+    if not row:
+        return 0
+    if time.time() - (row['last_attempt'] or 0) > LOGIN_ATTEMPT_RESET_SECONDS:
+        return 0
+    return row['count'] or 0
 
 
 def _record_failed_login(ip):
     """Zählt fehlgeschlagene Login-Versuche und sperrt ggf."""
-    import time
     now = time.time()
-    info = _login_attempts.get(ip, {'count': 0, 'last': 0, 'locked_until': 0})
-    # Reset nach 15 Minuten ohne Versuch
-    if now - info.get('last', 0) > 900:
-        info = {'count': 0, 'last': now, 'locked_until': 0}
-    info['count'] = info.get('count', 0) + 1
-    info['last'] = now
-    if info['count'] >= MAX_LOGIN_ATTEMPTS:
-        info['locked_until'] = now + LOCKOUT_SECONDS
-    _login_attempts[ip] = info
+    count = _login_attempt_count(ip) + 1
+    locked_until = now + LOCKOUT_SECONDS if count >= MAX_LOGIN_ATTEMPTS else 0
+    try:
+        db = get_db()
+        db.execute("""
+            INSERT INTO login_attempts (ip, count, last_attempt, locked_until)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(ip) DO UPDATE SET
+                count = excluded.count,
+                last_attempt = excluded.last_attempt,
+                locked_until = excluded.locked_until
+        """, (ip, count, now, locked_until))
+        db.commit()
+    except sqlite3.Error:
+        app.logger.exception('Fehlversuch konnte nicht gespeichert werden')
 
 
 def _reset_login_attempts(ip):
-    _login_attempts.pop(ip, None)
+    try:
+        db = get_db()
+        db.execute("DELETE FROM login_attempts WHERE ip=?", (ip,))
+        db.commit()
+    except sqlite3.Error:
+        app.logger.exception('Login-Sperre konnte nicht aufgehoben werden')
+
+
+# === Schutz gegen Scanner-Fluten ===
+# Reine Prozess-Statistik: 404-Serien stammen von Bots, ein Neustart darf den
+# Zaehler folgenlos leeren. Deshalb bewusst keine Datenbankschreiblast.
+NOT_FOUND_LIMIT = int(os.environ.get('EEG_NOT_FOUND_LIMIT', '30'))
+NOT_FOUND_WINDOW_SECONDS = 300
+NOT_FOUND_BLOCK_SECONDS = 900
+_NOT_FOUND_HITS = {}  # {ip: [count, window_start, blocked_until]}
+_NOT_FOUND_LOCK = threading.Lock()
+
+
+def _not_found_block_seconds(ip):
+    with _NOT_FOUND_LOCK:
+        entry = _NOT_FOUND_HITS.get(ip)
+        if not entry:
+            return 0
+        remaining = entry[2] - time.time()
+        return int(remaining) if remaining > 0 else 0
+
+
+def _record_not_found(ip):
+    now = time.time()
+    with _NOT_FOUND_LOCK:
+        if len(_NOT_FOUND_HITS) > 5000:
+            for key, value in list(_NOT_FOUND_HITS.items()):
+                if value[2] < now and now - value[1] > NOT_FOUND_WINDOW_SECONDS:
+                    _NOT_FOUND_HITS.pop(key, None)
+        entry = _NOT_FOUND_HITS.get(ip)
+        if not entry or now - entry[1] > NOT_FOUND_WINDOW_SECONDS:
+            entry = [0, now, entry[2] if entry else 0]
+        entry[0] += 1
+        if entry[0] >= NOT_FOUND_LIMIT:
+            entry = [0, now, now + NOT_FOUND_BLOCK_SECONDS]
+            app.logger.warning('IP %s wegen 404-Flut fuer %s Sekunden gesperrt',
+                               ip, NOT_FOUND_BLOCK_SECONDS)
+        _NOT_FOUND_HITS[ip] = entry
+
+
+def _password_change_allowed_endpoint():
+    """Seiten, die trotz erzwungenem Passwortwechsel erreichbar bleiben muessen."""
+    if (request.endpoint or '') in {'change_password', 'logout', 'static'}:
+        return True
+    # V2-Oberflaeche: /v2/change-password laeuft ueber die SPA-Sammelroute.
+    return request.path.rstrip('/').endswith('/change-password')
+
+
+@app.before_request
+def enforce_request_policies():
+    """Scanner-Sperre, Sitzungs-Timeout und erzwungener Passwortwechsel."""
+    blocked = _not_found_block_seconds(get_real_ip())
+    if blocked > 0:
+        return ('Zu viele ungueltige Anfragen.', 429, {'Retry-After': str(blocked)})
+
+    if not (current_user and current_user.is_authenticated):
+        return None
+
+    session.permanent = True
+    now = time.time()
+    last_seen = session.get('last_seen')
+    if isinstance(last_seen, (int, float)) and now - last_seen > SESSION_IDLE_TIMEOUT_SECONDS:
+        audit_log('session_timeout', 'Sitzung wegen Inaktivität beendet')
+        logout_user()
+        session.clear()
+        flash('Sitzung wegen Inaktivität beendet. Bitte erneut anmelden.', 'warning')
+        return redirect('/v2/login' if request.path.startswith('/v2') else url_for('login'))
+    session['last_seen'] = now
+
+    if session.get('must_change_password') and not _password_change_allowed_endpoint():
+        flash('Bitte vergeben Sie zuerst ein neues, sicheres Passwort.', 'warning')
+        return redirect('/v2/change-password' if request.path.startswith('/v2')
+                        else url_for('change_password'))
+    return None
+
+
+@app.after_request
+def track_not_found_flood(response):
+    """Zaehlt 404er nur fuer nicht angemeldete Aufrufer (typische Scanner)."""
+    if response.status_code == 404 and not (current_user and current_user.is_authenticated):
+        _record_not_found(get_real_ip())
+    return response
 
 
 def _v2_assets():
@@ -2211,12 +2402,14 @@ def _change_password_from_request(db):
     if new_pw != confirm:
         flash('Neue Passwörter stimmen nicht überein.', 'danger')
         return False
-    if len(new_pw) < 6:
-        flash('Passwort muss mindestens 6 Zeichen haben.', 'danger')
+    policy_error = validate_password(new_pw, current_user.username)
+    if policy_error:
+        flash(policy_error, 'danger')
         return False
-    db.execute("UPDATE users SET password_hash=? WHERE id=?",
+    db.execute("UPDATE users SET password_hash=?, password_change_required=0 WHERE id=?",
                (generate_password_hash(new_pw), current_user.id))
     db.commit()
+    session.pop('must_change_password', None)
     audit_log('password_change', 'Passwort geändert')
     flash('Passwort geändert.', 'success')
     return True
@@ -2354,7 +2547,8 @@ def login():
         password = request.form.get('password', '')
         db = get_db()
         candidates = db.execute("""
-            SELECT id, username, password_hash, is_admin, member_id, role
+            SELECT id, username, password_hash, is_admin, member_id, role,
+                   password_change_required
             FROM users
             WHERE LOWER(username)=? OR LOWER(email)=?
             ORDER BY
@@ -2375,7 +2569,12 @@ def login():
             user = User(row['id'], row['username'], row['is_admin'],
                         row['member_id'], row['role'])
             login_user(user)
+            session['last_seen'] = time.time()
             audit_log('login', f'Anmeldung erfolgreich (Rolle: {user.role})')
+            if row['password_change_required']:
+                session['must_change_password'] = True
+                flash('Bitte vergeben Sie zuerst ein neues, sicheres Passwort.', 'warning')
+                return redirect(url_for('change_password'))
             next_page = request.args.get('next')
             if next_page and is_safe_redirect_url(next_page):
                 return redirect(next_page)
@@ -2384,7 +2583,7 @@ def login():
             return redirect(url_for('portal_dashboard'))
         _record_failed_login(ip)
         audit_log('login_failed', f'Fehlgeschlagener Login für "{login_identifier}"', user_id=0, username=login_identifier)
-        remaining = MAX_LOGIN_ATTEMPTS - _login_attempts.get(ip, {}).get('count', 0)
+        remaining = MAX_LOGIN_ATTEMPTS - _login_attempt_count(ip)
         if remaining > 0:
             flash(f'Ungültiger Benutzername oder Passwort. Noch {remaining} Versuche.', 'danger')
         else:
@@ -2414,7 +2613,8 @@ def v2_login():
         password = request.form.get('password', '')
         db = get_db()
         candidates = db.execute("""
-            SELECT id, username, password_hash, is_admin, member_id, role
+            SELECT id, username, password_hash, is_admin, member_id, role,
+                   password_change_required
             FROM users
             WHERE LOWER(username)=? OR LOWER(email)=?
             ORDER BY
@@ -2434,14 +2634,19 @@ def v2_login():
             _reset_login_attempts(ip)
             user = User(row['id'], row['username'], row['is_admin'], row['member_id'], row['role'])
             login_user(user)
+            session['last_seen'] = time.time()
             audit_log('login', f'Anmeldung erfolgreich (Rolle: {user.role})')
+            if row['password_change_required']:
+                session['must_change_password'] = True
+                flash('Bitte vergeben Sie zuerst ein neues, sicheres Passwort.', 'warning')
+                return redirect('/v2/change-password')
             next_page = request.args.get('next') or request.form.get('next')
             if next_page and is_safe_redirect_url(next_page):
                 return redirect(next_page)
             return redirect('/v2/' if user.is_admin else '/v2/portal')
         _record_failed_login(ip)
         audit_log('login_failed', f'Fehlgeschlagener Login für "{login_identifier}"', user_id=0, username=login_identifier)
-        remaining = MAX_LOGIN_ATTEMPTS - _login_attempts.get(ip, {}).get('count', 0)
+        remaining = MAX_LOGIN_ATTEMPTS - _login_attempt_count(ip)
         if remaining > 0:
             flash(f'Ungültiger Benutzername oder Passwort. Noch {remaining} Versuche.', 'danger')
         else:
@@ -2469,16 +2674,18 @@ def change_password():
         db = get_db()
         row = db.execute("SELECT password_hash FROM users WHERE id=?",
                          (current_user.id,)).fetchone()
+        policy_error = validate_password(new_pw, current_user.username)
         if not check_password_hash(row['password_hash'], old_pw):
             flash('Altes Passwort falsch.', 'danger')
         elif new_pw != confirm:
             flash('Neue Passwörter stimmen nicht überein.', 'danger')
-        elif len(new_pw) < 6:
-            flash('Passwort muss mindestens 6 Zeichen haben.', 'danger')
+        elif policy_error:
+            flash(policy_error, 'danger')
         else:
-            db.execute("UPDATE users SET password_hash=? WHERE id=?",
+            db.execute("UPDATE users SET password_hash=?, password_change_required=0 WHERE id=?",
                        (generate_password_hash(new_pw), current_user.id))
             db.commit()
+            session.pop('must_change_password', None)
             audit_log('password_change', 'Passwort geändert')
             flash('Passwort geändert.', 'success')
             return redirect(url_for('dashboard'))
@@ -2636,28 +2843,26 @@ def v2_dashboard(subpath=None):
                 else:
                     flash('Unbekannte Datenbank-Aktion.', 'danger')
             except Exception as e:
-                app.logger.exception('V2 database action failed')
-                flash(f'Datenbank-Aktion fehlgeschlagen: {e}', 'danger')
+                flash_exception(e, 'Datenbank-Aktion fehlgeschlagen.')
         elif current_path == '/invoices/new':
             try:
                 invoice_id = _create_invoice_from_request(get_db())
                 return redirect(f'/v2/invoices/{invoice_id}')
             except Exception as e:
-                app.logger.exception('V2 invoice creation failed')
-                flash(str(e), 'danger')
+                flash_exception(e, 'Rechnung konnte nicht erstellt werden.')
         elif current_path == '/newsletter/new':
             try:
                 _save_newsletter_from_request(get_db())
                 return redirect('/v2/newsletter')
             except Exception as e:
-                flash(str(e), 'danger')
+                flash_exception(e, 'Newsletter konnte nicht gespeichert werden.')
         elif re.fullmatch(r'/newsletter/\d+/edit', current_path):
             newsletter_id = int(current_path.split('/')[2])
             try:
                 _save_newsletter_from_request(get_db(), newsletter_id)
                 return redirect('/v2/newsletter')
             except Exception as e:
-                flash(str(e), 'danger')
+                flash_exception(e, 'Newsletter konnte nicht gespeichert werden.')
         elif current_path == '/change-password':
             target = '/v2/' if current_user.is_admin else '/v2/portal'
             if _change_password_from_request(get_db()):
@@ -4022,7 +4227,7 @@ def invoice_send_single(id, member_id):
                     f"EEG Abrechnung {invoice['period_from']} - {invoice['period_to']}",
                     str(e)))
         db.commit()
-        flash(f'Fehler beim Senden an {member["name"]}: {e}', 'danger')
+        flash_exception(e, f'E-Mail an {member["name"]} konnte nicht gesendet werden.')
 
     return redirect(url_for('invoice_detail', id=id))
 
@@ -4621,7 +4826,7 @@ def _reports_response(portal=False):
     if not member:
         flash('Kein aktives Mitglied für den Report gefunden.', 'warning')
         return render_template('reports.html', members=members, selected_member=None, report=None,
-                               report_json='{}', period_from=period_from, period_to=period_to,
+                               period_from=period_from, period_to=period_to,
                                aggregation=aggregation, aggregations=REPORT_AGGREGATIONS, portal=portal,
                                min_date=min_date, max_date=max_date)
 
@@ -4634,7 +4839,6 @@ def _reports_response(portal=False):
         members=members,
         selected_member=member,
         report=report,
-        report_json=json.dumps(report, ensure_ascii=False),
         period_from=period_from,
         period_to=period_to,
         aggregation=aggregation,
@@ -5491,11 +5695,21 @@ def _run_due_backup_jobs():
 
 
 def _backup_scheduler_loop():
+    last_checkpoint = time.time()
     while True:
         try:
             _run_due_backup_jobs()
         except Exception:
             app.logger.exception('Automatic backup scheduler failed')
+        # Stuendlicher WAL-Checkpoint: haelt eeg_data.db-wal klein, damit die
+        # Datei nicht unbemerkt zwischen den Backups anwaechst.
+        if time.time() - last_checkpoint >= 3600:
+            last_checkpoint = time.time()
+            try:
+                with BACKUP_JOB_LOCK:
+                    _checkpoint_database()
+            except Exception:
+                app.logger.exception('WAL-Checkpoint fehlgeschlagen')
         time.sleep(60)
 
 
@@ -5518,6 +5732,8 @@ def get_backup_info():
             if os.path.isfile(fpath):
                 invoice_count += 1
                 invoice_size += os.path.getsize(fpath)
+    wal_path = DB_PATH + '-wal'
+    wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
     return {
         'db_path': DB_PATH,
         'db_size': os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
@@ -5525,6 +5741,8 @@ def get_backup_info():
         'backup_folder': BACKUP_FOLDER,
         'invoice_count': invoice_count,
         'invoice_size': invoice_size,
+        'wal_size': wal_size,
+        'wal_warning': wal_size > WAL_WARN_BYTES,
     }
 
 
@@ -5654,7 +5872,7 @@ def admin_backup_google_connect():
         return redirect(authorization_url)
     except Exception as e:
         audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
-        flash(f'Google Drive Verbindung konnte nicht gestartet werden: {e}', 'danger')
+        flash_exception(e, 'Google Drive Verbindung konnte nicht gestartet werden.')
         return redirect(_backup_redirect_target())
 
 
@@ -5678,7 +5896,7 @@ def admin_backup_google_client_config():
         flash('Google OAuth Client-Konfiguration gespeichert. Ein vorhandener Token wurde zur Sicherheit entfernt; bitte Google Drive neu verbinden.', 'success')
     except Exception as e:
         audit_log('backup_drive_client_config_failed', f'Google OAuth Client-Konfiguration fehlgeschlagen: {e}')
-        flash(f'Google OAuth Client-Konfiguration konnte nicht gespeichert werden: {e}', 'danger')
+        flash_exception(e, 'Google OAuth Client-Konfiguration konnte nicht gespeichert werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5699,7 +5917,7 @@ def admin_backup_google_token():
         flash('Google Drive Token wurde gespeichert.', 'success')
     except Exception as e:
         audit_log('backup_drive_token_failed', f'Google Drive Token konnte nicht gespeichert werden: {e}')
-        flash(f'Google Drive Token konnte nicht gespeichert werden: {e}', 'danger')
+        flash_exception(e, 'Google Drive Token konnte nicht gespeichert werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5740,7 +5958,7 @@ def admin_backup_google_callback():
         flash('Google Drive wurde erfolgreich verbunden.', 'success')
     except Exception as e:
         audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
-        flash(f'Google Drive konnte nicht verbunden werden: {e}', 'danger')
+        flash_exception(e, 'Google Drive konnte nicht verbunden werden.')
     finally:
         session.pop('google_drive_oauth_state', None)
         session.pop('google_drive_oauth_correlation_id', None)
@@ -5764,7 +5982,7 @@ def admin_backup_google_client_config_delete():
         flash('Google Drive Client-Konfiguration und Token wurden entfernt.', 'success')
     except Exception as e:
         audit_log('backup_drive_client_config_delete_failed', f'Google Drive Client-Konfiguration konnte nicht entfernt werden: {e}')
-        flash(f'Google Drive Client-Konfiguration konnte nicht entfernt werden: {e}', 'danger')
+        flash_exception(e, 'Google Drive Client-Konfiguration konnte nicht entfernt werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5783,7 +6001,7 @@ def admin_backup_google_disconnect():
         flash('Google Drive wurde getrennt. Automatischer Drive-Upload ist deaktiviert.', 'success')
     except Exception as e:
         audit_log('backup_drive_disconnect_failed', f'Google Drive Trennung fehlgeschlagen: {e}')
-        flash(f'Google Drive konnte nicht getrennt werden: {e}', 'danger')
+        flash_exception(e, 'Google Drive konnte nicht getrennt werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5800,7 +6018,7 @@ def admin_backup_google_test():
         _set_setting(db, 'backup_drive_last_error', str(e))
         db.commit()
         audit_log('backup_drive_test_failed', f'Google Drive Verbindungstest fehlgeschlagen: {e}')
-        flash(f'Google Drive Verbindungstest fehlgeschlagen: {e}', 'danger')
+        flash_exception(e, 'Google Drive Verbindungstest fehlgeschlagen.')
     return redirect(_backup_redirect_target())
 
 
@@ -5815,7 +6033,7 @@ def admin_backup_run():
         app.logger.info('Manual local backup created: %s', zip_path)
     except Exception as e:
         audit_log('backup_manual_failed', f'Manuelles lokales Backup fehlgeschlagen: {e}')
-        flash(f'Backup konnte nicht erstellt werden: {e}', 'danger')
+        flash_exception(e, 'Backup konnte nicht erstellt werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5834,7 +6052,7 @@ def admin_backup_upload_drive():
         _set_setting(db, 'backup_drive_last_error', str(e))
         db.commit()
         audit_log('backup_drive_failed', f'Google Drive Upload fehlgeschlagen: {filename} ({e})')
-        flash(f'Google Drive Upload fehlgeschlagen: {e}', 'danger')
+        flash_exception(e, 'Google Drive Upload fehlgeschlagen.')
     return redirect(_backup_redirect_target())
 
 
@@ -5853,7 +6071,7 @@ def admin_backup_google_delete():
         _set_setting(db, 'backup_drive_last_error', str(e))
         db.commit()
         audit_log('backup_drive_delete_failed', f'Google Drive Backup konnte nicht gelöscht werden: {drive_file_id} ({e})')
-        flash(f'Google Drive Backup konnte nicht gelöscht werden: {e}', 'danger')
+        flash_exception(e, 'Google Drive Backup konnte nicht gelöscht werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5870,7 +6088,7 @@ def admin_backup_delete():
         flash(f'Backup gelöscht: {backup_name}', 'success')
     except Exception as e:
         audit_log('backup_delete_failed', f'Backup-Löschung fehlgeschlagen: {filename} ({e})')
-        flash(f'Backup konnte nicht gelöscht werden: {e}', 'danger')
+        flash_exception(e, 'Backup konnte nicht gelöscht werden.')
     return redirect(_backup_redirect_target())
 
 
@@ -5892,7 +6110,7 @@ def admin_backup_send_mail():
         flash(f'Backup-Mail wurde an {recipient} gesendet.', 'success')
     except Exception as e:
         audit_log('backup_email_manual_failed', f'Manuelle Backup-Mail fehlgeschlagen: {e}')
-        flash(f'Backup-Mail konnte nicht gesendet werden: {e}', 'danger')
+        flash_exception(e, 'Backup-Mail konnte nicht gesendet werden.')
     finally:
         if email_path and os.path.exists(email_path):
             try:
@@ -5984,7 +6202,7 @@ def backup_restore():
         flash('Backup erfolgreich wiederhergestellt. Bitte Server neu starten.', 'success')
     except Exception as e:
         audit_log('backup_restore_failed', f'Backup-Wiederherstellung fehlgeschlagen: {e}')
-        flash(f'Fehler beim Wiederherstellen: {e}', 'danger')
+        flash_exception(e, 'Wiederherstellung fehlgeschlagen.')
     finally:
         os.unlink(tmp.name)
 
@@ -6292,7 +6510,7 @@ def admin_database_check():
     except Exception as e:
         check_result = None
         audit_log('database_quality_check_failed', f'Datenbank-Qualitätscheck fehlgeschlagen: {e}')
-        flash(f'Qualitätscheck fehlgeschlagen: {e}', 'danger')
+        flash_exception(e, 'Qualitätscheck fehlgeschlagen.')
     return render_template('admin_database.html', stats=get_database_stats(), check_result=check_result)
 
 
@@ -6311,7 +6529,7 @@ def admin_database_maintenance():
     except Exception as e:
         result = None
         audit_log('database_maintenance_failed', f'Datenbank-Wartung fehlgeschlagen: {e}')
-        flash(f'Datenbank-Wartung fehlgeschlagen: {e}', 'danger')
+        flash_exception(e, 'Datenbank-Wartung fehlgeschlagen.')
     return render_template('admin_database.html', stats=get_database_stats(), maintenance_result=result)
 
 
@@ -6658,7 +6876,7 @@ def payment_mark_paid():
     except Exception as e:
         db.rollback()
         audit_log('payment_paid_failed', f'Zahlungsbuchung fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
-        flash(f'Buchung konnte nicht gespeichert werden: {e}', 'danger')
+        flash_exception(e, 'Buchung konnte nicht gespeichert werden.')
     return redirect(_payment_redirect_target())
 
 
@@ -6697,7 +6915,7 @@ def payment_mark_unpaid():
     except Exception as e:
         db.rollback()
         audit_log('payment_unpaid_failed', f'Buchungsstorno fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
-        flash(f'Buchung konnte nicht zurückgesetzt werden: {e}', 'danger')
+        flash_exception(e, 'Buchung konnte nicht zurückgesetzt werden.')
     return redirect(_payment_redirect_target())
 
 
@@ -6813,7 +7031,7 @@ def admin_user_create():
             flash(f'Benutzer "{username}" angelegt und Einladung an {member["email"]} gesendet.', 'success')
         except Exception as e:
             app.logger.exception('Invitation mail failed for user %s', username)
-            flash(f'Benutzer "{username}" angelegt, aber die Einladung konnte nicht per E-Mail gesendet werden: {e}', 'warning')
+            flash_exception(e, f'Benutzer "{username}" angelegt, aber die Einladung konnte nicht per E-Mail gesendet werden.', 'warning')
             flash(f'Einladungslink: {invite_url}', 'info')
     else:
         flash(f'Benutzer "{username}" angelegt. Keine E-Mail-Adresse hinterlegt; Einladungslink: {invite_url}', 'warning')
@@ -6851,7 +7069,7 @@ def admin_user_reinvite(id):
             flash(f'Neuer Einladungslink für "{user["username"]}" generiert und an {user["email"]} gesendet.', 'success')
         except Exception as e:
             app.logger.exception('Invitation mail failed for user %s', user['username'])
-            flash(f'Neuer Einladungslink generiert, aber die Einladung konnte nicht per E-Mail gesendet werden: {e}', 'warning')
+            flash_exception(e, 'Neuer Einladungslink generiert, aber die Einladung konnte nicht per E-Mail gesendet werden.', 'warning')
             flash(f'Einladungslink: {invite_url}', 'info')
     else:
         flash(f'Neuer Einladungslink generiert. Keine E-Mail-Adresse hinterlegt; Link: {invite_url}', 'warning')
@@ -6980,13 +7198,17 @@ def invite_accept(token):
     if request.method == 'POST':
         password = request.form.get('password', '')
         confirm = request.form.get('confirm_password', '')
-        if len(password) < 6:
-            flash('Passwort muss mindestens 6 Zeichen haben.', 'danger')
+        policy_error = validate_password(password, user['username'])
+        if policy_error:
+            flash(policy_error, 'danger')
             return render_template('invite.html', token=token, username=user['username'])
         if password != confirm:
             flash('Passwörter stimmen nicht überein.', 'danger')
             return render_template('invite.html', token=token, username=user['username'])
-        db.execute("UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL WHERE id=?",
+        db.execute("""UPDATE users
+                      SET password_hash=?, invite_token=NULL, invite_expires=NULL,
+                          password_change_required=0
+                      WHERE id=?""",
                    (generate_password_hash(password), user['id']))
         db.commit()
         audit_log('invite_accept', f'Einladung angenommen, Passwort gesetzt', user_id=user['id'], username=user['username'])
@@ -7010,13 +7232,17 @@ def v2_invite_accept(token):
     if request.method == 'POST':
         password = request.form.get('password', '')
         confirm = request.form.get('confirm_password', '')
-        if len(password) < 6:
-            flash('Passwort muss mindestens 6 Zeichen haben.', 'danger')
+        policy_error = validate_password(password, user['username'])
+        if policy_error:
+            flash(policy_error, 'danger')
             return render_template('v2_public.html', page='invite', token=token, username=user['username'])
         if password != confirm:
             flash('Passwörter stimmen nicht überein.', 'danger')
             return render_template('v2_public.html', page='invite', token=token, username=user['username'])
-        db.execute("UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL WHERE id=?",
+        db.execute("""UPDATE users
+                      SET password_hash=?, invite_token=NULL, invite_expires=NULL,
+                          password_change_required=0
+                      WHERE id=?""",
                    (generate_password_hash(password), user['id']))
         db.commit()
         audit_log('invite_accept', 'Einladung angenommen, Passwort gesetzt', user_id=user['id'], username=user['username'])
@@ -7449,7 +7675,7 @@ def newsletter_test(id):
             server.sendmail(mail_cfg['from_address'], [test_email], msg.as_string())
         flash(f'Test-E-Mail erfolgreich an {test_email} gesendet.', 'success')
     except Exception as e:
-        flash(f'Fehler beim Senden der Test-E-Mail: {e}', 'danger')
+        flash_exception(e, 'Test-E-Mail konnte nicht gesendet werden.')
 
     audit_log('newsletter_test', f'Test-E-Mail für "{nl["subject"]}" an {test_email}')
     return redirect(_newsletter_redirect_target())
@@ -7541,7 +7767,7 @@ def newsletter_send(id):
 
         server.quit()
     except Exception as e:
-        flash(f'SMTP-Verbindungsfehler: {e}', 'danger')
+        flash_exception(e, 'SMTP-Verbindung fehlgeschlagen.')
         return redirect(_newsletter_redirect_target())
 
     db.execute("UPDATE newsletters SET sent_at=datetime('now'), recipients_count=? WHERE id=?", (sent, id))

@@ -17,12 +17,13 @@
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-3">
                         <label class="form-label">Neues Passwort</label>
-                        <input type="password" name="password" class="form-control" minlength="6" required autofocus>
+                        <input type="password" name="password" class="form-control" minlength="{{ min_password_length }}" required autofocus>
+                        <div class="form-text">Mindestens {{ min_password_length }} Zeichen. Eine Passphrase aus mehreren Wörtern ist sicher und leicht zu merken.</div>
                         <div class="form-text">Mindestens 6 Zeichen</div>
                     </div>
                     <div class="mb-3">
                         <label class="form-label">Passwort bestätigen</label>
-                        <input type="password" name="confirm_password" class="form-control" minlength="6" required>
+                        <input type="password" name="confirm_password" class="form-control" minlength="{{ min_password_length }}" required>
                     </div>
                     <button type="submit" class="btn btn-primary w-100"><i class="bi bi-check-lg"></i> Passwort setzen</button>
                 </form>

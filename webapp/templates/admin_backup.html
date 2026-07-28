@@ -3,6 +3,15 @@
 {% block content %}
 <h2 class="page-title"><i class="bi bi-archive"></i> Backup & Wiederherstellung</h2>
 
+{% if info.wal_warning %}
+<div class="alert alert-warning">
+    <i class="bi bi-exclamation-triangle"></i>
+    Das WAL-Journal ist mit {{ "%.1f"|format(info.wal_size / 1024 / 1024) }} MB ungewöhnlich groß.
+    Es wird stündlich automatisch zusammengeführt – bleibt der Wert hoch, blockiert vermutlich
+    ein hängender Vorgang den Checkpoint. Ein Neustart des Dienstes behebt das in der Regel.
+</div>
+{% endif %}
+
 <div class="row g-4">
     <div class="col-lg-6">
         <div class="card h-100">

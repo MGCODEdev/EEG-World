@@ -408,7 +408,7 @@
 <script src="https://code.highcharts.com/modules/sankey.js"></script>
 <script src="https://code.highcharts.com/modules/accessibility.js"></script>
 <script>
-const report = {{ report_json|safe }};
+const report = {{ report|tojson }};
 const heatValues = report.charts.heatmap.map(point => point[2]);
 const heatMax = Math.max(1, ...heatValues);
 const heatmapPoints = report.charts.heatmap.map(point => ({
