@@ -145,11 +145,25 @@
                     <input type="date" name="booking_date" value="{{ today }}" max="{{ today }}"
                            class="form-control form-control-sm mb-1" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}" required>
                     <input type="number" name="amount_eur" step="0.01" value="{{ "%.2f"|format(p['open_amount']) }}"
+                           id="credit-amount-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
                            class="form-control form-control-sm" form="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
                            title="Tatsächlich ausbezahlter Betrag, negativ" required>
                     <small class="text-muted">tatsächlich ausbezahlt (negativ)</small>
                 </td>
                 <td class="text-center">
+                    {% if p['iban'] %}
+                    <button type="button" class="btn btn-sm btn-outline-primary mb-1" title="QR-Code für die Überweisung anzeigen"
+                            data-transfer-qr
+                            data-member="{{ sepa_text(p['account_holder'] or p['member_name'], 70) }}"
+                            data-iban="{{ p['iban'] }}"
+                            data-bic="{{ p['bic'] or '' }}"
+                            data-reference="{{ sepa_text(reference_for(p), 140) }}"
+                            data-amount-field="credit-amount-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
+                            data-qr-url="{{ url_for('payment_transfer_qr', invoice_id=p['invoice_id'], member_id=p['member_id']) }}">
+                        <i class="bi bi-qr-code"></i> QR
+                    </button>
+                    <br>
+                    {% endif %}
                     <form method="post" action="{{ url_for('payment_mark_paid') }}" class="d-inline"
                           id="book-payment-{{ p['invoice_id'] }}-{{ p['member_id'] }}"
                           data-confirm-booking data-action-label="Gutschrift auszahlen"
@@ -429,6 +443,47 @@
     </div>
 {% endfor %}
 
+<!-- QR-Code für die Auszahlung einer Gutschrift -->
+<div class="modal fade" id="transferQrModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-qr-code"></i> Überweisung per QR-Code</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+            </div>
+            <div class="modal-body text-center">
+                <div class="border rounded p-2 d-inline-block bg-white">
+                    <img id="transferQrImage" alt="QR-Code für die SEPA-Überweisung"
+                         style="width: 15rem; height: 15rem;">
+                </div>
+                <div id="transferQrError" class="alert alert-danger mt-3 mb-0 py-2 d-none"></div>
+                <table class="table table-sm mt-3 mb-0 text-start">
+                    <tbody>
+                        <tr><th class="text-muted fw-normal" style="width:40%">Empfänger</th>
+                            <td id="transferQrName"></td></tr>
+                        <tr><th class="text-muted fw-normal">IBAN</th>
+                            <td class="font-monospace" id="transferQrIban"></td></tr>
+                        <tr id="transferQrBicRow"><th class="text-muted fw-normal">BIC</th>
+                            <td class="font-monospace" id="transferQrBic"></td></tr>
+                        <tr><th class="text-muted fw-normal">Betrag</th>
+                            <td><strong id="transferQrAmount"></strong></td></tr>
+                        <tr><th class="text-muted fw-normal">Verwendungszweck</th>
+                            <td id="transferQrReference"></td></tr>
+                    </tbody>
+                </table>
+                <p class="form-text text-start mb-0">
+                    Mit der Banking-App scannen (SEPA-Überweisung nach EPC069-12, auch GiroCode genannt).
+                    Empfänger, IBAN, Betrag und Verwendungszweck sind enthalten.
+                    Der Betrag entspricht dem Feld in der Zeile – änderst du ihn dort, öffne den QR-Code neu.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Sicherheitsabfrage mit Pflicht-Änderungsgrund -->
 <div class="modal fade" id="bookingConfirmModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -579,6 +634,46 @@
     });
 
     modalEl.addEventListener('shown.bs.modal', function () { reasonEl.focus(); });
+})();
+
+// QR-Code für die Auszahlung einer Gutschrift
+(function () {
+    const modalEl = document.getElementById('transferQrModal');
+    if (!modalEl) return;
+    const modal = new bootstrap.Modal(modalEl);
+    const image = document.getElementById('transferQrImage');
+    const errorEl = document.getElementById('transferQrError');
+    const bicRow = document.getElementById('transferQrBicRow');
+
+    function euro(value) {
+        return Number(value).toFixed(2).replace('.', ',') + ' €';
+    }
+
+    image.addEventListener('error', function () {
+        image.classList.add('d-none');
+        errorEl.textContent = 'Der QR-Code konnte nicht erstellt werden. '
+            + 'Bitte IBAN und Betrag beim Mitglied prüfen.';
+        errorEl.classList.remove('d-none');
+    });
+
+    document.querySelectorAll('button[data-transfer-qr]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            const field = document.getElementById(button.dataset.amountField || '');
+            // Auszahlungen stehen negativ in der Liste, der QR-Code braucht den Betrag positiv.
+            const amount = Math.abs(Number(field ? field.value : 0)) || 0;
+
+            errorEl.classList.add('d-none');
+            image.classList.remove('d-none');
+            document.getElementById('transferQrName').textContent = button.dataset.member || '';
+            document.getElementById('transferQrIban').textContent = button.dataset.iban || '';
+            document.getElementById('transferQrBic').textContent = button.dataset.bic || '';
+            bicRow.classList.toggle('d-none', !button.dataset.bic);
+            document.getElementById('transferQrAmount').textContent = euro(amount);
+            document.getElementById('transferQrReference').textContent = button.dataset.reference || '';
+            image.src = button.dataset.qrUrl + '?amount=' + amount.toFixed(2);
+            modal.show();
+        });
+    });
 })();
 </script>
 {% endblock %}

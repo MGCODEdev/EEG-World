@@ -13,6 +13,7 @@ import base64
 import hashlib
 import ipaddress
 import io
+import unicodedata
 from datetime import datetime, date, timezone, timedelta
 from functools import wraps
 from email.header import Header
@@ -3908,43 +3909,110 @@ def invoice_pdf(id, member_id):
                      download_name=pdf_filename, mimetype='application/pdf')
 
 
+# === SEPA-Ueberweisung als QR-Code (EPC069-12, GiroCode) ===
+
+# Zeichenvorrat laut SEPA; alles andere wird ersetzt oder entfernt, damit jede
+# Bank den Datensatz annimmt.
+SEPA_ALLOWED_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789/-?:().,'+ ")
+SEPA_REPLACEMENTS = {
+    'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue', 'ß': 'ss',
+    '&': 'und', '"': "'", '_': '-', '–': '-', '—': '-',
+}
+EPC_MAX_PAYLOAD_BYTES = 331
+
+
+def _sepa_text(value, limit):
+    """Wandelt Text in den SEPA-Zeichenvorrat und kuerzt ihn auf die Maximallaenge."""
+    text = ''.join(SEPA_REPLACEMENTS.get(char, char) for char in str(value or ''))
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    text = ''.join(char if char in SEPA_ALLOWED_CHARS else ' ' for char in text)
+    return ' '.join(text.split())[:limit]
+
+
+def normalize_iban(value):
+    """Prueft Format und Pruefziffer der IBAN und liefert sie ohne Leerzeichen."""
+    iban = re.sub(r'\s+', '', str(value or '')).upper()
+    if not iban:
+        raise ValueError('Für den QR-Code ist keine IBAN hinterlegt.')
+    if not re.fullmatch(r'[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}', iban):
+        raise ValueError('Die IBAN hat kein gültiges Format.')
+    rearranged = iban[4:] + iban[:4]
+    if int(''.join(str(int(char, 36)) for char in rearranged)) % 97 != 1:
+        raise ValueError('Die IBAN ist ungültig, die Prüfziffer stimmt nicht.')
+    return iban
+
+
+def build_epc_payload(recipient, iban, amount, remittance='', bic=''):
+    """Datensatz nach EPC069-12 fuer den SEPA-Ueberweisungs-QR-Code.
+
+    Version 002 wird verwendet, damit der BIC entfallen darf. Das unterstuetzen
+    Banking-Apps im SEPA-Raum, darunter Revolut.
+    """
+    name = _sepa_text(recipient, 70)
+    if not name:
+        raise ValueError('Für den QR-Code fehlt der Name des Empfängers.')
+    amount = round(float(amount), 2)
+    if not 0.01 <= amount <= 999999999.99:
+        raise ValueError('Der Betrag lässt sich nicht als QR-Code darstellen.')
+    lines = [
+        'BCD',                                  # Service Tag
+        '002',                                  # Version, BIC optional
+        '1',                                    # Zeichensatz UTF-8
+        'SCT',                                  # SEPA Credit Transfer
+        _sepa_text(bic, 11).replace(' ', ''),
+        name,
+        normalize_iban(iban),
+        f'EUR{amount:.2f}',
+        '',                                     # Zweckcode
+        '',                                     # strukturierte Referenz
+        _sepa_text(remittance, 140),            # Verwendungszweck
+        '',                                     # Hinweis an den Zahler
+    ]
+    payload = '\n'.join(lines).rstrip('\n')
+    if len(payload.encode('utf-8')) > EPC_MAX_PAYLOAD_BYTES:
+        raise ValueError('Die Zahlungsdaten sind für einen QR-Code zu lang.')
+    return payload
+
+
+def render_epc_qr_svg(payload):
+    """QR-Code als SVG, damit er in jeder Groesse scharf bleibt."""
+    import qrcode
+    import qrcode.image.svg
+
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
+                       box_size=10, border=2)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    buffer = io.BytesIO()
+    qr.make_image(image_factory=qrcode.image.svg.SvgPathImage).save(buffer)
+    return buffer.getvalue().decode('utf-8')
+
+
 def generate_epc_qr(amount, invoice, member):
     """Generiert einen EPC/GiroCode QR-Code als data URI (base64 PNG)."""
     import qrcode
-    import io
     import base64
+
     cfg = get_public_config(get_db())
-    bic = cfg['payment_bic'].replace(' ', '').strip()
-    iban = cfg['payment_iban'].replace(' ', '').strip()
-    recipient = cfg['payment_recipient'].strip()
-    if not bic or not iban:
+    try:
+        payload = build_epc_payload(
+            cfg['payment_recipient'], cfg['payment_iban'], amount,
+            f'EEG-Abr {invoice["id"]}/{invoice["created_at"][:4]} {member["name"][:30]}',
+            cfg['payment_bic'])
+    except ValueError as e:
+        app.logger.warning('QR-Code für Abrechnung %s nicht erstellt: %s', invoice['id'], e)
         return ''
 
-    # EPC QR Code Standard (EPC069-12)
-    epc_data = '\n'.join([
-        'BCD',                          # Service Tag
-        '002',                          # Version
-        '1',                            # Encoding (UTF-8)
-        'SCT',                          # Identification
-        bic,                            # BIC
-        recipient[:70],                 # Beneficiary Name
-        iban,                           # IBAN (no spaces)
-        f'EUR{amount:.2f}',             # Amount
-        '',                             # Purpose
-        f'EEG-Abr {invoice["id"]}/{invoice["created_at"][:4]} {member["name"][:30]}',  # Remittance
-        '',                             # Display text
-    ])
-
-    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=4, border=2)
-    qr.add_data(epc_data)
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M,
+                       box_size=4, border=2)
+    qr.add_data(payload)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    b64 = base64.b64encode(buf.read()).decode('ascii')
-    return f'data:image/png;base64,{b64}'
+    buffer = io.BytesIO()
+    qr.make_image(fill_color='black', back_color='white').save(buffer, format='PNG')
+    return 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
 
 
 def calculate_member_savings(member_stats, items, price_cons=None, price_gen=None):
@@ -7174,6 +7242,8 @@ def payments():
                            booked_entries=booked_payment_entries(payment_list, booked_sort, booked_dir),
                            booked_sort=booked_sort,
                            booked_dir=booked_dir,
+                           reference_for=payment_transfer_reference,
+                           sepa_text=_sepa_text,
                            min_change_reason_length=MIN_CHANGE_REASON_LENGTH,
                            today=local_now().date().isoformat())
 
@@ -7279,6 +7349,40 @@ def payment_mark_paid():
         audit_log('payment_paid_failed', f'Zahlungsbuchung fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
         flash_exception(e, 'Buchung konnte nicht gespeichert werden.')
     return redirect(_payment_redirect_target())
+
+
+def payment_transfer_reference(row):
+    """Verwendungszweck fuer die Auszahlung einer Gutschrift."""
+    year = (row['period_from'] or '')[:4]
+    return f'EEG-Abr {row["invoice_id"]}/{year} Gutschrift {row["member_name"]}'
+
+
+@app.route('/payments/<int:invoice_id>/<int:member_id>/qr.svg')
+@admin_required
+def payment_transfer_qr(invoice_id, member_id):
+    """SEPA-QR-Code (GiroCode) zum Auszahlen einer Gutschrift."""
+    db = get_db()
+    row = get_payment_row(db, invoice_id, member_id)
+    if not row:
+        abort(404)
+    try:
+        amount = _parse_booking_amount(request.args.get('amount'))
+        if amount is None:
+            amount = row['open_amount']
+        payload = build_epc_payload(
+            recipient=row['account_holder'] or row['member_name'],
+            iban=row['iban'],
+            amount=abs(amount),
+            remittance=payment_transfer_reference(row),
+            bic=row['bic'] or '',
+        )
+    except ValueError as e:
+        return app.response_class(str(e), status=400, mimetype='text/plain; charset=utf-8')
+
+    response = app.response_class(render_epc_qr_svg(payload), mimetype='image/svg+xml')
+    # Die Daten haengen am Betrag, deshalb nicht zwischenspeichern.
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @app.route('/payments/legacy_booking', methods=['POST'])
