@@ -23,12 +23,12 @@ from urllib.parse import urlparse, urljoin, urlencode
 from zoneinfo import ZoneInfo
 
 from flask import (Flask, render_template, request, redirect, url_for,
-                   flash, send_file, jsonify, g, abort)
+                   flash, send_file, jsonify, g, abort, get_flashed_messages)
 from flask import has_request_context
 from flask import session
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
-from flask_wtf.csrf import CSRFProtect, CSRFError
+from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -470,6 +470,14 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message = 'Bitte einloggen.'
+
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    flash(login_manager.login_message, 'warning')
+    if request.path.startswith('/v2'):
+        return redirect(url_for('v2_login', next=request.url))
+    return redirect(url_for('login', next=request.url))
 
 
 # === Database ===
@@ -1169,21 +1177,1144 @@ def _v2_assets():
     }
 
 
-def _v2_shell_data(db):
+def _v2_public_dict(row, fields):
+    if not row:
+        return {}
+    return {field: row[field] for field in fields if field in row.keys()}
+
+
+def _v2_dashboard_data(db):
+    stats = {
+        'members': db.execute("SELECT COUNT(*) FROM members WHERE active=1").fetchone()[0],
+        'measurements': db.execute("SELECT COUNT(*) FROM measurements").fetchone()[0],
+        'batches': db.execute("SELECT COUNT(*) FROM import_batches").fetchone()[0],
+        'invoices': db.execute("SELECT COUNT(*) FROM invoices").fetchone()[0],
+    }
+    imports = db.execute("""
+        SELECT source_file, period_start, period_end, imported_at, data_status
+        FROM import_batches
+        WHERE replaced_at IS NULL
+        ORDER BY imported_at DESC, id DESC
+        LIMIT 6
+    """).fetchall()
+    invoices = db.execute("""
+        SELECT id, period_from, period_to, status, data_status, created_at, finalized_at
+        FROM invoices
+        ORDER BY period_from DESC, id DESC
+        LIMIT 6
+    """).fetchall()
+    monthly = db.execute("""
+        SELECT b.period_start, ROUND(SUM(m.value_kwh), 1) as kwh, COUNT(*) as records
+        FROM measurements m
+        JOIN import_batches b ON b.id = m.batch_id
+        JOIN meter_codes mc ON mc.id = m.meter_code_id
+        WHERE mc.code = '1-1:2.9.0 G.03'
+        GROUP BY b.period_start
+        ORDER BY b.period_start DESC
+        LIMIT 6
+    """).fetchall()
+    return {
+        'type': 'dashboard',
+        'stats': stats,
+        'imports': [_v2_public_dict(row, ('source_file', 'period_start', 'period_end', 'imported_at', 'data_status')) for row in imports],
+        'invoices': [_v2_public_dict(row, ('id', 'period_from', 'period_to', 'status', 'data_status', 'created_at', 'finalized_at')) for row in invoices],
+        'monthly': [_v2_public_dict(row, ('period_start', 'kwh', 'records')) for row in reversed(monthly)],
+    }
+
+
+def _v2_import_data(db, results=None):
+    imports = db.execute("""
+        SELECT id, source_file, period_start, period_end, data_status,
+               replaced_by_batch_id, replaced_at, imported_at
+        FROM import_batches
+        ORDER BY imported_at DESC, id DESC
+        LIMIT 100
+    """).fetchall()
+    import_values = db.execute("""
+        SELECT id, filename, records_imported, records_overwritten, status,
+               data_status, error_message, imported_by, imported_at
+        FROM import_log
+        ORDER BY imported_at DESC, id DESC
+        LIMIT 100
+    """).fetchall()
+    return {
+        'type': 'import',
+        'results': results or [],
+        'imports': [_v2_public_dict(row, (
+            'id', 'source_file', 'period_start', 'period_end', 'data_status',
+            'replaced_by_batch_id', 'replaced_at', 'imported_at',
+        )) for row in imports],
+        'history': [_v2_public_dict(row, (
+            'id', 'filename', 'records_imported', 'records_overwritten', 'status',
+            'data_status', 'error_message', 'imported_by', 'imported_at',
+        )) for row in import_values],
+    }
+
+
+def _v2_prices_data(db):
+    prices = db.execute("SELECT * FROM prices ORDER BY valid_from DESC").fetchall()
+    invoice_map = {}
+    for price in prices:
+        invoice = db.execute("""
+            SELECT id, period_from, period_to
+            FROM invoices
+            WHERE period_from <= ? AND period_to >= ?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (price['valid_to'], price['valid_from'])).fetchone()
+        if invoice:
+            invoice_map[price['id']] = _v2_public_dict(invoice, ('id', 'period_from', 'period_to'))
+    fields = ('id', 'valid_from', 'valid_to', 'price_consumption',
+              'price_generation', 'description', 'created_at')
+    rows = []
+    for price in prices:
+        item = _v2_public_dict(price, fields)
+        item['invoice'] = invoice_map.get(price['id'])
+        rows.append(item)
+    return {
+        'type': 'prices',
+        'prices': rows,
+    }
+
+
+def _v2_invoices_data(db):
+    rows = db.execute("""
+        SELECT id, period_from, period_to, status, total_kwh_traded, total_income,
+               total_expense, total_margin, created_at, finalized_at, data_status
+        FROM invoices
+        ORDER BY period_from DESC, id DESC
+        LIMIT 200
+    """).fetchall()
+    fields = ('id', 'period_from', 'period_to', 'status', 'total_kwh_traded',
+              'total_income', 'total_expense', 'total_margin', 'created_at',
+              'finalized_at', 'data_status')
+    return {
+        'type': 'invoices',
+        'invoices': [_v2_public_dict(row, fields) for row in rows],
+    }
+
+
+def _invoice_period_suggestion():
+    today = date.today()
+    q_month = ((today.month - 1) // 3) * 3 + 1
+    q_start = date(today.year, q_month, 1)
+    if q_month > 3:
+        prev_q_start = date(today.year, q_month - 3, 1)
+    else:
+        prev_q_start = date(today.year - 1, 10, 1)
+    from calendar import monthrange
+    prev_end_month = q_month - 1 if q_month > 1 else 12
+    prev_end_year = today.year if q_month > 1 else today.year - 1
+    _, last_day = monthrange(prev_end_year, prev_end_month)
+    prev_q_end = date(prev_end_year, prev_end_month, last_day)
+    return prev_q_start.isoformat(), prev_q_end.isoformat()
+
+
+def _v2_invoice_new_data(db):
+    suggested_from, suggested_to = _invoice_period_suggestion()
+    import_status = get_import_status_for_period(db, suggested_from, suggested_to)
+    price_cons, price_gen = get_price_for_date(db, suggested_from)
+    return {
+        'type': 'invoice_new',
+        'suggested_from': suggested_from,
+        'suggested_to': suggested_to,
+        'import_status': {
+            'data_status': import_status['data_status'],
+            'is_final': import_status['is_final'],
+            'reason': import_status.get('reason', ''),
+        },
+        'price': {
+            'consumption': price_cons,
+            'generation': price_gen,
+        },
+    }
+
+
+def _create_invoice_from_request(db):
+    period_from = request.form['period_from']
+    period_to = request.form['period_to']
+    existing = db.execute("""
+        SELECT id, period_from, period_to FROM invoices
+        WHERE period_from <= ? AND period_to >= ?
+    """, (period_to, period_from)).fetchone()
+    if existing:
+        raise ValueError(
+            f'Es existiert bereits eine Abrechnung für diesen Zeitraum '
+            f'(Nr. {existing["id"]}: {existing["period_from"]} - {existing["period_to"]}). '
+            f'Pro Quartal ist nur eine Abrechnung zulässig.'
+        )
+
+    price_cons, price_gen = get_price_for_date(db, period_from)
+    import_status = get_import_status_for_period(db, period_from, period_to)
+    result = calculate_billing(db, period_from, period_to, price_cons, price_gen)
+    cur = db.execute("""INSERT INTO invoices (period_from, period_to, total_kwh_traded,
+                        total_income, total_expense, total_margin, data_status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                     (period_from, period_to, result['total_kwh'],
+                      result['total_income'], result['total_expense'], result['total_margin'],
+                      import_status['data_status']))
+    invoice_id = cur.lastrowid
+    for item in result['items']:
+        db.execute("""INSERT INTO invoice_items (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur)
+                      VALUES (?, ?, ?, ?, ?, ?)""",
+                   (invoice_id, item['member_id'], item['type'],
+                    item['kwh'], item['price'], item['amount']))
+    save_invoice_carryovers(db, invoice_id, result['carryovers'])
+    db.commit()
+    audit_log('invoice_create', f'Abrechnung #{invoice_id} erstellt: {period_from} - {period_to} ({result["total_kwh"]:.1f} kWh)')
+    carryover_total = round(sum(item['amount'] for item in result['carryovers']), 2)
+    carryover_info = f' Finanzvortrag: {carryover_total:.2f} EUR.' if result['carryovers'] else ''
+    if import_status['is_final']:
+        flash(f'Abrechnung #{invoice_id} erstellt ({result["total_kwh"]:.1f} kWh).{carryover_info}', 'success')
+    else:
+        flash(f'Vorläufige Abrechnung #{invoice_id} erstellt ({result["total_kwh"]:.1f} kWh).{carryover_info} Versand und Abschluss sind gesperrt, bis endgültige Daten importiert und die Abrechnung neu berechnet wurde.', 'warning')
+    return invoice_id
+
+
+def _v2_invoice_detail_data(db, invoice_id):
+    invoice = db.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    if not invoice:
+        return None
+    items = db.execute("""
+        SELECT ii.*, m.name as member_name, m.email as member_email
+        FROM invoice_items ii
+        JOIN members m ON m.id = ii.member_id
+        WHERE ii.invoice_id = ?
+        ORDER BY m.name, ii.type
+    """, (invoice_id,)).fetchall()
+    members_map = {}
+    for item in items:
+        mid = item['member_id']
+        if mid not in members_map:
+            members_map[mid] = {
+                'member_id': mid,
+                'member_name': item['member_name'],
+                'member_email': item['member_email'],
+                'cons_kwh': 0,
+                'cons_eur': 0,
+                'cons_price': 0,
+                'gen_kwh': 0,
+                'gen_eur': 0,
+                'gen_price': 0,
+            }
+        if item['type'] == 'consumption':
+            members_map[mid]['cons_kwh'] = item['kwh']
+            members_map[mid]['cons_eur'] = item['amount_eur']
+            members_map[mid]['cons_price'] = item['price_per_kwh']
+        else:
+            members_map[mid]['gen_kwh'] = item['kwh']
+            members_map[mid]['gen_eur'] = item['amount_eur']
+            members_map[mid]['gen_price'] = item['price_per_kwh']
+    for member in members_map.values():
+        member['energy_net_eur'] = round(member['cons_eur'] - member['gen_eur'], 2)
+        member['carryover_eur'] = 0.0
+        member['carryovers'] = []
+
+    carryover_map = get_invoice_carryover_map(db, invoice_id)
+    for mid, data in carryover_map.items():
+        if mid not in members_map:
+            first = data['rows'][0]
+            members_map[mid] = {
+                'member_id': mid,
+                'member_name': first['member_name'],
+                'member_email': first['member_email'],
+                'cons_kwh': 0,
+                'cons_eur': 0,
+                'cons_price': 0,
+                'gen_kwh': 0,
+                'gen_eur': 0,
+                'gen_price': 0,
+                'energy_net_eur': 0.0,
+            }
+        members_map[mid]['carryover_eur'] = data['total']
+        members_map[mid]['carryovers'] = [
+            _v2_public_dict(row, ('source_invoice_id', 'source_period_from', 'source_period_to', 'amount_eur', 'description'))
+            for row in data['rows']
+        ]
+
+    emails = db.execute("""
+        SELECT el.*, m.name as member_name
+        FROM email_log el
+        LEFT JOIN members m ON m.id = el.member_id
+        WHERE el.invoice_id=? ORDER BY el.sent_at DESC
+        LIMIT 100
+    """, (invoice_id,)).fetchall()
+    sent_members = {row['member_id'] for row in emails if row['status'] == 'sent' and row['member_id']}
+    member_rows = []
+    for member in members_map.values():
+        member.setdefault('energy_net_eur', round(member['cons_eur'] - member['gen_eur'], 2))
+        member.setdefault('carryover_eur', 0.0)
+        member.setdefault('carryovers', [])
+        member['net_eur'] = round(member['energy_net_eur'] + member['carryover_eur'], 2)
+        member['email_sent'] = member['member_id'] in sent_members
+        member_rows.append(member)
+    member_rows = sorted(member_rows, key=lambda item: item['member_name'])
+
+    import_status = get_import_status_for_period(db, invoice['period_from'], invoice['period_to'])
+    return {
+        'type': 'invoice_detail',
+        'invoice': _v2_public_dict(invoice, (
+            'id', 'period_from', 'period_to', 'status', 'data_status',
+            'total_kwh_traded', 'total_income', 'total_expense', 'total_margin',
+            'created_at', 'sent_at', 'finalized_at',
+        )),
+        'members': member_rows,
+        'emails': [
+            {
+                **_v2_public_dict(row, ('id', 'member_id', 'member_name', 'email', 'subject', 'status', 'error_message')),
+                'sent_at': format_local_datetime(row['sent_at']),
+            }
+            for row in emails
+        ],
+        'import_status': {
+            'data_status': import_status['data_status'],
+            'is_final': import_status['is_final'],
+            'reason': import_status.get('reason', ''),
+            'provisional_count': len(import_status.get('provisional_batches') or []),
+        },
+        'finalization_blocker': invoice_finalization_blocker(db, invoice),
+    }
+
+
+def _v2_payments_data(db):
+    rows = get_payment_rows(db)
+    fields = (
+        'invoice_id', 'member_id', 'member_name', 'iban', 'bic', 'account_holder',
+        'period_from', 'period_to', 'invoice_status', 'net_total', 'energy_total',
+        'carryover_total', 'paid', 'paid_at', 'booking_date', 'booking_note',
+        'direction', 'is_settled_by_carryover', 'carried_forward_to_invoice_id',
+        'is_overdue', 'is_previous_period_open',
+    )
+
+    def serialize(row):
+        item = _v2_public_dict(row, fields)
+        for key in ('reference_date', 'due_on'):
+            value = row.get(key)
+            item[key] = value.isoformat() if hasattr(value, 'isoformat') else value
+        return item
+
+    active_open = [row for row in rows if not row['paid'] and not row['is_settled_by_carryover']]
+    return {
+        'type': 'payments',
+        'today': local_now().date().isoformat(),
+        'summary': {
+            'open_claims_count': len([row for row in active_open if row['net_total'] > 0]),
+            'open_credits_count': len([row for row in active_open if row['net_total'] < 0]),
+            'overdue_count': len([row for row in rows if row['is_overdue']]),
+            'paid_count': len([row for row in rows if row['paid']]),
+            'open_claims_total': round(sum(row['net_total'] for row in active_open if row['net_total'] > 0), 2),
+            'open_credits_total': round(sum(row['net_total'] for row in active_open if row['net_total'] < 0), 2),
+        },
+        'payments': [serialize(row) for row in rows],
+    }
+
+
+def _save_settings_from_request(db):
+    existing_settings = {
+        row['key']: row['value']
+        for row in db.execute("SELECT key, value FROM settings").fetchall()
+    }
+    for key in (
+        'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_tls',
+        'mail_from_address', 'mail_from_name', 'mail_reply_to', 'mail_reply_to_name',
+        'email_subject', 'email_body',
+        'org_name', 'org_email', 'org_website', 'org_address', 'org_legal',
+        'payment_recipient', 'payment_iban', 'payment_bic'
+    ):
+        value = request.form.get(key, '')
+        if key == 'smtp_pass' and not value:
+            value = existing_settings.get('smtp_pass', '')
+        db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    db.commit()
+    audit_log('settings_update', 'Einstellungen geändert')
+
+
+def _v2_settings_data(db):
+    rows = db.execute("SELECT key, value FROM settings").fetchall()
+    settings = {row['key']: row['value'] for row in rows}
+    smtp_configured, mail_errors = _validate_mail_config(_load_mail_config(db))
+    return {
+        'type': 'settings',
+        'settings': settings,
+        'smtp_configured': smtp_configured,
+        'mail_errors': mail_errors,
+        'db_path': DB_PATH,
+    }
+
+
+def _v2_database_data(check_result=None, maintenance_result=None):
+    stats = get_database_stats()
+    return {
+        'type': 'database',
+        'stats': {
+            'db_path': stats.get('db_path', ''),
+            'db_size': stats.get('db_size', 0),
+            'wal_size': stats.get('wal_size', 0),
+            'shm_size': stats.get('shm_size', 0),
+            'page_count': stats.get('page_count', 0),
+            'page_size': stats.get('page_size', 0),
+            'freelist_count': stats.get('freelist_count', 0),
+            'fragmentation_mb': round(stats.get('fragmentation_mb', 0), 2),
+            'tables': stats.get('tables', []),
+        },
+        'check_result': check_result,
+        'maintenance_result': maintenance_result,
+    }
+
+
+def _v2_member_portal_data(db):
+    if not current_user.member_id:
+        return None
+    return db.execute("SELECT * FROM members WHERE id=?", (current_user.member_id,)).fetchone()
+
+
+def _v2_portal_dashboard_data(db):
+    member = _v2_member_portal_data(db)
+    if not member:
+        return {'type': 'portal_dashboard', 'member': None, 'invoices': [], 'stats': None, 'account': None}
+    account = get_member_account_summary(db, current_user.member_id)
+    invoices = db.execute("""
+        SELECT DISTINCT i.* FROM invoices i
+        WHERE i.id IN (
+            SELECT invoice_id FROM invoice_items WHERE member_id=?
+            UNION
+            SELECT invoice_id FROM invoice_carryovers WHERE member_id=?
+        )
+        ORDER BY i.period_from DESC
+    """, (current_user.member_id, current_user.member_id)).fetchall()
+    stats = None
+    if invoices:
+        latest = invoices[0]
+        stats = get_member_stats(db, member, latest['period_from'], latest['period_to'])
+        items = db.execute("SELECT * FROM invoice_items WHERE invoice_id=? AND member_id=?",
+                           (latest['id'], current_user.member_id)).fetchall()
+        carryovers = get_invoice_carryovers(db, latest['id'], current_user.member_id)
+        net = sum(item['amount_eur'] if item['type'] == 'consumption' else -item['amount_eur'] for item in items)
+        net += sum(row['amount_eur'] for row in carryovers)
+        stats['net_total'] = round(net, 2)
+        stats['invoice_id'] = latest['id']
+    return {
+        'type': 'portal_dashboard',
+        'member': _v2_public_dict(member, ('id', 'name', 'email', 'phone', 'address_street', 'address_zip', 'address_city')),
+        'invoices': [_v2_public_dict(row, ('id', 'period_from', 'period_to', 'status', 'data_status', 'created_at')) for row in invoices[:8]],
+        'stats': stats,
+        'account': _v2_account_summary(account),
+    }
+
+
+def _v2_account_summary(account):
+    if not account:
+        return None
+    def serialize_value(value):
+        return value.isoformat() if hasattr(value, 'isoformat') else value
+
+    def serialize_mapping(row):
+        return {key: serialize_value(value) for key, value in dict(row).items()}
+
+    return {
+        'balance': account.get('balance', 0),
+        'open_claims': account.get('open_claims', 0),
+        'open_credits': account.get('open_credits', 0),
+        'overdue_claims': account.get('overdue_claims', 0),
+        'previous_open': [serialize_mapping(row) for row in account.get('previous_open', [])[:100]],
+        'history': [serialize_mapping(row) for row in account.get('history', [])[:100]],
+        'rows': [serialize_mapping(row) for row in account.get('rows', [])[:100]],
+    }
+
+
+def _v2_portal_data_data(db):
+    member = _v2_member_portal_data(db)
+    return {
+        'type': 'portal_data',
+        'member': _v2_public_dict(member, (
+            'id', 'name', 'email', 'phone', 'address_street', 'address_zip', 'address_city',
+            'account_holder', 'iban', 'bic', 'bezug_zp', 'einspeiser_zp', 'newsletter_optout',
+        )) if member else None,
+    }
+
+
+def _update_portal_member_from_request(db):
+    member = _v2_member_portal_data(db)
+    if not member:
+        flash('Kein Mitglied zugeordnet.', 'warning')
+        return
+    newsletter_optout = 0 if form_switch_enabled('newsletter_enabled') else 1
+    db.execute("""UPDATE members SET
+        name=?, email=?, phone=?,
+        address_street=?, address_zip=?, address_city=?,
+        iban=?, bic=?, account_holder=?, newsletter_optout=?,
+        updated_at=datetime('now')
+        WHERE id=?""", (
+        request.form.get('name', member['name']),
+        request.form.get('email', member['email']),
+        request.form.get('phone', member['phone']),
+        request.form.get('address_street', member['address_street']),
+        request.form.get('address_zip', member['address_zip']),
+        request.form.get('address_city', member['address_city']),
+        request.form.get('iban', member['iban']),
+        request.form.get('bic', member['bic']),
+        request.form.get('account_holder', member['account_holder']),
+        newsletter_optout,
+        current_user.member_id,
+    ))
+    db.commit()
+    audit_log('portal_data_update', 'Eigene Stammdaten aktualisiert')
+    flash('Daten aktualisiert.', 'success')
+
+
+def _v2_portal_invoices_data(db):
+    if not current_user.member_id:
+        return {'type': 'portal_invoices', 'invoices': [], 'account': None}
+    account = get_member_account_summary(db, current_user.member_id)
+    rows = db.execute("""
+        SELECT i.id, i.period_from, i.period_to, i.status, i.data_status, i.created_at,
+               COALESCE(SUM(CASE WHEN ii.type='consumption' THEN ii.amount_eur ELSE 0 END), 0) as total_cons,
+               COALESCE(SUM(CASE WHEN ii.type='generation' THEN ii.amount_eur ELSE 0 END), 0) as total_gen,
+               COALESCE(SUM(ii.kwh), 0) as total_kwh
+        FROM invoices i
+        LEFT JOIN invoice_items ii ON ii.invoice_id = i.id AND ii.member_id = ?
+        WHERE i.id IN (
+            SELECT invoice_id FROM invoice_items WHERE member_id=?
+            UNION
+            SELECT invoice_id FROM invoice_carryovers WHERE member_id=?
+        )
+        GROUP BY i.id
+        ORDER BY i.period_from DESC
+    """, (current_user.member_id, current_user.member_id, current_user.member_id)).fetchall()
+    payment_by_invoice = {row['invoice_id']: row for row in account['rows']}
+    invoices = []
+    for row in rows:
+        item = _v2_public_dict(row, ('id', 'period_from', 'period_to', 'status', 'data_status', 'created_at', 'total_cons', 'total_gen', 'total_kwh'))
+        payment = payment_by_invoice.get(row['id'])
+        item['net_total'] = payment['net_total'] if payment else round((row['total_cons'] or 0) - (row['total_gen'] or 0), 2)
+        item['paid'] = bool(payment['paid']) if payment else False
+        item['booking_date'] = payment['booking_date'] if payment else ''
+        invoices.append(item)
+    return {'type': 'portal_invoices', 'invoices': invoices, 'account': _v2_account_summary(account), 'member_id': current_user.member_id}
+
+
+def _v2_portal_contracts_data(db):
+    if not current_user.member_id:
+        return {'type': 'portal_contracts', 'contracts': []}
+    contracts = db.execute("SELECT * FROM contracts WHERE member_id=? ORDER BY uploaded_at DESC",
+                           (current_user.member_id,)).fetchall()
+    return {
+        'type': 'portal_contracts',
+        'contracts': [_v2_public_dict(row, ('id', 'type', 'filename', 'uploaded_at', 'uploaded_by')) for row in contracts],
+    }
+
+
+def _v2_newsletter_data(db):
+    rows = db.execute("""
+        SELECT id, subject, created_by, created_at, sent_at, recipients_count
+        FROM newsletters
+        ORDER BY created_at DESC, id DESC
+        LIMIT 200
+    """).fetchall()
+    fields = ('id', 'subject', 'created_by', 'created_at', 'sent_at', 'recipients_count')
+    recipient_count = db.execute("""
+        SELECT COUNT(*)
+        FROM members
+        WHERE active=1 AND email IS NOT NULL AND email != ''
+          AND (newsletter_optout IS NULL OR newsletter_optout=0)
+    """).fetchone()[0]
+    return {
+        'type': 'newsletter',
+        'recipient_count': recipient_count,
+        'newsletters': [_v2_public_dict(row, fields) for row in rows],
+    }
+
+
+def _v2_reports_data(db):
+    min_date, max_date = _report_ts_bounds(db)
+    aggregation = request.args.get('aggregation', 'month')
+    if aggregation not in REPORT_AGGREGATIONS:
+        aggregation = 'month'
+    period_from = _parse_report_date(request.args.get('date_from'), min_date)
+    period_to = _parse_report_date(request.args.get('date_to'), max_date)
+    if period_from > period_to:
+        period_from, period_to = period_to, period_from
+
+    if current_user.is_admin:
+        members = db.execute("""
+            SELECT id, name, bezug_zp, einspeiser_zp
+            FROM members
+            WHERE active=1
+            ORDER BY name
+        """).fetchall()
+        member_id = request.args.get('member_id', type=int)
+        if not member_id and members:
+            member_id = members[0]['id']
+    else:
+        members = db.execute("""
+            SELECT id, name, bezug_zp, einspeiser_zp
+            FROM members
+            WHERE active=1 AND id=?
+        """, (current_user.member_id,)).fetchall() if current_user.member_id else []
+        member_id = current_user.member_id if members else None
+    member = db.execute("SELECT * FROM members WHERE id=? AND active=1", (member_id,)).fetchone() if member_id else None
+    report = _build_member_report(db, member, period_from, period_to, aggregation) if member else None
+
+    return {
+        'type': 'reports',
+        'members': [_v2_public_dict(row, ('id', 'name', 'bezug_zp', 'einspeiser_zp')) for row in members],
+        'selected_member': _v2_public_dict(member, ('id', 'name')) if member else None,
+        'report': report,
+        'period_from': period_from,
+        'period_to': period_to,
+        'aggregation': aggregation,
+        'aggregations': {
+            key: {'label': cfg['label']}
+            for key, cfg in REPORT_AGGREGATIONS.items()
+        },
+        'min_date': min_date,
+        'max_date': max_date,
+    }
+
+
+def _v2_users_data(db):
+    users = db.execute("""
+        SELECT u.id, u.username, u.email, u.is_admin, u.role, u.invite_token,
+               u.invite_expires, u.created_at, u.member_id,
+               m.name as member_name, m.email as member_email
+        FROM users u LEFT JOIN members m ON u.member_id = m.id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM users other
+            WHERE other.id != u.id
+              AND (
+                  (u.member_id IS NOT NULL AND other.member_id = u.member_id)
+                  OR (
+                      u.email IS NOT NULL AND u.email != ''
+                      AND other.email IS NOT NULL AND other.email != ''
+                      AND LOWER(other.email) = LOWER(u.email)
+                  )
+              )
+              AND (
+                  (other.invite_token IS NULL AND u.invite_token IS NOT NULL)
+                  OR (
+                      (other.invite_token IS NULL) = (u.invite_token IS NULL)
+                      AND other.id < u.id
+                  )
+              )
+        )
+        ORDER BY u.is_admin DESC, u.username
+    """).fetchall()
+    members = db.execute("""
+        SELECT id, name, email
+        FROM members
+        WHERE active=1
+          AND id NOT IN (SELECT member_id FROM users WHERE member_id IS NOT NULL)
+        ORDER BY name
+    """).fetchall()
+    contract_members = db.execute("""
+        SELECT id, name, email
+        FROM members
+        WHERE active=1
+        ORDER BY name
+    """).fetchall()
+    contracts = db.execute("""
+        SELECT c.id, c.member_id, c.type, c.filename, c.uploaded_at,
+               c.uploaded_by, m.name as member_name
+        FROM contracts c JOIN members m ON m.id = c.member_id
+        ORDER BY m.name, c.type, c.uploaded_at DESC
+    """).fetchall()
+    user_fields = ('id', 'username', 'email', 'is_admin', 'role', 'invite_expires',
+                   'created_at', 'member_id', 'member_name', 'member_email')
+    member_fields = ('id', 'name', 'email')
+    contract_fields = ('id', 'member_id', 'type', 'filename', 'uploaded_at',
+                       'uploaded_by', 'member_name')
+    rows = []
+    for user in users:
+        item = _v2_public_dict(user, user_fields)
+        item['invite_open'] = bool(user['invite_token'])
+        rows.append(item)
+    contract_rows = []
+    for contract in contracts:
+        item = _v2_public_dict(contract, contract_fields)
+        item['uploaded_at'] = format_local_date(item.get('uploaded_at'))
+        contract_rows.append(item)
+    return {
+        'type': 'users',
+        'current_user_id': current_user.id,
+        'users': rows,
+        'members': [_v2_public_dict(row, member_fields) for row in members],
+        'contract_members': [_v2_public_dict(row, member_fields) for row in contract_members],
+        'contracts': contract_rows,
+    }
+
+
+def _v2_audit_data(db):
+    page = max(request.args.get('page', 1, type=int), 1)
+    per_page = 50
+    offset = (page - 1) * per_page
+    action_filter = request.args.get('action', '')
+    user_filter = request.args.get('user', '')
+    date_from = request.args.get('date_from', '')
+    date_to = request.args.get('date_to', '')
+
+    where_clauses = []
+    params = []
+    if action_filter:
+        where_clauses.append("a.action = ?")
+        params.append(action_filter)
+    if user_filter:
+        where_clauses.append("a.username LIKE ?")
+        params.append(f'%{user_filter}%')
+    if date_from:
+        date_from_utc, _ = local_day_bounds_as_utc_strings(date_from)
+        where_clauses.append("a.timestamp >= ?")
+        params.append(date_from_utc)
+    if date_to:
+        _, date_to_utc = local_day_bounds_as_utc_strings(date_to)
+        where_clauses.append("a.timestamp <= ?")
+        params.append(date_to_utc)
+
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    total = db.execute(f"SELECT COUNT(*) FROM audit_log a{where_sql}", params).fetchone()[0]
+    logs = db.execute(f"""
+        SELECT a.id, a.timestamp, a.user_id, a.username, a.action, a.detail, a.ip
+        FROM audit_log a{where_sql}
+        ORDER BY a.timestamp DESC LIMIT ? OFFSET ?
+    """, params + [per_page, offset]).fetchall()
+    action_list = [
+        row['action']
+        for row in db.execute("SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall()
+    ]
+    today_from_utc, today_to_utc = local_day_bounds_as_utc_strings()
+    stats = {
+        'total_entries': db.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0],
+        'today_entries': db.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE timestamp >= ? AND timestamp <= ?",
+            (today_from_utc, today_to_utc)
+        ).fetchone()[0],
+        'active_users': db.execute(
+            "SELECT COUNT(DISTINCT username) FROM audit_log WHERE timestamp >= ? AND timestamp <= ?",
+            (today_from_utc, today_to_utc)
+        ).fetchone()[0],
+    }
+    fields = ('id', 'timestamp', 'user_id', 'username', 'action', 'detail', 'ip')
+    log_rows = []
+    for row in logs:
+        item = _v2_public_dict(row, fields)
+        item['timestamp_display'] = format_local_datetime(item.get('timestamp'))
+        log_rows.append(item)
+    return {
+        'type': 'audit',
+        'logs': log_rows,
+        'actions': action_list,
+        'stats': stats,
+        'filters': {
+            'action': action_filter,
+            'user': user_filter,
+            'date_from': date_from,
+            'date_to': date_to,
+        },
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'total_pages': (total + per_page - 1) // per_page,
+        },
+        'timezone': getattr(APP_TIMEZONE, 'key', 'Europe/Vienna'),
+    }
+
+
+def _v2_backup_data(db):
+    info = get_backup_info()
+    settings = get_backup_settings(db)
+    google_drive = get_google_drive_status()
+    drive_backups = []
+    drive_backups_error = ''
+    if google_drive['connected']:
+        try:
+            drive_backups = list_google_drive_backups(db)
+        except Exception as e:
+            drive_backups_error = str(e)
+            app.logger.warning('Could not list Google Drive backups for V2: %s', e, exc_info=True)
+
+    def local_backup_row(item):
+        created_at = item.get('created_at')
+        return {
+            'name': item.get('name', ''),
+            'size': item.get('size', 0),
+            'created_at': created_at.isoformat() if hasattr(created_at, 'isoformat') else created_at,
+            'created_at_display': format_local_datetime(created_at),
+            'kind': item.get('kind', ''),
+        }
+
+    def drive_backup_row(item):
+        return {
+            'id': item.get('id', ''),
+            'name': item.get('name', ''),
+            'size': item.get('size', 0),
+            'created_at': item.get('created_at', ''),
+            'created_at_display': format_local_datetime(item.get('created_at')),
+            'modified_at': item.get('modified_at', ''),
+            'web_view_link': item.get('web_view_link', ''),
+            'mime_type': item.get('mime_type', ''),
+        }
+
+    return {
+        'type': 'backup',
+        'info': {
+            'db_size': info['db_size'],
+            'invoice_count': info['invoice_count'],
+            'invoice_size': info['invoice_size'],
+            'backup_folder': info['backup_folder'],
+        },
+        'settings': {
+            'auto_enabled': settings['auto_enabled'],
+            'auto_time': settings['auto_time'],
+            'retention_daily': settings['retention_daily'],
+            'retention_weekly': settings['retention_weekly'],
+            'retention_monthly': settings['retention_monthly'],
+            'retention_yearly': settings['retention_yearly'],
+            'drive_enabled': settings['drive_enabled'],
+            'drive_folder_id': settings['drive_folder_id'],
+            'drive_last_upload': settings['drive_last_upload'],
+            'drive_last_check': settings['drive_last_check'],
+            'drive_last_error': settings['drive_last_error'],
+            'email_enabled': settings['email_enabled'],
+            'email_weekday': settings['email_weekday'],
+            'email_time': settings['email_time'],
+            'email_to': settings['email_to'],
+            'email_max_mb': settings['email_max_mb'],
+        },
+        'google_drive': {
+            'libs_available': google_drive['libs_available'],
+            'client_configured': google_drive['client_configured'],
+            'connected': google_drive['connected'],
+            'error': google_drive['error'],
+            'redirect_uri': google_drive['redirect_uri'],
+        },
+        'local_backups': [local_backup_row(item) for item in list_local_backups()[:50]],
+        'drive_backups': [drive_backup_row(item) for item in drive_backups],
+        'drive_backups_error': drive_backups_error,
+    }
+
+
+def _v2_members_data(db):
+    rows = db.execute("""
+        SELECT id, name, email, phone, address_street, address_zip, address_city,
+               active, teilnahme, bezug_zp, einspeiser_zp, newsletter_optout,
+               CASE WHEN iban IS NOT NULL AND TRIM(iban) <> '' THEN 1 ELSE 0 END AS has_bank
+        FROM members
+        ORDER BY active DESC, name COLLATE NOCASE ASC
+        LIMIT 300
+    """).fetchall()
+    counts = db.execute("""
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN active=1 THEN 1 ELSE 0 END) AS active,
+            SUM(CASE WHEN active=0 THEN 1 ELSE 0 END) AS inactive,
+            SUM(CASE WHEN newsletter_optout=0 THEN 1 ELSE 0 END) AS newsletter
+        FROM members
+    """).fetchone()
+    fields = ('id', 'name', 'email', 'phone', 'address_street', 'address_zip',
+              'address_city', 'active', 'teilnahme', 'bezug_zp', 'einspeiser_zp',
+              'newsletter_optout', 'has_bank')
+    return {
+        'type': 'members',
+        'counts': {
+            'total': counts['total'] or 0,
+            'active': counts['active'] or 0,
+            'inactive': counts['inactive'] or 0,
+            'newsletter': counts['newsletter'] or 0,
+        },
+        'members': [_v2_public_dict(row, fields) for row in rows],
+    }
+
+
+def _v2_member_form_data(db, member_id=None):
+    member = None
+    if member_id is not None:
+        member = db.execute("SELECT * FROM members WHERE id=?", (member_id,)).fetchone()
+        if not member:
+            return None
+    fields = (
+        'id', 'name', 'email', 'phone', 'address_street', 'address_zip',
+        'address_city', 'einspeiser_zp', 'einspeiser_ab', 'bezug_zp',
+        'bezug_ab', 'teilnahme', 'active', 'iban', 'bic', 'account_holder',
+        'newsletter_optout',
+    )
+    return {
+        'type': 'member_form',
+        'mode': 'edit' if member else 'new',
+        'member': _v2_public_dict(member, fields) if member else {},
+    }
+
+
+def _save_member_from_request(db, member_id=None):
+    newsletter_optout = 0 if form_switch_enabled('newsletter_enabled') else 1
+    if member_id is None:
+        db.execute("""INSERT INTO members (name, email, phone, address_street, address_zip, address_city,
+                      einspeiser_zp, einspeiser_ab, bezug_zp, bezug_ab, teilnahme,
+                      iban, bic, account_holder, newsletter_optout, updated_at)
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
+                   (request.form['name'], request.form.get('email'),
+                    request.form.get('phone'),
+                    request.form.get('address_street'), request.form.get('address_zip'),
+                    request.form.get('address_city'),
+                    request.form.get('einspeiser_zp') or None,
+                    request.form.get('einspeiser_ab') or None,
+                    request.form.get('bezug_zp') or None,
+                    request.form.get('bezug_ab') or None,
+                    float(request.form.get('teilnahme', 1.0)),
+                    request.form.get('iban') or None,
+                    request.form.get('bic') or None,
+                    request.form.get('account_holder') or None,
+                    newsletter_optout))
+        db.commit()
+        audit_log('member_create', f'Mitglied angelegt: {request.form["name"]}')
+        flash('Mitglied angelegt.', 'success')
+        return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    db.execute("""UPDATE members SET name=?, email=?, phone=?, address_street=?, address_zip=?,
+                  address_city=?, einspeiser_zp=?, einspeiser_ab=?, bezug_zp=?,
+                  bezug_ab=?, teilnahme=?, active=?, iban=?, bic=?, account_holder=?,
+                  newsletter_optout=?, updated_at=datetime('now')
+                  WHERE id=?""",
+               (request.form['name'], request.form.get('email'),
+                request.form.get('phone'),
+                request.form.get('address_street'), request.form.get('address_zip'),
+                request.form.get('address_city'),
+                request.form.get('einspeiser_zp') or None,
+                request.form.get('einspeiser_ab') or None,
+                request.form.get('bezug_zp') or None,
+                request.form.get('bezug_ab') or None,
+                float(request.form.get('teilnahme', 1.0)),
+                1 if request.form.get('active') else 0,
+                request.form.get('iban') or None,
+                request.form.get('bic') or None,
+                request.form.get('account_holder') or None,
+                newsletter_optout,
+                member_id))
+    db.commit()
+    audit_log('member_edit', f'Mitglied bearbeitet: {request.form["name"]} (ID {member_id})')
+    flash('Mitglied aktualisiert.', 'success')
+    return member_id
+
+
+def _v2_price_edit_data(db, price_id):
+    price = db.execute("SELECT * FROM prices WHERE id=?", (price_id,)).fetchone()
+    if not price:
+        return None
+    invoice = db.execute("""
+        SELECT id, period_from, period_to
+        FROM invoices
+        WHERE period_from <= ? AND period_to >= ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (price['valid_to'], price['valid_from'])).fetchone()
+    return {
+        'type': 'price_edit',
+        'price': _v2_public_dict(price, ('id', 'valid_from', 'valid_to', 'price_consumption', 'price_generation', 'description', 'created_at')),
+        'invoice': _v2_public_dict(invoice, ('id', 'period_from', 'period_to')) if invoice else None,
+    }
+
+
+def _update_price_from_request(db, price_id):
+    price = db.execute("SELECT * FROM prices WHERE id=?", (price_id,)).fetchone()
+    if not price:
+        flash('Preis nicht gefunden.', 'danger')
+        return
+    db.execute("""UPDATE prices SET valid_from=?, valid_to=?, price_consumption=?,
+                  price_generation=?, description=? WHERE id=?""",
+               (request.form['valid_from'], request.form['valid_to'],
+                float(request.form['price_consumption']),
+                float(request.form['price_generation']),
+                request.form.get('description', ''), price_id))
+    db.commit()
+    audit_log('price_edit', f'Preis bearbeitet: {request.form["valid_from"]} - {request.form["valid_to"]} (ID {price_id})')
+    inv = db.execute("""SELECT id FROM invoices
+                       WHERE period_from <= ? AND period_to >= ?""",
+                    (request.form['valid_to'], request.form['valid_from'])).fetchone()
+    if inv:
+        flash(f'Achtung: Für diesen Zeitraum existiert bereits Abrechnung #{inv["id"]}. Es muss eine neue Abrechnung erstellt werden, damit die Preisänderung wirksam wird!', 'warning')
+    else:
+        flash('Preis aktualisiert.', 'success')
+
+
+def _v2_newsletter_form_data(db, newsletter_id=None):
+    newsletter = None
+    if newsletter_id is not None:
+        newsletter = db.execute("SELECT * FROM newsletters WHERE id=?", (newsletter_id,)).fetchone()
+        if not newsletter:
+            return None
+    return {
+        'type': 'newsletter_form',
+        'mode': 'edit' if newsletter else 'new',
+        'newsletter': _v2_public_dict(newsletter, ('id', 'subject', 'body_html', 'created_by', 'created_at', 'sent_at', 'recipients_count')) if newsletter else {},
+    }
+
+
+def _save_newsletter_from_request(db, newsletter_id=None):
+    subject = request.form.get('subject', '').strip()
+    body_html = sanitize_newsletter_html(request.form.get('body_html', '').strip())
+    if not subject or not body_html:
+        raise ValueError('Betreff und Inhalt sind erforderlich.')
+    if newsletter_id is None:
+        db.execute("INSERT INTO newsletters (subject, body_html, created_by) VALUES (?,?,?)",
+                   (subject, body_html, current_user.username))
+        db.commit()
+        audit_log('newsletter_create', f'Newsletter erstellt: {subject}')
+        flash('Newsletter gespeichert.', 'success')
+        return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    newsletter = db.execute("SELECT * FROM newsletters WHERE id=?", (newsletter_id,)).fetchone()
+    if not newsletter:
+        raise ValueError('Newsletter nicht gefunden.')
+    if newsletter['sent_at']:
+        raise ValueError('Bereits versendeter Newsletter kann nicht bearbeitet werden.')
+    db.execute("UPDATE newsletters SET subject=?, body_html=? WHERE id=?", (subject, body_html, newsletter_id))
+    db.commit()
+    audit_log('newsletter_edit', f'Newsletter bearbeitet: {subject} (ID {newsletter_id})')
+    flash('Newsletter aktualisiert.', 'success')
+    return newsletter_id
+
+
+def _v2_newsletter_preview_data(db, newsletter_id):
+    newsletter = db.execute("SELECT * FROM newsletters WHERE id=?", (newsletter_id,)).fetchone()
+    if not newsletter:
+        return None
+    logo_url = public_url_for('static', filename='logo.png')
+    html = render_template('newsletter_email.html',
+        subject=newsletter['subject'],
+        preview_text=newsletter['subject'],
+        logo_url=logo_url,
+        edition_label=newsletter['subject'].split('–')[0].strip() if '\u2013' in newsletter['subject'] else newsletter['subject'],
+        headline=newsletter['subject'],
+        subtitle='',
+        body_html=sanitize_newsletter_html(newsletter['body_html']),
+        unsubscribe_url='#',
+    )
+    return {
+        'type': 'newsletter_preview',
+        'newsletter': _v2_public_dict(newsletter, ('id', 'subject', 'created_by', 'created_at', 'sent_at', 'recipients_count')),
+        'html': html,
+    }
+
+
+def _v2_change_password_data():
+    return {'type': 'change_password'}
+
+
+def _change_password_from_request(db):
+    old_pw = request.form.get('old_password', '')
+    new_pw = request.form.get('new_password', '')
+    confirm = request.form.get('confirm_password', '')
+    row = db.execute("SELECT password_hash FROM users WHERE id=?", (current_user.id,)).fetchone()
+    if not check_password_hash(row['password_hash'], old_pw):
+        flash('Altes Passwort falsch.', 'danger')
+        return False
+    if new_pw != confirm:
+        flash('Neue Passwörter stimmen nicht überein.', 'danger')
+        return False
+    if len(new_pw) < 6:
+        flash('Passwort muss mindestens 6 Zeichen haben.', 'danger')
+        return False
+    db.execute("UPDATE users SET password_hash=? WHERE id=?",
+               (generate_password_hash(new_pw), current_user.id))
+    db.commit()
+    audit_log('password_change', 'Passwort geändert')
+    flash('Passwort geändert.', 'success')
+    return True
+
+
+def _v2_native_data(db, current_path):
+    if current_path == '/change-password':
+        return _v2_change_password_data()
+    if not current_user.is_admin:
+        if current_path == '/portal':
+            return _v2_portal_dashboard_data(db)
+        if current_path == '/portal/data':
+            return _v2_portal_data_data(db)
+        if current_path == '/portal/invoices':
+            return _v2_portal_invoices_data(db)
+        if current_path == '/portal/contracts':
+            return _v2_portal_contracts_data(db)
+        if current_path == '/portal/reports':
+            return _v2_reports_data(db)
+        return None
+    if current_path == '/':
+        return _v2_dashboard_data(db)
+    if current_path == '/import':
+        return _v2_import_data(db)
+    if current_path == '/members':
+        return _v2_members_data(db)
+    if current_path == '/members/new':
+        return _v2_member_form_data(db)
+    member_match = re.fullmatch(r'/members/(\d+)/edit', current_path)
+    if member_match:
+        return _v2_member_form_data(db, int(member_match.group(1)))
+    if current_path == '/prices':
+        return _v2_prices_data(db)
+    price_match = re.fullmatch(r'/prices/(\d+)/edit', current_path)
+    if price_match:
+        return _v2_price_edit_data(db, int(price_match.group(1)))
+    if current_path == '/invoices':
+        return _v2_invoices_data(db)
+    if current_path == '/invoices/new':
+        return _v2_invoice_new_data(db)
+    invoice_match = re.fullmatch(r'/invoices/(\d+)', current_path)
+    if invoice_match:
+        return _v2_invoice_detail_data(db, int(invoice_match.group(1)))
+    if current_path == '/payments':
+        return _v2_payments_data(db)
+    if current_path == '/newsletter':
+        return _v2_newsletter_data(db)
+    if current_path == '/newsletter/new':
+        return _v2_newsletter_form_data(db)
+    newsletter_edit_match = re.fullmatch(r'/newsletter/(\d+)/edit', current_path)
+    if newsletter_edit_match:
+        return _v2_newsletter_form_data(db, int(newsletter_edit_match.group(1)))
+    newsletter_preview_match = re.fullmatch(r'/newsletter/(\d+)/preview', current_path)
+    if newsletter_preview_match:
+        return _v2_newsletter_preview_data(db, int(newsletter_preview_match.group(1)))
+    if current_path == '/reports':
+        return _v2_reports_data(db)
+    if current_path == '/admin/users':
+        return _v2_users_data(db)
+    if current_path == '/admin/audit':
+        return _v2_audit_data(db)
+    if current_path == '/admin/backup':
+        return _v2_backup_data(db)
+    if current_path == '/admin/database':
+        return _v2_database_data()
+    if current_path == '/settings':
+        return _v2_settings_data(db)
+    return None
+
+
+def _v2_shell_data(db, current_path=None):
     public_cfg = get_public_config(db)
     org_legal = public_cfg.get('org_legal') or DEFAULT_ORG_LEGAL
     zvr_match = re.search(r'ZVR\D*(\d+)', org_legal, re.IGNORECASE)
-    return {
+    user_row = db.execute("SELECT email FROM users WHERE id=?", (current_user.id,)).fetchone()
+    data = {
         'user': {
+            'id': current_user.id,
             'username': current_user.username,
             'role': current_user.role,
+            'email': user_row['email'] if user_row else '',
         },
         'org': {
             'name': public_cfg.get('org_name') or DEFAULT_ORG_NAME,
             'legal': org_legal,
             'zvr': f'ZVR {zvr_match.group(1)}' if zvr_match else org_legal,
         },
+        'security': {
+            'csrf_token': generate_csrf(),
+        },
+        'messages': [
+            {'category': category, 'text': message}
+            for category, message in get_flashed_messages(with_categories=True)
+        ],
     }
+    if current_path:
+        data['native'] = _v2_native_data(db, current_path)
+    return data
 
 
 def _v2_content_path(subpath=None):
@@ -1261,6 +2392,63 @@ def login():
         locked_secs = _check_login_rate(ip)
 
     return render_template('login.html', locked_until=locked_secs if locked_secs > 0 else None)
+
+
+@app.route('/v2/login', methods=['GET', 'POST'])
+def v2_login():
+    if current_user.is_authenticated:
+        return redirect('/v2/' if current_user.is_admin else '/v2/portal')
+
+    if request.method == 'GET' and request.args.get('csrf'):
+        flash('Die Sitzung war nicht mehr gültig. Bitte erneut anmelden.', 'warning')
+
+    ip = get_real_ip()
+    locked_secs = _check_login_rate(ip)
+
+    if request.method == 'POST':
+        if locked_secs > 0:
+            flash(f'Zu viele Fehlversuche. Bitte warten Sie {locked_secs} Sekunden.', 'danger')
+            return render_template('v2_public.html', page='login', locked_until=locked_secs)
+
+        login_identifier = request.form.get('username', '').strip().lower()
+        password = request.form.get('password', '')
+        db = get_db()
+        candidates = db.execute("""
+            SELECT id, username, password_hash, is_admin, member_id, role
+            FROM users
+            WHERE LOWER(username)=? OR LOWER(email)=?
+            ORDER BY
+                CASE
+                    WHEN invite_token IS NULL THEN 0
+                    WHEN LOWER(username)=? THEN 1
+                    ELSE 2
+                END,
+                id
+        """, (login_identifier, login_identifier, login_identifier)).fetchall()
+        row = None
+        for candidate in candidates:
+            if check_password_hash(candidate['password_hash'], password):
+                row = candidate
+                break
+        if row:
+            _reset_login_attempts(ip)
+            user = User(row['id'], row['username'], row['is_admin'], row['member_id'], row['role'])
+            login_user(user)
+            audit_log('login', f'Anmeldung erfolgreich (Rolle: {user.role})')
+            next_page = request.args.get('next') or request.form.get('next')
+            if next_page and is_safe_redirect_url(next_page):
+                return redirect(next_page)
+            return redirect('/v2/' if user.is_admin else '/v2/portal')
+        _record_failed_login(ip)
+        audit_log('login_failed', f'Fehlgeschlagener Login für "{login_identifier}"', user_id=0, username=login_identifier)
+        remaining = MAX_LOGIN_ATTEMPTS - _login_attempts.get(ip, {}).get('count', 0)
+        if remaining > 0:
+            flash(f'Ungültiger Benutzername oder Passwort. Noch {remaining} Versuche.', 'danger')
+        else:
+            flash(f'Konto gesperrt für {LOCKOUT_SECONDS // 60} Minuten.', 'danger')
+        locked_secs = _check_login_rate(ip)
+
+    return render_template('v2_public.html', page='login', locked_until=locked_secs if locked_secs > 0 else None)
 
 
 @app.route('/logout')
@@ -1349,18 +2537,144 @@ def dashboard():
                            mon_sort=mon_sort, mon_dir=mon_dir)
 
 
-@app.route('/v2/')
-@app.route('/v2')
-@app.route('/v2/<path:subpath>')
+def _run_import_uploads():
+    files = request.files.getlist('files')
+    overwrite = request.form.get('overwrite') == '1'
+    data_status = _valid_import_data_status(request.form.get('data_status'))
+    results = []
+    for f in files:
+        if f and f.filename.lower().endswith('.xlsx'):
+            filename = secure_filename(f.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            try:
+                f.save(filepath)
+                result = run_import(filepath, overwrite, data_status)
+            except Exception as e:
+                app.logger.exception('Import upload handling failed for %s', filename)
+                result = {
+                    'filename': filename,
+                    'status': 'error',
+                    'data_status': data_status,
+                    'records': 0,
+                    'overwritten': 0,
+                    'error': str(e),
+                    'imported_at': None,
+                }
+            results.append(result)
+            audit_log('import', f'Datei importiert: {filename} ({result["records"]} Datensätze, Status: {result["status"]})')
+    return results
+
+
+def _create_price_from_request(db):
+    db.execute("""INSERT INTO prices (valid_from, valid_to, price_consumption, price_generation, description)
+                  VALUES (?, ?, ?, ?, ?)""",
+               (request.form['valid_from'], request.form['valid_to'],
+                float(request.form['price_consumption']),
+                float(request.form['price_generation']),
+                request.form.get('description', '')))
+    db.commit()
+    audit_log('price_create', f'Preis angelegt: {request.form["valid_from"]} - {request.form["valid_to"]}')
+
+
+@app.route('/v2/', methods=['GET', 'POST'])
+@app.route('/v2', methods=['GET', 'POST'])
+@app.route('/v2/<path:subpath>', methods=['GET', 'POST'])
 @login_required
 def v2_dashboard(subpath=None):
     """Experimentelle V2-Oberflaeche, getrennt von der bestehenden Jinja-UI."""
+    current_path = '/' + (subpath or '').strip('/')
+    if current_path == '/':
+        current_path = '/' if current_user.is_admin else '/portal'
+    writable_paths = {'/import', '/prices', '/settings', '/admin/database', '/invoices/new', '/portal/data', '/members/new', '/newsletter/new', '/change-password'}
+    writable_patterns = (
+        r'/members/\d+/edit',
+        r'/prices/\d+/edit',
+        r'/newsletter/\d+/edit',
+    )
+    is_writable_dynamic = any(re.fullmatch(pattern, current_path) for pattern in writable_patterns)
+    if request.method == 'POST' and current_path not in writable_paths and not is_writable_dynamic:
+        abort(405)
+    results = None
+    check_result = None
+    maintenance_result = None
+    if request.method == 'POST':
+        if current_path not in {'/portal/data', '/change-password'} and not current_user.is_admin:
+            abort(403)
+        if current_path == '/import':
+            results = _run_import_uploads()
+        elif current_path == '/prices':
+            _create_price_from_request(get_db())
+            flash('Preis angelegt.', 'success')
+            return redirect('/v2/prices')
+        elif re.fullmatch(r'/prices/\d+/edit', current_path):
+            price_id = int(current_path.split('/')[2])
+            _update_price_from_request(get_db(), price_id)
+            return redirect('/v2/prices')
+        elif current_path == '/members/new':
+            _save_member_from_request(get_db())
+            return redirect('/v2/members')
+        elif re.fullmatch(r'/members/\d+/edit', current_path):
+            member_id = int(current_path.split('/')[2])
+            _save_member_from_request(get_db(), member_id)
+            return redirect('/v2/members')
+        elif current_path == '/settings':
+            _save_settings_from_request(get_db())
+            flash('Einstellungen gespeichert.', 'success')
+            return redirect('/v2/settings')
+        elif current_path == '/admin/database':
+            action = request.form.get('database_action', '')
+            try:
+                if action == 'check':
+                    check_result = run_database_quality_check()
+                    audit_log('database_quality_check', check_result['summary'])
+                    flash(f'Datenbank-Qualitätscheck abgeschlossen: {check_result["summary"]}.',
+                          'success' if check_result['status'] == 'ok' else 'warning')
+                elif action == 'maintenance':
+                    maintenance_result = run_database_maintenance(request.form.get('maintenance_action', ''))
+                    audit_log('database_maintenance', f'{maintenance_result["label"]} ausgeführt')
+                    flash(f'{maintenance_result["label"]} erfolgreich abgeschlossen.', 'success')
+                else:
+                    flash('Unbekannte Datenbank-Aktion.', 'danger')
+            except Exception as e:
+                app.logger.exception('V2 database action failed')
+                flash(f'Datenbank-Aktion fehlgeschlagen: {e}', 'danger')
+        elif current_path == '/invoices/new':
+            try:
+                invoice_id = _create_invoice_from_request(get_db())
+                return redirect(f'/v2/invoices/{invoice_id}')
+            except Exception as e:
+                app.logger.exception('V2 invoice creation failed')
+                flash(str(e), 'danger')
+        elif current_path == '/newsletter/new':
+            try:
+                _save_newsletter_from_request(get_db())
+                return redirect('/v2/newsletter')
+            except Exception as e:
+                flash(str(e), 'danger')
+        elif re.fullmatch(r'/newsletter/\d+/edit', current_path):
+            newsletter_id = int(current_path.split('/')[2])
+            try:
+                _save_newsletter_from_request(get_db(), newsletter_id)
+                return redirect('/v2/newsletter')
+            except Exception as e:
+                flash(str(e), 'danger')
+        elif current_path == '/change-password':
+            target = '/v2/' if current_user.is_admin else '/v2/portal'
+            if _change_password_from_request(get_db()):
+                return redirect(target)
+        elif current_path == '/portal/data':
+            if not current_user.member_id:
+                abort(403)
+            _update_portal_member_from_request(get_db())
+            return redirect('/v2/portal/data')
     db = get_db()
-    data = _v2_shell_data(db)
+    data = _v2_shell_data(db, current_path)
+    if current_path == '/import':
+        data['native'] = _v2_import_data(db, results)
+    elif current_path == '/admin/database':
+        data['native'] = _v2_database_data(check_result, maintenance_result)
     data['content_path'] = _v2_content_path(subpath)
-    data['current_path'] = '/' + (subpath or '').strip('/')
-    if data['current_path'] == '/':
-        data['current_path'] = '/' if current_user.is_admin else '/portal'
+    data['current_path'] = current_path
     return render_template(
         'v2_index.html',
         v2_assets=_v2_assets(),
@@ -1660,6 +2974,9 @@ def member_delete(id):
     db.commit()
     audit_log('member_delete', f'Mitglied deaktiviert: {member["name"]} (ID {id})')
     flash('Mitglied deaktiviert.', 'success')
+    next_url = request.form.get('next') or request.args.get('next')
+    if next_url and is_safe_redirect_url(next_url):
+        return redirect(next_url)
     return redirect(url_for('members_list'))
 
 
@@ -4211,6 +5528,16 @@ def get_backup_info():
     }
 
 
+def _backup_redirect_target():
+    next_url = request.form.get('next') or request.args.get('next')
+    if next_url and is_safe_redirect_url(next_url):
+        return next_url
+    session_next = session.pop('backup_redirect_next', None)
+    if session_next and is_safe_redirect_url(session_next):
+        return session_next
+    return url_for('admin_backup')
+
+
 @app.route('/admin/backup')
 @admin_required
 def admin_backup():
@@ -4256,11 +5583,11 @@ def admin_backup_settings():
     email_to = (request.form.get('backup_email_to') or '').strip()
     if email_enabled and not _is_valid_email(email_to):
         flash('Bitte eine gültige Empfängeradresse für das Mail-Backup eintragen.', 'danger')
-        return redirect(url_for('admin_backup'))
+        return redirect(_backup_redirect_target())
     drive_enabled = form_switch_enabled('backup_drive_enabled')
     if drive_enabled and not get_google_drive_status()['connected']:
         flash('Google Drive muss zuerst verbunden werden, bevor der automatische Drive-Upload aktiviert werden kann.', 'danger')
-        return redirect(url_for('admin_backup'))
+        return redirect(_backup_redirect_target())
 
     values = {
         'backup_auto_enabled': 'true' if form_switch_enabled('backup_auto_enabled') else 'false',
@@ -4285,7 +5612,7 @@ def admin_backup_settings():
     deleted = apply_backup_retention(settings)
     audit_log('backup_settings_update', f'Backup-Konfiguration geändert ({deleted} alte Auto-Backups entfernt)')
     flash('Backup-Konfiguration gespeichert.', 'success')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/connect')
@@ -4293,6 +5620,9 @@ def admin_backup_settings():
 def admin_backup_google_connect():
     """Startet den Google OAuth-Flow fuer Drive-Backups."""
     try:
+        next_url = request.args.get('next')
+        if next_url and is_safe_redirect_url(next_url):
+            session['backup_redirect_next'] = next_url
         flow = _google_drive_flow()
         correlation_id = secrets.token_hex(12)
         oauth_state = secrets.token_urlsafe(32)
@@ -4325,7 +5655,7 @@ def admin_backup_google_connect():
     except Exception as e:
         audit_log('backup_drive_connect_failed', f'Google Drive Verbindung fehlgeschlagen: {e}')
         flash(f'Google Drive Verbindung konnte nicht gestartet werden: {e}', 'danger')
-        return redirect(url_for('admin_backup'))
+        return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/client-config', methods=['POST'])
@@ -4349,7 +5679,7 @@ def admin_backup_google_client_config():
     except Exception as e:
         audit_log('backup_drive_client_config_failed', f'Google OAuth Client-Konfiguration fehlgeschlagen: {e}')
         flash(f'Google OAuth Client-Konfiguration konnte nicht gespeichert werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/token', methods=['POST'])
@@ -4370,7 +5700,7 @@ def admin_backup_google_token():
     except Exception as e:
         audit_log('backup_drive_token_failed', f'Google Drive Token konnte nicht gespeichert werden: {e}')
         flash(f'Google Drive Token konnte nicht gespeichert werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/callback')
@@ -4415,7 +5745,7 @@ def admin_backup_google_callback():
         session.pop('google_drive_oauth_state', None)
         session.pop('google_drive_oauth_correlation_id', None)
         session.modified = True
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/client-config/delete', methods=['POST'])
@@ -4435,7 +5765,7 @@ def admin_backup_google_client_config_delete():
     except Exception as e:
         audit_log('backup_drive_client_config_delete_failed', f'Google Drive Client-Konfiguration konnte nicht entfernt werden: {e}')
         flash(f'Google Drive Client-Konfiguration konnte nicht entfernt werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/disconnect', methods=['POST'])
@@ -4454,7 +5784,7 @@ def admin_backup_google_disconnect():
     except Exception as e:
         audit_log('backup_drive_disconnect_failed', f'Google Drive Trennung fehlgeschlagen: {e}')
         flash(f'Google Drive konnte nicht getrennt werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/test', methods=['POST'])
@@ -4471,7 +5801,7 @@ def admin_backup_google_test():
         db.commit()
         audit_log('backup_drive_test_failed', f'Google Drive Verbindungstest fehlgeschlagen: {e}')
         flash(f'Google Drive Verbindungstest fehlgeschlagen: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/run', methods=['POST'])
@@ -4486,7 +5816,7 @@ def admin_backup_run():
     except Exception as e:
         audit_log('backup_manual_failed', f'Manuelles lokales Backup fehlgeschlagen: {e}')
         flash(f'Backup konnte nicht erstellt werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/upload-drive', methods=['POST'])
@@ -4505,7 +5835,7 @@ def admin_backup_upload_drive():
         db.commit()
         audit_log('backup_drive_failed', f'Google Drive Upload fehlgeschlagen: {filename} ({e})')
         flash(f'Google Drive Upload fehlgeschlagen: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/google/delete', methods=['POST'])
@@ -4524,7 +5854,7 @@ def admin_backup_google_delete():
         db.commit()
         audit_log('backup_drive_delete_failed', f'Google Drive Backup konnte nicht gelöscht werden: {drive_file_id} ({e})')
         flash(f'Google Drive Backup konnte nicht gelöscht werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/delete', methods=['POST'])
@@ -4541,7 +5871,7 @@ def admin_backup_delete():
     except Exception as e:
         audit_log('backup_delete_failed', f'Backup-Löschung fehlgeschlagen: {filename} ({e})')
         flash(f'Backup konnte nicht gelöscht werden: {e}', 'danger')
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/admin/backup/send-mail', methods=['POST'])
@@ -4569,7 +5899,7 @@ def admin_backup_send_mail():
                 os.remove(email_path)
             except OSError:
                 app.logger.warning('Could not remove temporary mail backup %s', email_path, exc_info=True)
-    return redirect(url_for('admin_backup'))
+    return redirect(_backup_redirect_target())
 
 
 @app.route('/backup')
@@ -5269,6 +6599,13 @@ def get_member_account_summary(db, member_id):
     }
 
 
+def _payment_redirect_target():
+    next_url = request.form.get('next') or request.args.get('next')
+    if next_url and is_safe_redirect_url(next_url):
+        return next_url
+    return url_for('payments')
+
+
 @app.route('/payments')
 @admin_required
 def payments():
@@ -5322,7 +6659,7 @@ def payment_mark_paid():
         db.rollback()
         audit_log('payment_paid_failed', f'Zahlungsbuchung fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
         flash(f'Buchung konnte nicht gespeichert werden: {e}', 'danger')
-    return redirect(url_for('payments'))
+    return redirect(_payment_redirect_target())
 
 
 @app.route('/payments/mark_unpaid', methods=['POST'])
@@ -5361,7 +6698,7 @@ def payment_mark_unpaid():
         db.rollback()
         audit_log('payment_unpaid_failed', f'Buchungsstorno fehlgeschlagen: Mitglied {member_id}, Rechnung {invoice_id} ({e})')
         flash(f'Buchung konnte nicht zurückgesetzt werden: {e}', 'danger')
-    return redirect(url_for('payments'))
+    return redirect(_payment_redirect_target())
 
 
 # ═══════════════════════════════════════════════════════
@@ -5370,6 +6707,13 @@ def payment_mark_unpaid():
 
 CONTRACTS_FOLDER = os.path.join(BASE_DIR, '..', 'contracts')
 os.makedirs(CONTRACTS_FOLDER, exist_ok=True)
+
+
+def _admin_users_redirect_target():
+    next_url = request.form.get('next') or request.args.get('next')
+    if next_url and is_safe_redirect_url(next_url):
+        return next_url
+    return url_for('admin_users')
 
 
 @app.route('/admin/users')
@@ -5419,7 +6763,7 @@ def admin_user_create():
     member = db.execute("SELECT * FROM members WHERE id=?", (member_id,)).fetchone()
     if not member:
         flash('Mitglied nicht gefunden.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
 
     # Username: email oder vorname+nachname lowercase
     if member['email']:
@@ -5440,7 +6784,7 @@ def admin_user_create():
     """, (username.lower(), member_id, (member['email'] or '').strip(), (member['email'] or '').strip().lower())).fetchone()
     if existing:
         flash(f'Für dieses Mitglied existiert bereits der Benutzer "{existing["username"]}".', 'warning')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
 
     # Einladungs-Token generieren
     invite_token = secrets.token_urlsafe(32)
@@ -5455,7 +6799,7 @@ def admin_user_create():
                 role, member_id, invite_token, invite_expires))
     db.commit()
 
-    invite_url = public_url_for('invite_accept', token=invite_token)
+    invite_url = public_url_for('v2_invite_accept', token=invite_token)
     audit_log('user_create', f'Benutzer angelegt: {username} (Rolle: {role}, Mitglied-ID: {member_id})')
     if member['email']:
         invite_user = {
@@ -5473,7 +6817,7 @@ def admin_user_create():
             flash(f'Einladungslink: {invite_url}', 'info')
     else:
         flash(f'Benutzer "{username}" angelegt. Keine E-Mail-Adresse hinterlegt; Einladungslink: {invite_url}', 'warning')
-    return redirect(url_for('admin_users'))
+    return redirect(_admin_users_redirect_target())
 
 
 @app.route('/admin/users/<int:id>/invite', methods=['POST'])
@@ -5495,7 +6839,7 @@ def admin_user_reinvite(id):
         FROM users u LEFT JOIN members m ON u.member_id = m.id
         WHERE u.id=?
     """, (id,)).fetchone()
-    invite_url = public_url_for('invite_accept', token=invite_token)
+    invite_url = public_url_for('v2_invite_accept', token=invite_token)
     audit_log('user_reinvite', f'Neuer Einladungslink für: {user["username"]}' if user else f'Reinvite User-ID {id}')
     if invite_action == 'show':
         flash(f'Neuer Einladungslink generiert: {invite_url}', 'info')
@@ -5511,7 +6855,7 @@ def admin_user_reinvite(id):
             flash(f'Einladungslink: {invite_url}', 'info')
     else:
         flash(f'Neuer Einladungslink generiert. Keine E-Mail-Adresse hinterlegt; Link: {invite_url}', 'warning')
-    return redirect(url_for('admin_users'))
+    return redirect(_admin_users_redirect_target())
 
 
 @app.route('/admin/users/<int:id>/toggle-role', methods=['POST'])
@@ -5522,14 +6866,14 @@ def admin_user_toggle_role(id):
     user = db.execute("SELECT * FROM users WHERE id=?", (id,)).fetchone()
     if not user:
         flash('Benutzer nicht gefunden.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     new_role = 'member' if user['role'] == 'admin' else 'admin'
     new_admin = 1 if new_role == 'admin' else 0
     db.execute("UPDATE users SET role=?, is_admin=? WHERE id=?", (new_role, new_admin, id))
     db.commit()
     audit_log('user_role_change', f'Rolle geändert: {user["username"]} → {new_role}')
     flash(f'Rolle auf "{new_role}" geändert.', 'success')
-    return redirect(url_for('admin_users'))
+    return redirect(_admin_users_redirect_target())
 
 
 @app.route('/admin/users/<int:id>/delete', methods=['POST'])
@@ -5538,14 +6882,14 @@ def admin_user_delete(id):
     """Benutzer löschen."""
     if id == current_user.id:
         flash('Sie können sich nicht selbst löschen.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     db = get_db()
     user = db.execute("SELECT username FROM users WHERE id=?", (id,)).fetchone()
     db.execute("DELETE FROM users WHERE id=?", (id,))
     db.commit()
     audit_log('user_delete', f'Benutzer gelöscht: {user["username"]}' if user else f'User-ID {id} gelöscht')
     flash('Benutzer gelöscht.', 'success')
-    return redirect(url_for('admin_users'))
+    return redirect(_admin_users_redirect_target())
 
 
 @app.route('/admin/contracts/upload', methods=['POST'])
@@ -5557,22 +6901,22 @@ def admin_contract_upload():
     contract_type = request.form.get('type', '')
     if contract_type not in ('bezieher', 'einspeiser'):
         flash('Ungültiger Vertragstyp.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     file = request.files.get('file')
     if not file or file.filename == '':
         flash('Keine Datei ausgewählt.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     filename = secure_filename(file.filename)
     if not filename.lower().endswith('.pdf'):
         flash('Nur PDF-Dateien sind als Vertrag erlaubt.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     file_data = file.read()
     if len(file_data) > 10 * 1024 * 1024:
         flash('Datei zu groß (max. 10 MB).', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     if not file_data.startswith(b'%PDF-'):
         flash('Die hochgeladene Datei ist keine gültige PDF-Datei.', 'danger')
-        return redirect(url_for('admin_users'))
+        return redirect(_admin_users_redirect_target())
     db.execute("""INSERT INTO contracts (member_id, type, filename, file_data, uploaded_by)
                   VALUES (?, ?, ?, ?, ?)""",
                (member_id, contract_type, filename, file_data, current_user.username))
@@ -5580,7 +6924,7 @@ def admin_contract_upload():
     member = db.execute("SELECT name FROM members WHERE id=?", (member_id,)).fetchone()
     audit_log('contract_upload', f'Vertrag hochgeladen: {filename} ({contract_type}) für {member["name"]}')
     flash(f'Vertrag "{filename}" hochgeladen.', 'success')
-    return redirect(url_for('admin_users'))
+    return redirect(_admin_users_redirect_target())
 
 
 @app.route('/contracts/<int:id>/download')
@@ -5614,7 +6958,7 @@ def contract_delete(id):
     db.commit()
     audit_log('contract_delete', f'Vertrag gelöscht: {contract["filename"]}' if contract else f'Vertrag ID {id} gelöscht')
     flash('Vertrag gelöscht.', 'success')
-    return redirect(url_for('admin_users'))
+    return redirect(_admin_users_redirect_target())
 
 
 # ═══════════════════════════════════════════════════════
@@ -5650,6 +6994,36 @@ def invite_accept(token):
         return redirect(url_for('login'))
 
     return render_template('invite.html', token=token, username=user['username'])
+
+
+@app.route('/v2/invite/<token>', methods=['GET', 'POST'])
+def v2_invite_accept(token):
+    db = get_db()
+    user = db.execute("SELECT * FROM users WHERE invite_token=?", (token,)).fetchone()
+    if not user:
+        flash('Ungültiger Einladungslink.', 'danger')
+        return redirect(url_for('v2_login'))
+    if user['invite_expires'] and user['invite_expires'] < datetime.now().isoformat():
+        flash('Einladungslink abgelaufen. Bitte Admin kontaktieren.', 'danger')
+        return redirect(url_for('v2_login'))
+
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        confirm = request.form.get('confirm_password', '')
+        if len(password) < 6:
+            flash('Passwort muss mindestens 6 Zeichen haben.', 'danger')
+            return render_template('v2_public.html', page='invite', token=token, username=user['username'])
+        if password != confirm:
+            flash('Passwörter stimmen nicht überein.', 'danger')
+            return render_template('v2_public.html', page='invite', token=token, username=user['username'])
+        db.execute("UPDATE users SET password_hash=?, invite_token=NULL, invite_expires=NULL WHERE id=?",
+                   (generate_password_hash(password), user['id']))
+        db.commit()
+        audit_log('invite_accept', 'Einladung angenommen, Passwort gesetzt', user_id=user['id'], username=user['username'])
+        flash('Passwort erfolgreich gesetzt. Sie können sich jetzt einloggen.', 'success')
+        return redirect(url_for('v2_login'))
+
+    return render_template('v2_public.html', page='invite', token=token, username=user['username'])
 
 
 @app.route('/api/contracts')
@@ -5908,7 +7282,35 @@ def newsletter_unsubscribe(token):
     return render_template('newsletter_unsubscribe.html', status='success', member=member)
 
 
+@app.route('/v2/newsletter/unsubscribe/<token>')
+def v2_newsletter_unsubscribe(token):
+    status = 'invalid'
+    member = None
+    http_status = 200
+    if not token or len(token) < 16:
+        http_status = 400
+    else:
+        db = get_db()
+        member = db.execute("SELECT id, name FROM members WHERE unsubscribe_token=?", (token,)).fetchone()
+        if not member:
+            http_status = 404
+        else:
+            db.execute("UPDATE members SET newsletter_optout=1 WHERE id=?", (member['id'],))
+            db.commit()
+            audit_log('newsletter_optout', f'Newsletter per Link abbestellt: {member["name"]} (ID {member["id"]})',
+                      user_id=None, username='system')
+            status = 'success'
+    return render_template('v2_public.html', page='unsubscribe', status=status, member=member), http_status
+
+
 # === Newsletter Admin ===
+
+def _newsletter_redirect_target():
+    next_url = request.form.get('next') or request.args.get('next')
+    if next_url and is_safe_redirect_url(next_url):
+        return next_url
+    return url_for('newsletter_list')
+
 
 @app.route('/newsletter')
 @admin_required
@@ -5936,7 +7338,7 @@ def newsletter_new():
         db.commit()
         audit_log('newsletter_create', f'Newsletter erstellt: {subject}')
         flash('Newsletter gespeichert.', 'success')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
     return render_template('newsletter_edit.html', newsletter=None, subject='', body_html='')
 
 
@@ -6002,19 +7404,19 @@ def newsletter_test(id):
     test_email = request.form.get('test_email', '').strip()
     if not _is_valid_email(test_email):
         flash('Bitte eine gültige Test-E-Mail-Adresse eingeben.', 'danger')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     db = get_db()
     nl = db.execute("SELECT * FROM newsletters WHERE id=?", (id,)).fetchone()
     if not nl:
         flash('Newsletter nicht gefunden.', 'danger')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     try:
         mail_cfg = _get_valid_mail_config(db)
     except RuntimeError as e:
         flash(f'E-Mail-Konfiguration ungültig: {e}', 'danger')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     base_url = public_base_url()
     logo_url = public_url_for('static', filename='logo.png')
@@ -6050,7 +7452,7 @@ def newsletter_test(id):
         flash(f'Fehler beim Senden der Test-E-Mail: {e}', 'danger')
 
     audit_log('newsletter_test', f'Test-E-Mail für "{nl["subject"]}" an {test_email}')
-    return redirect(url_for('newsletter_list'))
+    return redirect(_newsletter_redirect_target())
 
 
 @app.route('/newsletter/<int:id>/send', methods=['POST'])
@@ -6066,13 +7468,13 @@ def newsletter_send(id):
     nl = db.execute("SELECT * FROM newsletters WHERE id=?", (id,)).fetchone()
     if not nl:
         flash('Newsletter nicht gefunden.', 'danger')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     try:
         mail_cfg = _get_valid_mail_config(db)
     except RuntimeError as e:
         flash(f'E-Mail-Konfiguration ungültig: {e}', 'danger')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     # Empfänger: aktive Mitglieder mit E-Mail, die nicht abbestellt haben
     members = db.execute("""
@@ -6083,7 +7485,7 @@ def newsletter_send(id):
 
     if not members:
         flash('Keine Empfänger gefunden (alle abbestellt oder keine E-Mail hinterlegt).', 'warning')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     sent = 0
     failed = 0
@@ -6104,7 +7506,7 @@ def newsletter_send(id):
                 db.execute("UPDATE members SET unsubscribe_token=? WHERE id=?", (unsub_token, member['id']))
                 db.commit()
 
-            unsub_url = public_url_for('newsletter_unsubscribe', token=unsub_token)
+            unsub_url = public_url_for('v2_newsletter_unsubscribe', token=unsub_token)
 
             # HTML aus Template rendern
             full_html = render_template('newsletter_email.html',
@@ -6140,13 +7542,13 @@ def newsletter_send(id):
         server.quit()
     except Exception as e:
         flash(f'SMTP-Verbindungsfehler: {e}', 'danger')
-        return redirect(url_for('newsletter_list'))
+        return redirect(_newsletter_redirect_target())
 
     db.execute("UPDATE newsletters SET sent_at=datetime('now'), recipients_count=? WHERE id=?", (sent, id))
     db.commit()
     audit_log('newsletter_send', f'Newsletter "{nl["subject"]}" versendet: {sent} gesendet, {failed} fehlgeschlagen')
     flash(f'Newsletter versendet: {sent} erfolgreich, {failed} fehlgeschlagen.', 'success')
-    return redirect(url_for('newsletter_list'))
+    return redirect(_newsletter_redirect_target())
 
 
 @app.route('/newsletter/<int:id>/delete', methods=['POST'])
@@ -6161,7 +7563,7 @@ def newsletter_delete(id):
         db.commit()
         audit_log('newsletter_delete', f'Newsletter gelöscht: {nl["subject"]} (ID {id})')
         flash('Newsletter gelöscht.', 'success')
-    return redirect(url_for('newsletter_list'))
+    return redirect(_newsletter_redirect_target())
 
 
 # === Entry Point ===

@@ -29,6 +29,146 @@ class V2UITests(unittest.TestCase):
         self.assertIn('/static/v2/assets/index-', html)
         self.assertIn('type="module"', html)
         self.assertIn('id="root"', html)
+        self.assertIn('"type": "dashboard"', html)
+
+    def test_v2_members_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/members')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/members"', html)
+        self.assertIn('"type": "members"', html)
+        self.assertIn('"counts"', html)
+
+    def test_v2_import_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/import')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/import"', html)
+        self.assertIn('"type": "import"', html)
+        self.assertIn('"csrf_token"', html)
+
+    def test_v2_prices_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/prices')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/prices"', html)
+        self.assertIn('"type": "prices"', html)
+        self.assertIn('"csrf_token"', html)
+
+    def test_v2_invoices_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/invoices')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/invoices"', html)
+        self.assertIn('"type": "invoices"', html)
+
+    def test_v2_payments_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/payments')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/payments"', html)
+        self.assertIn('"type": "payments"', html)
+        self.assertIn('"csrf_token"', html)
+
+    def test_v2_newsletter_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/newsletter')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/newsletter"', html)
+        self.assertIn('"type": "newsletter"', html)
+        self.assertIn('"csrf_token"', html)
+
+    def test_v2_reports_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/reports')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/reports"', html)
+        self.assertIn('"type": "reports"', html)
+
+    def test_v2_users_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/admin/users')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/admin/users"', html)
+        self.assertIn('"type": "users"', html)
+        self.assertIn('"contracts"', html)
+        self.assertIn('"csrf_token"', html)
+
+    def test_v2_audit_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/admin/audit')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/admin/audit"', html)
+        self.assertIn('"type": "audit"', html)
+        self.assertIn('"pagination"', html)
+
+    def test_v2_backup_renders_native_data_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/v2/admin/backup')
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('"current_path": "/admin/backup"', html)
+        self.assertIn('"type": "backup"', html)
+        self.assertIn('"local_backups"', html)
 
     def test_v2_subpage_points_shell_to_embedded_existing_page(self):
         with eegapp.app.test_client() as client:
@@ -36,12 +176,12 @@ class V2UITests(unittest.TestCase):
                 sess['_user_id'] = str(self._admin_id())
                 sess['_fresh'] = True
 
-            response = client.get('/v2/import?files_sort=source_file')
+            response = client.get('/v2/admin/database')
 
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        self.assertIn('"current_path": "/import"', html)
-        self.assertIn('"content_path": "/import?files_sort=source_file\\u0026embed=1"', html)
+        self.assertIn('"current_path": "/admin/database"', html)
+        self.assertIn('"content_path": "/admin/database?embed=1"', html)
 
     def test_embed_mode_can_be_framed_by_same_origin_only(self):
         with eegapp.app.test_client() as client:
