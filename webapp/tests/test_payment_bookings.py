@@ -317,6 +317,90 @@ class PaymentBookingTests(unittest.TestCase):
         self.assertEqual(account['balance'], -0.01)
         self.assertEqual(book['summary']['bank_balance'], 100.01)
 
+    def _seed_second_member_bookings(self):
+        """Zwei Mitglieder mit unterschiedlichen Betraegen und Buchungsdaten."""
+        client = self._client()
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            db.execute("INSERT INTO members (id, name) VALUES (2, 'Anna Beispiel')")
+            db.execute("""INSERT INTO invoice_items
+                          (invoice_id, member_id, type, kwh, price_per_kwh, amount_eur, paid)
+                          VALUES (1, 2, 'consumption', 100, 20, 20.0, 0)""")
+            db.commit()
+        # Mitglied 1: 60 EUR am 10.01., Mitglied 2: 20 EUR am 05.02.
+        self._book(client, amount='60', booking_date='2026-01-10')
+        client.post('/payments/mark_paid',
+                    data={'invoice_id': '1', 'member_id': '2', 'amount_eur': '20',
+                          'booking_date': '2026-02-05'}, follow_redirects=True)
+        return client
+
+    def _booked_order(self, sort, direction):
+        with eegapp.app.app_context():
+            rows = eegapp.get_payment_rows(eegapp.get_db())
+        entries = eegapp.booked_payment_entries(rows, sort, direction)
+        return [(e['row']['member_name'], e['amount'], e['booking_date']) for e in entries]
+
+    def test_booked_entries_sort_by_date(self):
+        self._seed_second_member_bookings()
+        self.assertEqual([e[2] for e in self._booked_order('date', 'asc')],
+                         ['2026-01-10', '2026-02-05'])
+        self.assertEqual([e[2] for e in self._booked_order('date', 'desc')],
+                         ['2026-02-05', '2026-01-10'])
+
+    def test_booked_entries_sort_by_amount(self):
+        self._seed_second_member_bookings()
+        self.assertEqual([e[1] for e in self._booked_order('amount', 'asc')], [20.0, 60.0])
+        self.assertEqual([e[1] for e in self._booked_order('amount', 'desc')], [60.0, 20.0])
+
+    def test_booked_entries_sort_by_member(self):
+        self._seed_second_member_bookings()
+        self.assertEqual([e[0] for e in self._booked_order('member', 'asc')],
+                         ['Anna Beispiel', 'Testmitglied'])
+        self.assertEqual([e[0] for e in self._booked_order('member', 'desc')],
+                         ['Testmitglied', 'Anna Beispiel'])
+
+    def test_unknown_sort_falls_back_to_date(self):
+        self._seed_second_member_bookings()
+        self.assertEqual(self._booked_order('kaputt', 'desc'),
+                         self._booked_order('date', 'desc'))
+
+    def test_legacy_rows_are_sorted_together_with_bookings(self):
+        self._make_legacy()
+        with eegapp.app.app_context():
+            rows = eegapp.get_payment_rows(eegapp.get_db())
+        entries = eegapp.booked_payment_entries(rows, 'date', 'desc')
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['kind'], 'legacy')
+        self.assertEqual(entries[0]['amount'], 100.0)
+        self.assertEqual(entries[0]['booking_date'], '2026-05-27')
+
+    def test_payments_page_sort_links_and_order(self):
+        client = self._seed_second_member_bookings()
+
+        def booked_section(query):
+            html = client.get('/payments?' + query).get_data(as_text=True)
+            # Nur die Tabelle der gebuchten Zahlungen betrachten, die offenen
+            # Forderungen darueber enthalten dieselben Namen.
+            return html, html[html.index('id="gebuchte-zahlungen"'):]
+
+        html, section = booked_section('booked_sort=amount&booked_dir=asc')
+        self.assertIn('booked_sort=amount', html)
+        self.assertIn('booked_sort=date', html)
+        self.assertIn('booked_sort=member', html)
+        self.assertLess(section.index('Anna Beispiel'), section.index('Testmitglied'))
+
+        _, section = booked_section('booked_sort=amount&booked_dir=desc')
+        self.assertLess(section.index('Testmitglied'), section.index('Anna Beispiel'))
+
+        _, section = booked_section('booked_sort=date&booked_dir=asc')
+        self.assertLess(section.index('Testmitglied'), section.index('Anna Beispiel'))
+
+    def test_payments_page_rejects_invalid_sort_parameters(self):
+        client = self._seed_second_member_bookings()
+        response = client.get('/payments?booked_sort=;DROP&booked_dir=hoch')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('booked_sort=date&amp;booked_dir=asc', response.get_data(as_text=True))
+
     def test_zero_amount_is_rejected(self):
         response = self._book(self._client(), amount='0')
         self.assertIn('darf nicht null sein', response.get_data(as_text=True))

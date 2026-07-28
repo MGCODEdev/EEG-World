@@ -7116,13 +7116,64 @@ def _payment_redirect_target():
     return url_for('payments')
 
 
+BOOKED_SORT_KEYS = {
+    'member': lambda entry: (entry['row']['member_name'].lower(), entry['booking_date']),
+    'invoice': lambda entry: (entry['row']['invoice_id'], entry['row']['member_name'].lower()),
+    'period': lambda entry: (entry['row']['period_from'], entry['row']['member_name'].lower()),
+    'amount': lambda entry: (entry['amount'], entry['booking_date']),
+    'abs_amount': lambda entry: (abs(entry['amount']), entry['booking_date']),
+    'date': lambda entry: (entry['booking_date'], entry['row']['member_name'].lower()),
+}
+
+
+def booked_payment_entries(rows, sort='date', direction='desc'):
+    """Flache, sortierbare Liste aller gebuchten Zahlungen, eine Zeile je Buchung.
+
+    Altbestaende ohne Buchungssatz erscheinen mit ihrem abgeleiteten Betrag.
+    """
+    entries = []
+    for row in rows:
+        for position, booking in enumerate(row['bookings'], start=1):
+            entries.append({
+                'kind': 'booking',
+                'row': row,
+                'booking': booking,
+                'position': position,
+                'total_bookings': len(row['bookings']),
+                'amount': booking['amount_eur'],
+                'booking_date': booking['booking_date'] or '',
+            })
+        if not row['bookings'] and row['paid'] and abs(row['net_total']) >= 0.005:
+            entries.append({
+                'kind': 'legacy',
+                'row': row,
+                'booking': None,
+                'position': 1,
+                'total_bookings': 1,
+                'amount': row['net_total'],
+                'booking_date': row['booking_date'] or '',
+            })
+    entries.sort(key=BOOKED_SORT_KEYS.get(sort, BOOKED_SORT_KEYS['date']),
+                 reverse=(direction == 'desc'))
+    return entries
+
+
 @app.route('/payments')
 @admin_required
 def payments():
     """Überweisungsliste: offene und bezahlte Forderungen."""
     db = get_db()
     payment_list = get_payment_rows(db)
+    booked_sort = request.args.get('booked_sort', 'date')
+    booked_dir = request.args.get('booked_dir', 'desc')
+    if booked_sort not in BOOKED_SORT_KEYS:
+        booked_sort = 'date'
+    if booked_dir not in {'asc', 'desc'}:
+        booked_dir = 'desc'
     return render_template('payments.html', payments=payment_list,
+                           booked_entries=booked_payment_entries(payment_list, booked_sort, booked_dir),
+                           booked_sort=booked_sort,
+                           booked_dir=booked_dir,
                            min_change_reason_length=MIN_CHANGE_REASON_LENGTH,
                            today=local_now().date().isoformat())
 

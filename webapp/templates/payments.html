@@ -220,31 +220,46 @@
 {% endif %}
 
 <!-- Bereits gebuchte Zahlungen -->
-<div class="card">
+{% macro sort_link(key, label, extra_class='') %}
+    {% set next_dir = 'asc' if booked_sort == key and booked_dir == 'desc' else ('desc' if booked_sort == key else 'asc') %}
+    <th class="{{ extra_class }}">
+        <a class="link-dark text-decoration-none" href="{{ url_for('payments', booked_sort=key, booked_dir=next_dir) }}#gebuchte-zahlungen">
+            {{ label }}
+            {% if booked_sort == key %}
+            <i class="bi bi-arrow-{{ 'up' if booked_dir == 'asc' else 'down' }}"></i>
+            {% else %}
+            <i class="bi bi-arrow-down-up text-muted small"></i>
+            {% endif %}
+        </a>
+    </th>
+{% endmacro %}
+<div class="card" id="gebuchte-zahlungen">
     <div class="card-header bg-success text-white">
         <i class="bi bi-check-circle"></i> Gebuchte Zahlungen
         <small>– Betrag und Datum können korrigiert werden, eine Differenz bleibt am Mitgliedskonto offen</small>
+        <span class="badge bg-light text-dark ms-2">{{ booked_entries|length }} Buchungen</span>
     </div>
     <div class="card-body table-responsive p-0">
         <table class="table table-sm table-hover mb-0 align-middle">
             <thead class="table-light">
                 <tr>
-                    <th>Mitglied</th>
-                    <th>Zeitraum</th>
-                    <th class="text-end">Gebuchter Betrag</th>
-                    <th>Gebucht am</th>
+                    {{ sort_link('member', 'Mitglied') }}
+                    {{ sort_link('period', 'Zeitraum') }}
+                    {{ sort_link('amount', 'Gebuchter Betrag', 'text-end') }}
+                    {{ sort_link('date', 'Gebucht am') }}
                     <th class="text-center">Aktion</th>
                 </tr>
             </thead>
             <tbody>
-            {% set booked = payments|selectattr('bookings')|list %}
-            {% for p in booked %}
-                {% for b in p['bookings'] %}
+            {% for e in booked_entries %}
+                {% set p = e['row'] %}
+                {% set b = e['booking'] %}
+                {% if e['kind'] == 'booking' %}
                 <tr>
                     <td>
                         {{ p['member_name'] }}
-                        {% if p['bookings']|length > 1 %}
-                        <br><span class="badge bg-light text-dark border">Teilbuchung {{ loop.index }}/{{ p['bookings']|length }}</span>
+                        {% if e['total_bookings'] > 1 %}
+                        <br><span class="badge bg-light text-dark border">Teilbuchung {{ e['position'] }}/{{ e['total_bookings'] }}</span>
                         {% endif %}
                         {% if not p['paid'] %}
                         <br><small class="text-warning-emphasis">offen: {{ "%.2f"|format(p['open_amount']) }} €</small>
@@ -290,74 +305,7 @@
                         </button>
                     </td>
                 </tr>
-                <tr class="d-none"><td colspan="5">
-                    <div class="modal fade" id="history-{{ b['id'] }}" tabindex="-1" aria-hidden="true">
-                        <div class="modal-dialog modal-lg modal-dialog-centered">
-                            <div class="modal-content">
-                                <div class="modal-header">
-                                    <h5 class="modal-title">
-                                        <i class="bi bi-clock-history"></i>
-                                        Änderungsverlauf – {{ p['member_name'] }}, Abrechnung #{{ p['invoice_id'] }}
-                                    </h5>
-                                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
-                                </div>
-                                <div class="modal-body">
-                                    {% if b['note'] %}
-                                    <p class="mb-3"><strong>Notiz zur Buchung:</strong> {{ b['note'] }}</p>
-                                    {% endif %}
-                                    <table class="table table-sm mb-0">
-                                        <thead class="table-light">
-                                            <tr>
-                                                <th>Zeitpunkt</th>
-                                                <th>Vorgang</th>
-                                                <th>Änderung</th>
-                                                <th>Grund</th>
-                                                <th>Benutzer</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                        {% for c in b['changes'] %}
-                                            <tr>
-                                                <td><small>{{ c['changed_at']|localdatetime }}</small></td>
-                                                <td>
-                                                    {% if c['action'] == 'create' %}<span class="badge bg-success">angelegt</span>
-                                                    {% elif c['action'] == 'migrate' %}<span class="badge bg-info text-dark">nachgetragen</span>
-                                                    {% elif c['action'] == 'edit' %}<span class="badge bg-primary">geändert</span>
-                                                    {% else %}<span class="badge bg-warning text-dark">storniert</span>{% endif %}
-                                                </td>
-                                                <td>
-                                                    <small>
-                                                    {% if c['old_amount_eur'] is not none and c['new_amount_eur'] is not none %}
-                                                        {{ "%.2f"|format(c['old_amount_eur']) }} € → {{ "%.2f"|format(c['new_amount_eur']) }} €
-                                                    {% elif c['new_amount_eur'] is not none %}
-                                                        {{ "%.2f"|format(c['new_amount_eur']) }} €
-                                                    {% elif c['old_amount_eur'] is not none %}
-                                                        {{ "%.2f"|format(c['old_amount_eur']) }} €
-                                                    {% endif %}
-                                                    {% if c['old_booking_date'] and c['new_booking_date'] and c['old_booking_date'] != c['new_booking_date'] %}
-                                                        <br>{{ c['old_booking_date']|localdate }} → {{ c['new_booking_date']|localdate }}
-                                                    {% endif %}
-                                                    </small>
-                                                </td>
-                                                <td>{% if c['reason'] %}{{ c['reason'] }}{% else %}<span class="text-muted">–</span>{% endif %}</td>
-                                                <td><small>{{ c['changed_by_username'] or '–' }}</small></td>
-                                            </tr>
-                                        {% else %}
-                                            <tr><td colspan="5" class="text-muted text-center py-3">Keine Änderungen aufgezeichnet.</td></tr>
-                                        {% endfor %}
-                                        </tbody>
-                                    </table>
-                                </div>
-                                <div class="modal-footer">
-                                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Schließen</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </td></tr>
-                {% endfor %}
-            {% endfor %}
-            {% for p in payments if p['paid'] and not p['bookings'] and p['net_total']|abs >= 0.005 %}
+                {% else %}
                 {% set legacy_id = 'legacy-' ~ p['invoice_id'] ~ '-' ~ p['member_id'] %}
                 <tr>
                     <td>
@@ -403,14 +351,83 @@
                         </form>
                     </td>
                 </tr>
-            {% endfor %}
-            {% if not booked and not payments|selectattr('paid')|list %}
+                {% endif %}
+            {% else %}
             <tr><td colspan="5" class="text-center text-muted py-3">Noch keine Zahlungen gebucht</td></tr>
-            {% endif %}
+            {% endfor %}
             </tbody>
         </table>
     </div>
 </div>
+
+<!-- Änderungsverlauf je Buchung -->
+{% for e in booked_entries if e['kind'] == 'booking' %}
+    {% set p = e['row'] %}
+    {% set b = e['booking'] %}
+    <div class="modal fade" id="history-{{ b['id'] }}" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-clock-history"></i>
+                        Änderungsverlauf – {{ p['member_name'] }}, Abrechnung #{{ p['invoice_id'] }}
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+                </div>
+                <div class="modal-body">
+                    {% if b['note'] %}
+                    <p class="mb-3"><strong>Notiz zur Buchung:</strong> {{ b['note'] }}</p>
+                    {% endif %}
+                    <table class="table table-sm mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Zeitpunkt</th>
+                                <th>Vorgang</th>
+                                <th>Änderung</th>
+                                <th>Grund</th>
+                                <th>Benutzer</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for c in b['changes'] %}
+                            <tr>
+                                <td><small>{{ c['changed_at']|localdatetime }}</small></td>
+                                <td>
+                                    {% if c['action'] == 'create' %}<span class="badge bg-success">angelegt</span>
+                                    {% elif c['action'] == 'migrate' %}<span class="badge bg-info text-dark">nachgetragen</span>
+                                    {% elif c['action'] == 'edit' %}<span class="badge bg-primary">geändert</span>
+                                    {% else %}<span class="badge bg-warning text-dark">storniert</span>{% endif %}
+                                </td>
+                                <td>
+                                    <small>
+                                    {% if c['old_amount_eur'] is not none and c['new_amount_eur'] is not none %}
+                                        {{ "%.2f"|format(c['old_amount_eur']) }} € → {{ "%.2f"|format(c['new_amount_eur']) }} €
+                                    {% elif c['new_amount_eur'] is not none %}
+                                        {{ "%.2f"|format(c['new_amount_eur']) }} €
+                                    {% elif c['old_amount_eur'] is not none %}
+                                        {{ "%.2f"|format(c['old_amount_eur']) }} €
+                                    {% endif %}
+                                    {% if c['old_booking_date'] and c['new_booking_date'] and c['old_booking_date'] != c['new_booking_date'] %}
+                                        <br>{{ c['old_booking_date']|localdate }} → {{ c['new_booking_date']|localdate }}
+                                    {% endif %}
+                                    </small>
+                                </td>
+                                <td>{% if c['reason'] %}{{ c['reason'] }}{% else %}<span class="text-muted">–</span>{% endif %}</td>
+                                <td><small>{{ c['changed_by_username'] or '–' }}</small></td>
+                            </tr>
+                        {% else %}
+                            <tr><td colspan="5" class="text-muted text-center py-3">Keine Änderungen aufgezeichnet.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Schließen</button>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endfor %}
 
 <!-- Sicherheitsabfrage mit Pflicht-Änderungsgrund -->
 <div class="modal fade" id="bookingConfirmModal" tabindex="-1" aria-hidden="true">
