@@ -14,6 +14,7 @@ import hashlib
 import ipaddress
 import io
 import unicodedata
+import mimetypes
 from datetime import datetime, date, timezone, timedelta
 from functools import wraps
 from email.header import Header
@@ -8871,10 +8872,14 @@ def contract_download(id):
         return redirect(url_for('portal_dashboard'))
     audit_log('contract_download', f'Vertrag heruntergeladen: {contract["filename"]} (ID {id})')
     import io
+    is_preview = request.args.get('preview') == '1'
+    filename = contract['filename'] or ''
+    mimetype = contract.get('file_mimetype') or mimetypes.guess_type(filename)[0] or 'application/octet-stream'
     return send_file(
         io.BytesIO(contract['file_data']),
-        as_attachment=True,
-        download_name=contract['filename']
+        mimetype=mimetype,
+        as_attachment=not is_preview,
+        download_name=filename
     )
 
 

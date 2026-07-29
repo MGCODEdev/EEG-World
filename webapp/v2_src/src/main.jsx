@@ -171,6 +171,45 @@ function V2Shell() {
   }, [messages, toast]);
 
   useEffect(() => {
+    function isPdfUrl(url) {
+      try {
+        const parsed = new URL(url, window.location.href);
+        if (parsed.origin !== window.location.origin) return false;
+        const path = parsed.pathname.toLowerCase();
+        return path.endsWith('.pdf')
+          || /\/invoices\/\d+\/pdf\/\d+/.test(path)
+          || /\/kassabuch\/\d+\/beleg/.test(path)
+          || /\/contracts\/\d+\/download/.test(path);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function handleNativeClick(event) {
+      const link = event.target.closest('a[href]');
+      if (!link) return;
+      const href = link.getAttribute('href') || '';
+      if (!isPdfUrl(href)) return;
+      if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (link.target && link.target !== '_self') return;
+      event.preventDefault();
+      const parsed = new URL(href, window.location.href);
+      parsed.searchParams.set('preview', '1');
+      setPdfPreview({
+        url: parsed.toString(),
+        downloadUrl: parsed.toString(),
+        title: link.getAttribute('title') || link.textContent.trim() || 'PDF Vorschau',
+      });
+    }
+
+    const main = document.querySelector('.v2-main');
+    if (main) main.addEventListener('click', handleNativeClick);
+    return () => {
+      if (main) main.removeEventListener('click', handleNativeClick);
+    };
+  }, []);
+
+  useEffect(() => {
     function handleShortcut(event) {
       const target = event.target;
       const isTyping = target?.tagName === 'INPUT'
@@ -1432,7 +1471,7 @@ function NativeCashbook({data, csrfToken}) {
             <Download size={18} />
             <span>Excel</span>
           </a>
-          <a className="v2-action-button" href={`/kassabuch/export.pdf${exportSuffix}`}>
+          <a className="v2-action-button" href={`/kassabuch/export.pdf${exportSuffix}`} title="PDF Vorschau">
             <FileText size={18} />
             <span>PDF</span>
           </a>
@@ -1596,7 +1635,7 @@ function NativeCashbook({data, csrfToken}) {
                   <td className="v2-number-cell">{formatCurrency(entry.balance)}</td>
                   <td>
                     {entry.has_receipt
-                      ? <a className="v2-icon-action" href={`/kassabuch/${entry.id}/beleg`} aria-label="Beleg herunterladen" title="Beleg herunterladen"><FileText size={18} /></a>
+                      ? <a className="v2-icon-action" href={`/kassabuch/${entry.id}/beleg`} aria-label="Beleg öffnen" title="Beleg öffnen"><FileText size={18} /></a>
                       : <span className="v2-tag is-muted">-</span>}
                   </td>
                   <td className="v2-table-action">
@@ -1880,7 +1919,7 @@ function NativeInvoiceDetail({data, csrfToken}) {
     {key: 'email', header: 'Mail', width: pixel(110), renderCell: (row) => <StatusPill value={row.email_sent ? 'sent' : 'draft'} />},
     {key: 'actions', header: 'Aktionen', align: 'end', width: pixel(155), renderCell: (row) => (
       <div className="v2-row-actions">
-        <a className="v2-icon-action" href={`/invoices/${invoice.id}/pdf/${row.member_id}`} target="_blank" rel="noopener" aria-label="PDF öffnen" title="PDF öffnen">
+        <a className="v2-icon-action" href={`/invoices/${invoice.id}/pdf/${row.member_id}`} aria-label="PDF öffnen" title="PDF öffnen">
           <FileText size={18} />
         </a>
         <form method="post" action={`/invoices/${invoice.id}/send/${row.member_id}`} onSubmit={(event) => confirmInvoiceSend(event, canSend)}>
@@ -3196,8 +3235,8 @@ function NativeUsers({data, csrfToken}) {
                   </td>
                   <td className="v2-table-action">
                     <div className="v2-row-actions">
-                      <a className="v2-icon-action" href={`/contracts/${contract.id}/download`} aria-label="Vertrag herunterladen" title="Download">
-                        <Download size={18} />
+                      <a className="v2-icon-action" href={`/contracts/${contract.id}/download`} aria-label="Vertrag öffnen" title="Vertrag öffnen">
+                        <FileText size={18} />
                       </a>
                       <form method="post" action={`/contracts/${contract.id}/delete`} onSubmit={(event) => confirmContractDelete(event)}>
                         <input type="hidden" name="csrf_token" value={csrfToken || ''} />
@@ -4371,7 +4410,7 @@ function NativePortalContracts({data}) {
     {key: 'type', header: 'Typ', width: pixel(160), renderCell: (row) => <span className={`v2-tag ${row.type === 'einspeiser' ? 'is-warning' : 'is-info'}`}>{row.type === 'einspeiser' ? 'Einspeiser' : 'Bezieher'}</span>},
     {key: 'filename', header: 'Datei', width: proportional(1.7, {minWidth: 320}), renderCell: (row) => <strong>{row.filename}</strong>},
     {key: 'uploaded_at', header: 'Hochgeladen', width: pixel(170), renderCell: (row) => formatDateTime(row.uploaded_at)},
-    {key: 'actions', header: 'Aktionen', align: 'end', width: pixel(100), renderCell: (row) => <a className="v2-icon-action" href={`/contracts/${row.id}/download`} aria-label="Vertrag herunterladen"><Download size={18} /></a>},
+    {key: 'actions', header: 'Aktionen', align: 'end', width: pixel(100), renderCell: (row) => <a className="v2-icon-action" href={`/contracts/${row.id}/download`} aria-label="Vertrag öffnen" title="Vertrag öffnen"><FileText size={18} /></a>},
   ];
   return (
     <div className="v2-native-page v2-portal-contracts-page">
@@ -4400,7 +4439,7 @@ function PortalInvoiceTable({invoices, memberId}) {
     {key: 'status', header: 'Status', width: pixel(140), renderCell: (row) => <StatusPill value={row.paid ? 'paid' : row.status} />},
     {key: 'data', header: 'Daten', width: pixel(120), renderCell: (row) => <StatusPill value={row.data_status} />},
     {key: 'actions', header: 'PDF', align: 'end', width: pixel(90), renderCell: (row) => memberId ? (
-      <a className="v2-icon-action" href={`/invoices/${row.id}/pdf/${memberId}`} target="_blank" rel="noopener" aria-label="PDF öffnen"><FileText size={18} /></a>
+      <a className="v2-icon-action" href={`/invoices/${row.id}/pdf/${memberId}`} aria-label="PDF öffnen" title="PDF öffnen"><FileText size={18} /></a>
     ) : null},
   ];
   return (

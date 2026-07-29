@@ -124,6 +124,47 @@
         .sidebar .nav-link:hover { background: var(--eeg-teal); color: #fff; }
         .sidebar .nav-link.active { background: var(--eeg-teal-light); color: var(--eeg-dark); font-weight: 600; }
         .sidebar .nav-link i { width: 22px; margin-right: 4px; }
+        /* PDF Vorschau (V1) */
+        .eeg-pdf-preview {
+            position: fixed;
+            inset: 0;
+            z-index: 1060;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1.25rem;
+            background: rgba(13, 28, 32, .58);
+        }
+        .eeg-pdf-preview.is-open { display: flex; }
+        .eeg-pdf-panel {
+            width: min(74rem, 100%);
+            height: min(88vh, 56rem);
+            display: grid;
+            grid-template-rows: auto minmax(0, 1fr);
+            overflow: hidden;
+            border: 1px solid var(--eeg-mint);
+            border-radius: .5rem;
+            background: #fff;
+            box-shadow: 0 24px 70px rgba(0, 0, 0, .28);
+        }
+        .eeg-pdf-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: .65rem .85rem;
+            border-bottom: 1px solid var(--eeg-mint);
+            background: #f8fbfa;
+        }
+        .eeg-pdf-title {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            color: var(--eeg-dark);
+            font-weight: 600;
+        }
+        .eeg-pdf-actions { display: flex; align-items: center; gap: .45rem; }
+        .eeg-pdf-frame { width: 100%; height: 100%; border: 0; background: #eef4f3; }
         .sidebar .sidebar-footer {
             padding: .75rem 1rem;
             font-size: .7rem;
@@ -628,6 +669,25 @@
 </div>
 {% endif %}
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<div id="eegPdfPreview" class="eeg-pdf-preview" aria-hidden="true">
+    <div class="eeg-pdf-panel" role="dialog" aria-modal="true" aria-label="PDF Vorschau">
+        <div class="eeg-pdf-header">
+            <div class="eeg-pdf-title">
+                <i class="bi bi-file-earmark-pdf fs-5"></i>
+                <span id="eegPdfTitle">PDF Vorschau</span>
+            </div>
+            <div class="eeg-pdf-actions">
+                <a id="eegPdfDownload" href="#" class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener">
+                    <i class="bi bi-download"></i> Download
+                </a>
+                <button type="button" id="eegPdfClose" class="btn btn-sm btn-outline-secondary" aria-label="Schließen">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+        </div>
+        <iframe id="eegPdfFrame" class="eeg-pdf-frame" title="PDF Vorschau"></iframe>
+    </div>
+</div>
 <script>
     (function () {
         const toggle = document.getElementById('sidebarToggle');
@@ -650,6 +710,67 @@
                 localStorage.setItem('eegSidebarCollapsed', collapsed ? '1' : '0');
             } catch (e) {}
             setToggleState();
+        });
+    })();
+
+    (function () {
+        const previewEl = document.getElementById('eegPdfPreview');
+        const frameEl = document.getElementById('eegPdfFrame');
+        const titleEl = document.getElementById('eegPdfTitle');
+        const downloadEl = document.getElementById('eegPdfDownload');
+        const closeEl = document.getElementById('eegPdfClose');
+        if (!previewEl || !frameEl) return;
+
+        function openPdfPreview(url, title) {
+            const previewUrl = new URL(url, window.location.href);
+            previewUrl.searchParams.set('preview', '1');
+            const downloadUrl = previewUrl.toString();
+            previewUrl.searchParams.set('preview', '1');
+            frameEl.src = previewUrl.toString();
+            titleEl.textContent = title || 'PDF Vorschau';
+            downloadEl.href = downloadUrl;
+            previewEl.classList.add('is-open');
+            previewEl.setAttribute('aria-hidden', 'false');
+        }
+
+        function closePdfPreview() {
+            previewEl.classList.remove('is-open');
+            previewEl.setAttribute('aria-hidden', 'true');
+            frameEl.src = '';
+        }
+
+        closeEl.addEventListener('click', closePdfPreview);
+        previewEl.addEventListener('click', function (event) {
+            if (event.target === previewEl) closePdfPreview();
+        });
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape' && previewEl.classList.contains('is-open')) closePdfPreview();
+        });
+
+        function isPdfUrl(url) {
+            try {
+                const parsed = new URL(url, window.location.href);
+                if (parsed.origin !== window.location.origin) return false;
+                const path = parsed.pathname.toLowerCase();
+                return path.endsWith('.pdf')
+                    || /\/invoices\/\d+\/pdf\/\d+/.test(path)
+                    || /\/kassabuch\/\d+\/beleg/.test(path)
+                    || /\/contracts\/\d+\/download/.test(path);
+            } catch (e) {
+                return false;
+            }
+        }
+
+        document.querySelectorAll('a[href]').forEach(function (link) {
+            if (link.closest('#eegPdfPreview')) return;
+            const href = link.getAttribute('href') || '';
+            if (!isPdfUrl(href)) return;
+            link.addEventListener('click', function (event) {
+                if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+                if (link.target && link.target !== '_self') return;
+                event.preventDefault();
+                openPdfPreview(href, link.getAttribute('title') || link.textContent.trim() || 'PDF');
+            });
         });
     })();
 </script>
