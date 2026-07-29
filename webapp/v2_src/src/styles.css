@@ -2136,6 +2136,14 @@ h1 {
   background: #fff;
 }
 
+.v2-page-subtitle {
+  display: block;
+  margin-top: .15rem;
+  color: var(--v2-ink-muted, #66787c);
+  font-size: var(--v2-text-sm);
+  font-weight: var(--v2-weight-medium);
+}
+
 .v2-cashbook-stats .v2-dashboard-stat:last-child {
   border-right: 0;
 }

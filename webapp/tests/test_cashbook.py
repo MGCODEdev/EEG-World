@@ -346,6 +346,150 @@ class CashbookTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data.startswith(b'%PDF'))
 
+    def _seed_period_entries(self):
+        """Je eine Buchung vor, in und nach dem Berichtszeitraum 2026."""
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            for entry_date, direction, amount, number in (
+                    ('2025-11-10', 'income', 100.0, '2025-0001'),
+                    ('2026-03-01', 'income', 60.0, '2026-0001'),
+                    ('2026-06-30', 'expense', 25.0, '2026-0002'),
+                    ('2027-01-15', 'expense', 10.0, '2027-0001')):
+                db.execute("""INSERT INTO cashbook_entries
+                              (entry_date, direction, amount_eur, payment_method,
+                               description, document_number)
+                              VALUES (?, ?, ?, 'transfer', 'Testbuchung', ?)""",
+                           (entry_date, direction, amount, number))
+            db.commit()
+
+    def test_period_from_year_filter(self):
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            book = eegapp.build_cashbook(eegapp.get_db(), year='2026')
+        self.assertEqual(book['period']['from'], '2026-01-01')
+        self.assertEqual(book['period']['to'], '2026-12-31')
+        self.assertEqual(book['period']['label'], '01.01.2026 bis 31.12.2026')
+
+    def test_opening_and_closing_balance(self):
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            summary = eegapp.build_cashbook(eegapp.get_db(), year='2026')['summary']
+        # 100 vor dem Zeitraum, im Zeitraum +60 und -25
+        self.assertEqual(summary['opening_balance'], 100.0)
+        self.assertEqual(summary['income_total'], 60.0)
+        self.assertEqual(summary['expense_total'], 25.0)
+        self.assertEqual(summary['closing_balance'], 135.0)
+        self.assertEqual(summary['entry_count'], 2)
+        # Kontrollrechnung des Berichts
+        self.assertEqual(summary['opening_balance'] + summary['result'],
+                         summary['closing_balance'])
+
+    def test_date_range_beats_year(self):
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            book = eegapp.build_cashbook(eegapp.get_db(), year='2025',
+                                         date_from='2026-01-01', date_to='2026-03-31')
+        self.assertEqual(book['period']['from'], '2026-01-01')
+        self.assertEqual(book['summary']['entry_count'], 1)
+        self.assertEqual(book['summary']['opening_balance'], 100.0)
+        self.assertEqual(book['summary']['closing_balance'], 160.0)
+
+    def test_reversed_date_range_is_corrected(self):
+        start, end, label = eegapp.resolve_cashbook_period(
+            date_from='2026-12-31', date_to='2026-01-01')
+        self.assertEqual((start, end), ('2026-01-01', '2026-12-31'))
+        self.assertIn('01.01.2026', label)
+
+    def test_open_period_labels(self):
+        self.assertEqual(eegapp.resolve_cashbook_period()[2], 'gesamter Zeitraum')
+        self.assertEqual(eegapp.resolve_cashbook_period(date_from='2026-05-01')[2],
+                         'ab 01.05.2026')
+        self.assertEqual(eegapp.resolve_cashbook_period(date_to='2026-05-01')[2],
+                         'bis 01.05.2026')
+
+    def test_category_filter_does_not_change_closing_balance(self):
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            book = eegapp.build_cashbook(eegapp.get_db(), year='2026',
+                                         category='Gibt es nicht')
+        self.assertEqual(book['summary']['entry_count'], 0)
+        # Der Saldo haengt am Zeitraum, nicht an der Kategorieauswahl.
+        self.assertEqual(book['summary']['closing_balance'], 135.0)
+
+    def test_xlsx_export_contains_values(self):
+        from openpyxl import load_workbook
+
+        self._seed_period_entries()
+        response = self._client().get('/kassabuch/export.xlsx?year=2026')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('spreadsheetml', response.mimetype)
+
+        workbook = load_workbook(io.BytesIO(response.data))
+        self.assertEqual(workbook.sheetnames, ['Kassabuch', 'Auswertung'])
+        sheet = workbook['Kassabuch']
+        self.assertIn('Kassabuch', str(sheet['A1'].value))
+        self.assertEqual(sheet['B2'].value, '01.01.2026 bis 31.12.2026')
+        labels = [sheet.cell(row=row, column=4).value for row in range(2, 8)]
+        self.assertIn('Anfangssaldo', labels)
+        self.assertIn('Endsaldo', labels)
+        # Betraege muessen Zahlen sein, damit Excel rechnen kann
+        amounts = [cell.value for column in ('H', 'I') for cell in sheet[column]
+                   if isinstance(cell.value, (int, float))]
+        self.assertIn(60.0, amounts)
+        self.assertIn(25.0, amounts)
+
+    def test_xlsx_export_has_date_values(self):
+        from datetime import datetime as dt
+
+        from openpyxl import load_workbook
+
+        self._seed_period_entries()
+        response = self._client().get('/kassabuch/export.xlsx?year=2026')
+        sheet = load_workbook(io.BytesIO(response.data))['Kassabuch']
+        dates = [cell.value for cell in sheet['B'] if isinstance(cell.value, (dt, date))]
+        self.assertTrue(dates)
+        self.assertEqual(sheet.freeze_panes, 'A10')
+
+    def test_csv_export_shows_opening_and_closing(self):
+        self._seed_period_entries()
+        response = self._client().get('/kassabuch/export.csv?year=2026')
+        text = response.data.decode('utf-8-sig')
+        self.assertIn('01.01.2026 bis 31.12.2026', text)
+        self.assertIn('Anfangssaldo', text)
+        self.assertIn('Endsaldo', text)
+        self.assertIn('100,00', text)
+        self.assertIn('135,00', text)
+
+    def test_logo_is_available_as_data_uri(self):
+        with eegapp.app.app_context():
+            logo = eegapp._logo_data_uri()
+        self.assertTrue(logo.startswith('data:image/png;base64,'))
+        self.assertGreater(len(logo), 1000)
+
+    def test_pdf_export_contains_logo_and_period(self):
+        self._seed_period_entries()
+        response = self._client().get('/kassabuch/export.pdf?year=2026')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.startswith(b'%PDF'))
+        # Das Logo wird als Bildobjekt eingebettet.
+        self.assertIn(b'/Image', response.data)
+        self.assertIn(b'/XObject', response.data)
+
+    def test_export_filename_uses_period(self):
+        self._seed_period_entries()
+        response = self._client().get('/kassabuch/export.xlsx?year=2026')
+        self.assertIn('kassabuch-2026-01-01_bis_2026-12-31',
+                      response.headers['Content-Disposition'])
+
+    def test_cashbook_page_shows_period_and_balances(self):
+        self._seed_period_entries()
+        html = self._client().get('/kassabuch?year=2026').get_data(as_text=True)
+        self.assertIn('01.01.2026 bis 31.12.2026', html)
+        self.assertIn('Anfangssaldo', html)
+        self.assertIn('Endsaldo', html)
+        self.assertIn('export.xlsx', html)
+        self.assertIn('name="date_from"', html)
+
     def test_cashbook_page_renders(self):
         client = self._client()
         self._post_entry(client)

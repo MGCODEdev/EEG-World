@@ -1413,12 +1413,19 @@ function NativeCashbook({data, csrfToken}) {
       <div className="v2-page-heading">
         <div className="v2-page-title">
           <BookOpenText size={34} strokeWidth={1.8} />
-          <h2>Vereinskassabuch</h2>
+          <div>
+            <h2>Vereinskassabuch</h2>
+            <small className="v2-page-subtitle">Berichtszeitraum: {data.period?.label || 'gesamter Zeitraum'}</small>
+          </div>
         </div>
         <div className="v2-page-actions">
           <a className="v2-action-button" href={`/kassabuch/export.csv${exportSuffix}`}>
             <Download size={18} />
             <span>CSV</span>
+          </a>
+          <a className="v2-action-button" href={`/kassabuch/export.xlsx${exportSuffix}`}>
+            <Download size={18} />
+            <span>Excel</span>
           </a>
           <a className="v2-action-button" href={`/kassabuch/export.pdf${exportSuffix}`}>
             <FileText size={18} />
@@ -1428,10 +1435,10 @@ function NativeCashbook({data, csrfToken}) {
       </div>
 
       <section className="v2-cashbook-stats" aria-label="Kassabuch Kennzahlen">
-        <DashboardStat icon={Banknote} label="Kassastand bar" value={formatCurrency(summary.cash_balance)} />
-        <DashboardStat icon={Landmark} label="Kontostand Bank" value={formatCurrency(summary.bank_balance)} />
-        <DashboardStat icon={Euro} label="Gesamtsaldo" value={formatCurrency(summary.balance)} />
-        <DashboardStat icon={ChartNoAxesCombined} label={`Ergebnis Auswahl (${formatNumber(summary.entry_count, 0)})`} value={formatSignedCurrency(summary.result)} />
+        <DashboardStat icon={Clock3} label="Anfangssaldo" value={formatCurrency(summary.opening_balance)} />
+        <DashboardStat icon={Banknote} label="Einnahmen im Zeitraum" value={formatCurrency(summary.income_total)} />
+        <DashboardStat icon={ReceiptText} label="Ausgaben im Zeitraum" value={formatCurrency(summary.expense_total)} />
+        <DashboardStat icon={Landmark} label={`Endsaldo (${formatNumber(summary.entry_count, 0)} Buchungen)`} value={formatSignedCurrency(summary.closing_balance)} />
       </section>
 
       <Card className="v2-native-card v2-cashbook-card" padding={0}>
@@ -1500,6 +1507,8 @@ function NativeCashbook({data, csrfToken}) {
           <h3>Filter</h3>
         </div>
         <form className="v2-cashbook-filter" method="get" action="/v2/kassabuch">
+          <FormDateInput name="date_from" label="Von" defaultValue={filters.date_from || ''} hasClear />
+          <FormDateInput name="date_to" label="Bis" defaultValue={filters.date_to || ''} hasClear />
           <FormSelector
             name="year"
             label="Jahr"

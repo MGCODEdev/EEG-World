@@ -191,6 +191,16 @@ def format_local_date(value, fmt='%d.%m.%Y'):
     return dt.strftime(fmt) if dt else '—'
 
 
+@app.template_filter('euro')
+def format_euro(value):
+    """Betrag in oesterreichischer Schreibweise: 1.234,56"""
+    try:
+        formatted = f'{float(value):,.2f}'
+    except (TypeError, ValueError):
+        return '0,00'
+    return formatted.replace(',', '#').replace('.', ',').replace('#', '.')
+
+
 @app.context_processor
 def inject_template_globals():
     public_cfg = {
@@ -2479,6 +2489,7 @@ def _v2_cashbook_data(db):
         'type': 'cashbook',
         'today': local_now().date().isoformat(),
         'filters': filters,
+        'period': book['period'],
         'entries': book['rows'],
         'categories': book['categories'],
         'years': book['years'],
@@ -7647,6 +7658,16 @@ def _cents(value):
     return int(round(float(value or 0) * 100))
 
 
+def _logo_data_uri():
+    """Vereinslogo als data URI, damit es in PDF-Berichten eingebettet ist."""
+    try:
+        with open(os.path.join(BASE_DIR, 'static', 'logo.png'), 'rb') as handle:
+            return 'data:image/png;base64,' + base64.b64encode(handle.read()).decode('ascii')
+    except OSError as e:
+        app.logger.warning('Logo für den Bericht nicht lesbar: %s', e)
+        return ''
+
+
 def get_cashbook_categories(db, only_active=True):
     query = "SELECT id, name, direction, active FROM cashbook_categories"
     if only_active:
@@ -7752,18 +7773,59 @@ def _cashbook_energy_rows(db):
     return entries
 
 
-def build_cashbook(db, year='', category='', direction='', method='', search=''):
+def resolve_cashbook_period(year='', date_from='', date_to=''):
+    """Loest Jahr oder Von-Bis in einen konkreten Berichtszeitraum auf.
+
+    Ein gesetzter Von-Bis-Zeitraum hat Vorrang vor dem Jahr. Leere Werte
+    bedeuten offenes Ende. Liefert (start, ende, Beschriftung) als ISO-Strings.
+    """
+    start = _iso_to_date(date_from)
+    end = _iso_to_date(date_to)
+    if not start and not end and year:
+        if re.fullmatch(r'\d{4}', year):
+            start = date(int(year), 1, 1)
+            end = date(int(year), 12, 31)
+    if start and end and start > end:
+        start, end = end, start
+
+    start_iso = start.isoformat() if start else ''
+    end_iso = end.isoformat() if end else ''
+    if start and end:
+        label = f'{_date_de(start_iso)} bis {_date_de(end_iso)}'
+    elif start:
+        label = f'ab {_date_de(start_iso)}'
+    elif end:
+        label = f'bis {_date_de(end_iso)}'
+    else:
+        label = 'gesamter Zeitraum'
+    return start_iso, end_iso, label
+
+
+def build_cashbook(db, year='', category='', direction='', method='', search='',
+                   date_from='', date_to=''):
     """Fuehrt manuelle Buchungen und Strombewegungen zu einem Kassabuch zusammen.
 
     Der laufende Saldo wird ueber alle Bewegungen berechnet und erst danach
-    gefiltert, damit ein Jahresfilter den Saldo nicht verfaelscht.
+    gefiltert. Dadurch stimmen Anfangs- und Endsaldo eines Berichtszeitraums
+    auch dann, wenn davor schon Buchungen liegen.
     """
+    period_from, period_to, period_label = resolve_cashbook_period(year, date_from, date_to)
+
     all_rows = _cashbook_manual_rows(db) + _cashbook_energy_rows(db)
-    all_rows.sort(key=lambda row: (row['entry_date'] or '', row['source'], row['id']))
+    # Innerhalb eines Tages nach Belegnummer, damit die Reihenfolge stabil und
+    # nachvollziehbar bleibt.
+    all_rows.sort(key=lambda row: (row['entry_date'] or '', row['document_number'], str(row['id'])))
     # In Cent rechnen, damit sich keine Fliesskomma-Abweichung aufsummiert.
     balance = cash_balance = bank_balance = 0
+    opening = opening_cash = opening_bank = 0
     for row in all_rows:
         amount_cents = _cents(row['signed_amount'])
+        if period_from and (row['entry_date'] or '') < period_from:
+            opening += amount_cents
+            if row['payment_method'] == 'cash':
+                opening_cash += amount_cents
+            else:
+                opening_bank += amount_cents
         balance += amount_cents
         if row['payment_method'] == 'cash':
             cash_balance += amount_cents
@@ -7775,8 +7837,16 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
 
     needle = (search or '').strip().lower()
 
+    def in_period(row):
+        entry_date = row['entry_date'] or ''
+        if period_from and entry_date < period_from:
+            return False
+        if period_to and entry_date > period_to:
+            return False
+        return True
+
     def matches(row):
-        if year and not (row['entry_date'] or '').startswith(year):
+        if not in_period(row):
             return False
         if category and row['category'] != category:
             return False
@@ -7794,6 +7864,20 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
     rows = [row for row in all_rows if matches(row)]
     income_total = sum(_cents(row['amount_eur']) for row in rows if row['direction'] == 'income')
     expense_total = sum(_cents(row['amount_eur']) for row in rows if row['direction'] == 'expense')
+
+    # Endsaldo: alle Bewegungen bis zum Ende des Zeitraums, unabhaengig von den
+    # uebrigen Filtern. Sonst wuerde eine Kategorieauswahl den Saldo verfaelschen.
+    closing = opening
+    closing_cash, closing_bank = opening_cash, opening_bank
+    for row in all_rows:
+        if not in_period(row):
+            continue
+        amount_cents = _cents(row['signed_amount'])
+        closing += amount_cents
+        if row['payment_method'] == 'cash':
+            closing_cash += amount_cents
+        else:
+            closing_bank += amount_cents
 
     def aggregate(source_rows, key_name, key_func):
         buckets = {}
@@ -7823,11 +7907,25 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
         'years': years,
         'by_category': by_category,
         'by_year': by_year,
+        'period': {
+            'from': period_from,
+            'to': period_to,
+            'label': period_label,
+            'from_de': _date_de(period_from) if period_from else '',
+            'to_de': _date_de(period_to) if period_to else '',
+        },
         'summary': {
             'income_total': income_total / 100,
             'expense_total': expense_total / 100,
             'result': (income_total - expense_total) / 100,
             'entry_count': len(rows),
+            'opening_balance': opening / 100,
+            'opening_cash': opening_cash / 100,
+            'opening_bank': opening_bank / 100,
+            'closing_balance': closing / 100,
+            'closing_cash': closing_cash / 100,
+            'closing_bank': closing_bank / 100,
+            # Gesamtstand heute, unabhaengig vom Berichtszeitraum
             'cash_balance': cash_balance / 100,
             'bank_balance': bank_balance / 100,
             'balance': balance / 100,
@@ -7840,6 +7938,8 @@ def build_cashbook(db, year='', category='', direction='', method='', search='')
 def _cashbook_filters():
     return {
         'year': (request.args.get('year') or '').strip(),
+        'date_from': (request.args.get('date_from') or '').strip(),
+        'date_to': (request.args.get('date_to') or '').strip(),
         'category': (request.args.get('category') or '').strip(),
         'direction': (request.args.get('direction') or '').strip(),
         'method': (request.args.get('method') or '').strip(),
@@ -7946,13 +8046,20 @@ def cashbook():
     """Vereinskassabuch mit allen Einnahmen und Ausgaben."""
     db = get_db()
     filters = _cashbook_filters()
+    book = build_cashbook(db, **filters)
+    today = local_now().date()
+    quarter_start = date(today.year, ((today.month - 1) // 3) * 3 + 1, 1)
     return render_template('kassabuch.html',
-                           book=build_cashbook(db, **filters),
+                           book=book,
                            filters=filters,
                            export_args={key: value for key, value in filters.items() if value},
                            directions=CASHBOOK_DIRECTIONS,
                            methods=CASHBOOK_PAYMENT_METHODS,
-                           today=local_now().date().isoformat())
+                           year_start=date(today.year, 1, 1).isoformat(),
+                           last_year_start=date(today.year - 1, 1, 1).isoformat(),
+                           last_year_end=date(today.year - 1, 12, 31).isoformat(),
+                           quarter_start=quarter_start.isoformat(),
+                           today=today.isoformat())
 
 
 @app.route('/kassabuch/new', methods=['POST'])
@@ -8001,9 +8108,34 @@ def cashbook_receipt(id):
                      download_name=row['receipt_filename'] or f'beleg-{id}')
 
 
-def _cashbook_export_name(filters, suffix):
-    scope = filters.get('year') or 'gesamt'
+def _cashbook_export_name(book, suffix):
+    period = book['period']
+    if period['from'] and period['to']:
+        scope = f"{period['from']}_bis_{period['to']}"
+    elif period['from']:
+        scope = f"ab_{period['from']}"
+    elif period['to']:
+        scope = f"bis_{period['to']}"
+    else:
+        scope = 'gesamt'
     return f'kassabuch-{scope}-{local_now().strftime("%Y%m%d")}.{suffix}'
+
+
+# Spalten der Exporte: Titel, Breite in Excel, Ausrichtung
+CASHBOOK_EXPORT_COLUMNS = [
+    ('Beleg-Nr', 12, 'left'),
+    ('Datum', 12, 'left'),
+    ('Art', 10, 'left'),
+    ('Kategorie', 28, 'left'),
+    ('Zahlungsart', 13, 'left'),
+    ('Begründung', 46, 'left'),
+    ('Zahler/Empfänger', 26, 'left'),
+    ('Einnahme', 12, 'right'),
+    ('Ausgabe', 12, 'right'),
+    ('Saldo', 12, 'right'),
+    ('Beleg', 8, 'left'),
+    ('Erfasst von', 16, 'left'),
+]
 
 
 @app.route('/kassabuch/export.csv')
@@ -8013,15 +8145,19 @@ def cashbook_export_csv():
 
     filters = _cashbook_filters()
     book = build_cashbook(get_db(), **filters)
+    summary = book['summary']
 
     def eur(value):
         return f'{value:.2f}'.replace('.', ',')
 
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=';')
-    writer.writerow(['Beleg-Nr', 'Datum', 'Art', 'Kategorie', 'Zahlungsart', 'Begründung',
-                     'Zahler/Empfänger', 'Einnahme EUR', 'Ausgabe EUR', 'Saldo EUR',
-                     'Beleg vorhanden', 'Erfasst von'])
+    writer.writerow(['Kassabuch', book['period']['label']])
+    writer.writerow(['Erstellt am', local_now().strftime('%d.%m.%Y %H:%M')])
+    writer.writerow([])
+    writer.writerow([title for title, _, _ in CASHBOOK_EXPORT_COLUMNS])
+    writer.writerow(['', '', '', 'Anfangssaldo', '', '', '', '', '',
+                     eur(summary['opening_balance']), '', ''])
     for row in book['rows_chronological']:
         writer.writerow([
             row['document_number'],
@@ -8037,18 +8173,157 @@ def cashbook_export_csv():
             'ja' if row['has_receipt'] else '',
             row['recorded_by'],
         ])
-    summary = book['summary']
-    writer.writerow([])
-    writer.writerow(['Summe', '', '', '', '', '', '',
+    writer.writerow(['', '', '', f'Summe ({summary["entry_count"]} Buchungen)', '', '', '',
                      eur(summary['income_total']), eur(summary['expense_total']),
                      eur(summary['result']), '', ''])
-    writer.writerow(['Kassastand bar', eur(summary['cash_balance'])])
-    writer.writerow(['Kontostand Bank', eur(summary['bank_balance'])])
+    writer.writerow(['', '', '', 'Endsaldo', '', '', '', '', '',
+                     eur(summary['closing_balance']), '', ''])
+    writer.writerow([])
+    writer.writerow(['Kassastand bar', eur(summary['closing_cash'])])
+    writer.writerow(['Kontostand Bank', eur(summary['closing_bank'])])
     audit_log('cashbook_export', f'Kassabuch als CSV exportiert ({summary["entry_count"]} Buchungen)')
     # BOM, damit Excel die Umlaute korrekt erkennt
     return send_file(io.BytesIO(buffer.getvalue().encode('utf-8-sig')),
                      mimetype='text/csv', as_attachment=True,
-                     download_name=_cashbook_export_name(filters, 'csv'))
+                     download_name=_cashbook_export_name(book, 'csv'))
+
+
+@app.route('/kassabuch/export.xlsx')
+@admin_required
+def cashbook_export_xlsx():
+    """Kassabuch als Excel-Datei mit echten Zahlen- und Datumswerten."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    filters = _cashbook_filters()
+    db = get_db()
+    book = build_cashbook(db, **filters)
+    summary = book['summary']
+    org = get_public_config(db)
+
+    money = '#,##0.00 €'
+    title_font = Font(bold=True, size=14)
+    label_font = Font(bold=True)
+    header_font = Font(bold=True, color='FFFFFF')
+    header_fill = PatternFill('solid', fgColor='2B7A78')
+    total_fill = PatternFill('solid', fgColor='E8F1F0')
+    thin_top = Border(top=Side(style='thin', color='999999'))
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = 'Kassabuch'
+
+    sheet['A1'] = f'Kassabuch – {org["org_name"]}'
+    sheet['A1'].font = title_font
+    sheet['A2'] = 'Berichtszeitraum'
+    sheet['A2'].font = label_font
+    sheet['B2'] = book['period']['label']
+    sheet['A3'] = 'Erstellt am'
+    sheet['A3'].font = label_font
+    sheet['B3'] = local_now().strftime('%d.%m.%Y %H:%M')
+    for index, (label, value) in enumerate((
+            ('Anfangssaldo', summary['opening_balance']),
+            ('Einnahmen', summary['income_total']),
+            ('Ausgaben', summary['expense_total']),
+            ('Endsaldo', summary['closing_balance']),
+            ('davon bar', summary['closing_cash']),
+            ('davon Bank', summary['closing_bank']))):
+        cell_label = sheet.cell(row=2 + index, column=4, value=label)
+        cell_label.font = label_font
+        cell_value = sheet.cell(row=2 + index, column=5, value=value)
+        cell_value.number_format = money
+
+    header_row = 9
+    for index, (title, width, align) in enumerate(CASHBOOK_EXPORT_COLUMNS, start=1):
+        cell = sheet.cell(row=header_row, column=index, value=title)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal=align)
+        sheet.column_dimensions[get_column_letter(index)].width = width
+
+    current = header_row + 1
+    sheet.cell(row=current, column=4, value='Anfangssaldo').font = label_font
+    opening_cell = sheet.cell(row=current, column=10, value=summary['opening_balance'])
+    opening_cell.number_format = money
+    opening_cell.font = label_font
+
+    for row in book['rows_chronological']:
+        current += 1
+        values = [
+            row['document_number'],
+            _iso_to_date(row['entry_date']),
+            CASHBOOK_DIRECTIONS.get(row['direction'], row['direction']),
+            row['category'],
+            CASHBOOK_PAYMENT_METHODS.get(row['payment_method'], row['payment_method']),
+            row['description'],
+            row['counterparty'],
+            row['amount_eur'] if row['direction'] == 'income' else None,
+            row['amount_eur'] if row['direction'] == 'expense' else None,
+            row['balance'],
+            'ja' if row['has_receipt'] else '',
+            row['recorded_by'],
+        ]
+        for index, value in enumerate(values, start=1):
+            cell = sheet.cell(row=current, column=index, value=value)
+            if index == 2:
+                cell.number_format = 'DD.MM.YYYY'
+            elif index in (8, 9, 10):
+                cell.number_format = money
+
+    current += 1
+    sheet.cell(row=current, column=4,
+               value=f'Summe ({summary["entry_count"]} Buchungen)').font = label_font
+    for column, value in ((8, summary['income_total']), (9, summary['expense_total']),
+                          (10, summary['result'])):
+        cell = sheet.cell(row=current, column=column, value=value)
+        cell.number_format = money
+        cell.font = label_font
+    for column in range(1, len(CASHBOOK_EXPORT_COLUMNS) + 1):
+        sheet.cell(row=current, column=column).fill = total_fill
+        sheet.cell(row=current, column=column).border = thin_top
+
+    current += 1
+    sheet.cell(row=current, column=4, value='Endsaldo').font = label_font
+    closing_cell = sheet.cell(row=current, column=10, value=summary['closing_balance'])
+    closing_cell.number_format = money
+    closing_cell.font = label_font
+    for column in range(1, len(CASHBOOK_EXPORT_COLUMNS) + 1):
+        sheet.cell(row=current, column=column).fill = total_fill
+
+    sheet.freeze_panes = sheet.cell(row=header_row + 1, column=1)
+    sheet.auto_filter.ref = f'A{header_row}:{get_column_letter(len(CASHBOOK_EXPORT_COLUMNS))}{current - 2}'
+
+    report = wb.create_sheet('Auswertung')
+    report_row = 1
+    for heading, key, entries in (('Auswertung nach Kategorie', 'category', book['by_category']),
+                                  ('Auswertung nach Jahr', 'year', book['by_year'])):
+        report.cell(row=report_row, column=1, value=heading).font = title_font
+        report_row += 1
+        for index, title in enumerate(('Bezeichnung', 'Buchungen', 'Einnahmen', 'Ausgaben', 'Ergebnis'),
+                                      start=1):
+            cell = report.cell(row=report_row, column=index, value=title)
+            cell.font = header_font
+            cell.fill = header_fill
+        report_row += 1
+        for entry in entries:
+            report.cell(row=report_row, column=1, value=entry[key])
+            report.cell(row=report_row, column=2, value=entry['count'])
+            for column, field in ((3, 'income'), (4, 'expense'), (5, 'result')):
+                cell = report.cell(row=report_row, column=column, value=entry[field])
+                cell.number_format = money
+            report_row += 1
+        report_row += 2
+    for index, width in enumerate((32, 12, 14, 14, 14), start=1):
+        report.column_dimensions[get_column_letter(index)].width = width
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    audit_log('cashbook_export', f'Kassabuch als Excel exportiert ({summary["entry_count"]} Buchungen)')
+    return send_file(buffer, as_attachment=True,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     download_name=_cashbook_export_name(book, 'xlsx'))
 
 
 @app.route('/kassabuch/export.pdf')
@@ -8065,12 +8340,14 @@ def cashbook_export_pdf():
                            directions=CASHBOOK_DIRECTIONS,
                            methods=CASHBOOK_PAYMENT_METHODS,
                            org=get_public_config(db),
+                           logo_b64=_logo_data_uri(),
+                           created_by=current_user.username if current_user.is_authenticated else '',
                            created_at=local_now())
     pdf_bytes = HTML(string=html, base_url=BASE_DIR).write_pdf()
     audit_log('cashbook_export', f'Kassabuch als PDF exportiert ({book["summary"]["entry_count"]} Buchungen)')
     return send_file(io.BytesIO(pdf_bytes), mimetype='application/pdf',
                      as_attachment=request.args.get('preview') != '1',
-                     download_name=_cashbook_export_name(filters, 'pdf'))
+                     download_name=_cashbook_export_name(book, 'pdf'))
 
 
 @app.route('/kassabuch/kategorien', methods=['POST'])

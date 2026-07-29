@@ -4,36 +4,96 @@
 <meta charset="utf-8">
 <title>Kassabuch</title>
 <style>
-    @page { size: A4 landscape; margin: 14mm 12mm; }
+    @page {
+        size: A4 landscape;
+        margin: 14mm 12mm 16mm 12mm;
+        @bottom-left {
+            content: "{{ org['org_name'] }} · Kassabuch {{ book['period']['label'] }}";
+            font-family: "DejaVu Sans", Arial, sans-serif;
+            font-size: 7pt;
+            color: #777;
+        }
+        @bottom-right {
+            content: "Seite " counter(page) " von " counter(pages);
+            font-family: "DejaVu Sans", Arial, sans-serif;
+            font-size: 7pt;
+            color: #777;
+        }
+    }
     body { font-family: "DejaVu Sans", Arial, sans-serif; font-size: 8.5pt; color: #222; }
-    h1 { font-size: 15pt; margin: 0 0 2mm 0; }
-    .meta { color: #666; font-size: 8pt; margin-bottom: 5mm; }
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 0.4pt solid #ccc; padding: 1.4mm 1.2mm; text-align: left; vertical-align: top; }
     th { background: #f0f0f0; border-bottom: 0.8pt solid #999; font-size: 8pt; }
     .num { text-align: right; white-space: nowrap; }
     .income { color: #146c43; }
     .expense { color: #b02a37; }
-    tfoot td { font-weight: bold; border-top: 0.8pt solid #999; border-bottom: none; }
-    .summary { margin-top: 6mm; width: 60%; }
-    .summary td { border: none; padding: 0.8mm 1.2mm; }
-    .summary .label { color: #555; }
-    h2 { font-size: 11pt; margin: 8mm 0 2mm 0; page-break-after: avoid; }
+    tfoot td { font-weight: bold; border-top: 0.8pt solid #999; border-bottom: none; background: #f7f7f7; }
+    tr.total td { font-weight: bold; border-top: 0.8pt solid #999; background: #f7f7f7; }
     thead { display: table-header-group; }
     tr { page-break-inside: avoid; }
+    h2 { font-size: 11pt; margin: 8mm 0 2mm 0; page-break-after: avoid; }
+
+    .report-head { display: flex; align-items: flex-start; gap: 6mm; margin-bottom: 5mm; }
+    .report-head img { height: 16mm; }
+    .report-head .title { flex: 1; }
+    .report-head h1 { font-size: 16pt; margin: 0; }
+    .report-head .period { font-size: 10.5pt; font-weight: bold; margin-top: 1mm; }
+    .report-head .filters { color: #666; font-size: 7.5pt; margin-top: 1mm; }
+    .report-head .org { text-align: right; color: #555; font-size: 7.5pt; line-height: 1.45; }
+
+    .balances td { border: 0.4pt solid #ccc; padding: 1.8mm 2mm; width: 25%; }
+    .balances { margin-bottom: 5mm; }
+    .balances .label { color: #555; font-size: 7.5pt; display: block; }
+    .balances .value { font-size: 11pt; font-weight: bold; display: block; }
+    .balances .split { color: #666; font-size: 7pt; }
+    tr.opening td, tr.closing td { background: #eef4f3; font-weight: bold; }
+    .signature { margin-top: 10mm; color: #666; font-size: 7.5pt; }
 </style>
 </head>
 <body>
 {% set s = book['summary'] %}
-<h1>Kassabuch – {{ org['org_name'] }}</h1>
-<div class="meta">
-    Zeitraum: {{ filters['year'] or 'alle Jahre' }}
-    {%- if filters['category'] %} · Kategorie: {{ filters['category'] }}{% endif %}
-    {%- if filters['direction'] %} · Art: {{ directions.get(filters['direction'], filters['direction']) }}{% endif %}
-    {%- if filters['method'] %} · Zahlungsart: {{ methods.get(filters['method'], filters['method']) }}{% endif %}
-    {%- if filters['search'] %} · Suche: „{{ filters['search'] }}“{% endif %}
-    · Erstellt am {{ created_at.strftime('%d.%m.%Y %H:%M') }}
+<div class="report-head">
+    {% if logo_b64 %}<img src="{{ logo_b64 }}" alt="{{ org['org_name'] }}">{% endif %}
+    <div class="title">
+        <h1>Kassabuch</h1>
+        <div class="period">Berichtszeitraum: {{ book['period']['label'] }}</div>
+        <div class="filters">
+            {%- if filters['category'] %}Kategorie: {{ filters['category'] }} · {% endif %}
+            {%- if filters['direction'] %}Art: {{ directions.get(filters['direction'], filters['direction']) }} · {% endif %}
+            {%- if filters['method'] %}Zahlungsart: {{ methods.get(filters['method'], filters['method']) }} · {% endif %}
+            {%- if filters['search'] %}Suche: „{{ filters['search'] }}“ · {% endif %}
+            {{ s['entry_count'] }} Buchungen
+        </div>
+    </div>
+    <div class="org">
+        <strong>{{ org['org_name'] }}</strong><br>
+        {{ org['org_address'] }}<br>
+        {{ org['org_legal'] }}
+    </div>
 </div>
+
+<table class="balances">
+    <tr>
+        <td>
+            <span class="label">Anfangssaldo</span>
+            <span class="value">{{ s['opening_balance']|euro }} €</span>
+            <span class="split">bar {{ s['opening_cash']|euro }} € · Bank {{ s['opening_bank']|euro }} €</span>
+        </td>
+        <td>
+            <span class="label">Einnahmen im Zeitraum</span>
+            <span class="value income">{{ s['income_total']|euro }} €</span>
+        </td>
+        <td>
+            <span class="label">Ausgaben im Zeitraum</span>
+            <span class="value expense">{{ s['expense_total']|euro }} €</span>
+        </td>
+        <td>
+            <span class="label">Endsaldo</span>
+            <span class="value">{{ s['closing_balance']|euro }} €</span>
+            <span class="split">bar {{ s['closing_cash']|euro }} € · Bank {{ s['closing_bank']|euro }} €</span>
+        </td>
+    </tr>
+</table>
 
 <table>
     <thead>
@@ -51,6 +111,11 @@
         </tr>
     </thead>
     <tbody>
+        <tr class="opening">
+            <td colspan="8">Anfangssaldo{% if book['period']['from_de'] %} am {{ book['period']['from_de'] }}{% endif %}</td>
+            <td class="num">{{ s['opening_balance']|euro }}</td>
+            <td></td>
+        </tr>
     {% for row in book['rows_chronological'] %}
         <tr>
             <td>{{ row['document_number'] }}</td>
@@ -59,30 +124,27 @@
             <td>{{ row['description'] }}</td>
             <td>{{ row['counterparty'] }}</td>
             <td>{{ methods.get(row['payment_method'], row['payment_method']) }}</td>
-            <td class="num income">{% if row['direction'] == 'income' %}{{ "%.2f"|format(row['amount_eur']) }}{% endif %}</td>
-            <td class="num expense">{% if row['direction'] == 'expense' %}{{ "%.2f"|format(row['amount_eur']) }}{% endif %}</td>
-            <td class="num">{{ "%.2f"|format(row['balance']) }}</td>
+            <td class="num income">{% if row['direction'] == 'income' %}{{ row['amount_eur']|euro }}{% endif %}</td>
+            <td class="num expense">{% if row['direction'] == 'expense' %}{{ row['amount_eur']|euro }}{% endif %}</td>
+            <td class="num">{{ row['balance']|euro }}</td>
             <td>{{ 'ja' if row['has_receipt'] else '' }}</td>
         </tr>
     {% else %}
-        <tr><td colspan="10">Keine Buchungen für diese Auswahl.</td></tr>
+        <tr><td colspan="10">Keine Buchungen in diesem Zeitraum.</td></tr>
     {% endfor %}
-    </tbody>
-    <tfoot>
-        <tr>
+        <tr class="total">
             <td colspan="6">Summe ({{ s['entry_count'] }} Buchungen)</td>
-            <td class="num">{{ "%.2f"|format(s['income_total']) }}</td>
-            <td class="num">{{ "%.2f"|format(s['expense_total']) }}</td>
-            <td class="num">{{ "%.2f"|format(s['result']) }}</td>
+            <td class="num">{{ s['income_total']|euro }}</td>
+            <td class="num">{{ s['expense_total']|euro }}</td>
+            <td class="num">{{ s['result']|euro }}</td>
             <td></td>
         </tr>
-    </tfoot>
-</table>
-
-<table class="summary">
-    <tr><td class="label">Kassastand bar</td><td class="num">{{ "%.2f"|format(s['cash_balance']) }} €</td></tr>
-    <tr><td class="label">Kontostand Bank</td><td class="num">{{ "%.2f"|format(s['bank_balance']) }} €</td></tr>
-    <tr><td class="label">Gesamtsaldo</td><td class="num">{{ "%.2f"|format(s['balance']) }} €</td></tr>
+        <tr class="closing">
+            <td colspan="8">Endsaldo{% if book['period']['to_de'] %} am {{ book['period']['to_de'] }}{% endif %}</td>
+            <td class="num">{{ s['closing_balance']|euro }}</td>
+            <td></td>
+        </tr>
+    </tbody>
 </table>
 
 <h2>Auswertung nach Kategorie</h2>
@@ -95,9 +157,9 @@
         <tr>
             <td>{{ row['category'] }}</td>
             <td class="num">{{ row['count'] }}</td>
-            <td class="num income">{{ "%.2f"|format(row['income']) }}</td>
-            <td class="num expense">{{ "%.2f"|format(row['expense']) }}</td>
-            <td class="num">{{ "%.2f"|format(row['result']) }}</td>
+            <td class="num income">{{ row['income']|euro }}</td>
+            <td class="num expense">{{ row['expense']|euro }}</td>
+            <td class="num">{{ row['result']|euro }}</td>
         </tr>
     {% else %}
         <tr><td colspan="5">Keine Daten.</td></tr>
@@ -115,14 +177,19 @@
         <tr>
             <td>{{ row['year'] }}</td>
             <td class="num">{{ row['count'] }}</td>
-            <td class="num income">{{ "%.2f"|format(row['income']) }}</td>
-            <td class="num expense">{{ "%.2f"|format(row['expense']) }}</td>
-            <td class="num">{{ "%.2f"|format(row['result']) }}</td>
+            <td class="num income">{{ row['income']|euro }}</td>
+            <td class="num expense">{{ row['expense']|euro }}</td>
+            <td class="num">{{ row['result']|euro }}</td>
         </tr>
     {% else %}
         <tr><td colspan="5">Keine Daten.</td></tr>
     {% endfor %}
     </tbody>
 </table>
+
+<div class="signature">
+    Erstellt am {{ created_at.strftime('%d.%m.%Y %H:%M') }}{% if created_by %} von {{ created_by }}{% endif %}.
+    Kontrolle: Anfangssaldo + Einnahmen − Ausgaben = Endsaldo.
+</div>
 </body>
 </html>
