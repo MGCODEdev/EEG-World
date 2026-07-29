@@ -7818,6 +7818,9 @@ def build_cashbook(db, year='', category='', direction='', method='', search='',
     # In Cent rechnen, damit sich keine Fliesskomma-Abweichung aufsummiert.
     balance = cash_balance = bank_balance = 0
     opening = opening_cash = opening_bank = 0
+    # Fortlaufende Belegnummer je Jahr in chronologischer Reihenfolge. Sie wird
+    # ueber alle Bewegungen vergeben, damit sie von Filtern unabhaengig bleibt.
+    counters = {}
     for row in all_rows:
         amount_cents = _cents(row['signed_amount'])
         if period_from and (row['entry_date'] or '') < period_from:
@@ -7833,6 +7836,11 @@ def build_cashbook(db, year='', category='', direction='', method='', search='',
             bank_balance += amount_cents
         row['balance'] = balance / 100
         row['entry_date_de'] = _date_de(row['entry_date'])
+        year_key = (row['entry_date'] or '')[:4]
+        counters[year_key] = counters.get(year_key, 0) + 1
+        row['sequence_number'] = f'{year_key}/{counters[year_key]:03d}' if year_key else ''
+        # Herkunftsnachweis: Belegnummer der manuellen Buchung bzw. Abrechnung
+        row['reference'] = row['document_number']
     years = sorted({row['entry_date'][:4] for row in all_rows if row['entry_date']}, reverse=True)
 
     needle = (search or '').strip().lower()
@@ -7856,7 +7864,8 @@ def build_cashbook(db, year='', category='', direction='', method='', search='',
             return False
         if needle:
             haystack = ' '.join((row['description'], row['counterparty'],
-                                 row['category'], row['document_number'])).lower()
+                                 row['category'], row['document_number'],
+                                 row['sequence_number'])).lower()
             if needle not in haystack:
                 return False
         return True
@@ -8124,6 +8133,7 @@ def _cashbook_export_name(book, suffix):
 # Spalten der Exporte: Titel, Breite in Excel, Ausrichtung
 CASHBOOK_EXPORT_COLUMNS = [
     ('Beleg-Nr', 12, 'left'),
+    ('Referenz', 12, 'left'),
     ('Datum', 12, 'left'),
     ('Art', 10, 'left'),
     ('Kategorie', 28, 'left'),
@@ -8136,6 +8146,9 @@ CASHBOOK_EXPORT_COLUMNS = [
     ('Beleg', 8, 'left'),
     ('Erfasst von', 16, 'left'),
 ]
+# Spaltennummern der Betragsspalten in den Exporten
+CASHBOOK_EXPORT_AMOUNT_COLUMNS = (9, 10, 11)
+CASHBOOK_EXPORT_BALANCE_COLUMN = 11
 
 
 @app.route('/kassabuch/export.csv')
@@ -8156,11 +8169,12 @@ def cashbook_export_csv():
     writer.writerow(['Erstellt am', local_now().strftime('%d.%m.%Y %H:%M')])
     writer.writerow([])
     writer.writerow([title for title, _, _ in CASHBOOK_EXPORT_COLUMNS])
-    writer.writerow(['', '', '', 'Anfangssaldo', '', '', '', '', '',
+    writer.writerow(['', '', '', '', 'Anfangssaldo', '', '', '', '', '',
                      eur(summary['opening_balance']), '', ''])
     for row in book['rows_chronological']:
         writer.writerow([
-            row['document_number'],
+            row['sequence_number'],
+            row['reference'],
             _date_de(row['entry_date']),
             CASHBOOK_DIRECTIONS.get(row['direction'], row['direction']),
             row['category'],
@@ -8173,10 +8187,10 @@ def cashbook_export_csv():
             'ja' if row['has_receipt'] else '',
             row['recorded_by'],
         ])
-    writer.writerow(['', '', '', f'Summe ({summary["entry_count"]} Buchungen)', '', '', '',
+    writer.writerow(['', '', '', '', f'Summe ({summary["entry_count"]} Buchungen)', '', '', '',
                      eur(summary['income_total']), eur(summary['expense_total']),
                      eur(summary['result']), '', ''])
-    writer.writerow(['', '', '', 'Endsaldo', '', '', '', '', '',
+    writer.writerow(['', '', '', '', 'Endsaldo', '', '', '', '', '',
                      eur(summary['closing_balance']), '', ''])
     writer.writerow([])
     writer.writerow(['Kassastand bar', eur(summary['closing_cash'])])
@@ -8243,15 +8257,17 @@ def cashbook_export_xlsx():
         sheet.column_dimensions[get_column_letter(index)].width = width
 
     current = header_row + 1
-    sheet.cell(row=current, column=4, value='Anfangssaldo').font = label_font
-    opening_cell = sheet.cell(row=current, column=10, value=summary['opening_balance'])
+    sheet.cell(row=current, column=5, value='Anfangssaldo').font = label_font
+    opening_cell = sheet.cell(row=current, column=CASHBOOK_EXPORT_BALANCE_COLUMN,
+                              value=summary['opening_balance'])
     opening_cell.number_format = money
     opening_cell.font = label_font
 
     for row in book['rows_chronological']:
         current += 1
         values = [
-            row['document_number'],
+            row['sequence_number'],
+            row['reference'],
             _iso_to_date(row['entry_date']),
             CASHBOOK_DIRECTIONS.get(row['direction'], row['direction']),
             row['category'],
@@ -8266,16 +8282,16 @@ def cashbook_export_xlsx():
         ]
         for index, value in enumerate(values, start=1):
             cell = sheet.cell(row=current, column=index, value=value)
-            if index == 2:
+            if index == 3:
                 cell.number_format = 'DD.MM.YYYY'
-            elif index in (8, 9, 10):
+            elif index in CASHBOOK_EXPORT_AMOUNT_COLUMNS:
                 cell.number_format = money
 
     current += 1
-    sheet.cell(row=current, column=4,
+    sheet.cell(row=current, column=5,
                value=f'Summe ({summary["entry_count"]} Buchungen)').font = label_font
-    for column, value in ((8, summary['income_total']), (9, summary['expense_total']),
-                          (10, summary['result'])):
+    for column, value in zip(CASHBOOK_EXPORT_AMOUNT_COLUMNS,
+                             (summary['income_total'], summary['expense_total'], summary['result'])):
         cell = sheet.cell(row=current, column=column, value=value)
         cell.number_format = money
         cell.font = label_font
@@ -8284,8 +8300,9 @@ def cashbook_export_xlsx():
         sheet.cell(row=current, column=column).border = thin_top
 
     current += 1
-    sheet.cell(row=current, column=4, value='Endsaldo').font = label_font
-    closing_cell = sheet.cell(row=current, column=10, value=summary['closing_balance'])
+    sheet.cell(row=current, column=5, value='Endsaldo').font = label_font
+    closing_cell = sheet.cell(row=current, column=CASHBOOK_EXPORT_BALANCE_COLUMN,
+                              value=summary['closing_balance'])
     closing_cell.number_format = money
     closing_cell.font = label_font
     for column in range(1, len(CASHBOOK_EXPORT_COLUMNS) + 1):

@@ -433,7 +433,7 @@ class CashbookTests(unittest.TestCase):
         self.assertIn('Anfangssaldo', labels)
         self.assertIn('Endsaldo', labels)
         # Betraege muessen Zahlen sein, damit Excel rechnen kann
-        amounts = [cell.value for column in ('H', 'I') for cell in sheet[column]
+        amounts = [cell.value for column in ('I', 'J') for cell in sheet[column]
                    if isinstance(cell.value, (int, float))]
         self.assertIn(60.0, amounts)
         self.assertIn(25.0, amounts)
@@ -446,7 +446,7 @@ class CashbookTests(unittest.TestCase):
         self._seed_period_entries()
         response = self._client().get('/kassabuch/export.xlsx?year=2026')
         sheet = load_workbook(io.BytesIO(response.data))['Kassabuch']
-        dates = [cell.value for cell in sheet['B'] if isinstance(cell.value, (dt, date))]
+        dates = [cell.value for cell in sheet['C'] if isinstance(cell.value, (dt, date))]
         self.assertTrue(dates)
         self.assertEqual(sheet.freeze_panes, 'A10')
 
@@ -480,6 +480,74 @@ class CashbookTests(unittest.TestCase):
         response = self._client().get('/kassabuch/export.xlsx?year=2026')
         self.assertIn('kassabuch-2026-01-01_bis_2026-12-31',
                       response.headers['Content-Disposition'])
+
+    def test_sequence_numbers_follow_booking_date(self):
+        """Die Belegnummer laeuft chronologisch aufsteigend, je Jahr neu."""
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            rows = eegapp.build_cashbook(eegapp.get_db())['rows_chronological']
+        self.assertEqual([row['sequence_number'] for row in rows],
+                         ['2025/001', '2026/001', '2026/002', '2027/001'])
+        dates = [row['entry_date'] for row in rows]
+        self.assertEqual(dates, sorted(dates))
+
+    def test_sequence_number_is_stable_across_filters(self):
+        """Ein Filter darf die Belegnummer nicht verschieben."""
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            alle = {row['reference']: row['sequence_number']
+                    for row in eegapp.build_cashbook(db)['rows_chronological']}
+            gefiltert = {row['reference']: row['sequence_number']
+                         for row in eegapp.build_cashbook(db, year='2026')['rows_chronological']}
+        for reference, number in gefiltert.items():
+            self.assertEqual(alle[reference], number)
+        self.assertEqual(gefiltert['2026-0001'], '2026/001')
+
+    def test_backdated_entry_gets_earlier_sequence_number(self):
+        """Eine nachtraeglich erfasste, aelter datierte Buchung reiht sich vorne ein."""
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            db.execute("""INSERT INTO cashbook_entries
+                          (entry_date, direction, amount_eur, payment_method,
+                           description, document_number)
+                          VALUES ('2026-01-05', 'expense', 5.0, 'cash', 'Nachtrag', '2026-0009')""")
+            db.commit()
+            rows = eegapp.build_cashbook(db, year='2026')['rows_chronological']
+        self.assertEqual([(row['sequence_number'], row['reference']) for row in rows],
+                         [('2026/001', '2026-0009'),
+                          ('2026/002', '2026-0001'),
+                          ('2026/003', '2026-0002')])
+
+    def test_reference_keeps_original_document_number(self):
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            rows = eegapp.build_cashbook(eegapp.get_db(), year='2026')['rows_chronological']
+        self.assertEqual([row['reference'] for row in rows], ['2026-0001', '2026-0002'])
+
+    def test_search_finds_sequence_number(self):
+        self._seed_period_entries()
+        with eegapp.app.app_context():
+            book = eegapp.build_cashbook(eegapp.get_db(), search='2026/002')
+        self.assertEqual(book['summary']['entry_count'], 1)
+        self.assertEqual(book['rows'][0]['reference'], '2026-0002')
+
+    def test_exports_contain_number_and_reference(self):
+        from openpyxl import load_workbook
+
+        self._seed_period_entries()
+        client = self._client()
+        text = client.get('/kassabuch/export.csv?year=2026').data.decode('utf-8-sig')
+        self.assertIn('Beleg-Nr;Referenz;Datum', text)
+        self.assertIn('2026/001;2026-0001', text)
+
+        sheet = load_workbook(io.BytesIO(
+            client.get('/kassabuch/export.xlsx?year=2026').data))['Kassabuch']
+        self.assertEqual([sheet.cell(row=9, column=c).value for c in (1, 2, 3)],
+                         ['Beleg-Nr', 'Referenz', 'Datum'])
+        self.assertEqual(sheet.cell(row=11, column=1).value, '2026/001')
+        self.assertEqual(sheet.cell(row=11, column=2).value, '2026-0001')
 
     def test_cashbook_page_shows_period_and_balances(self):
         self._seed_period_entries()

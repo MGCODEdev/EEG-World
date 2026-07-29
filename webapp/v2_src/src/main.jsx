@@ -1573,7 +1573,10 @@ function NativeCashbook({data, csrfToken}) {
             <tbody>
               {entries.length ? entries.map((entry) => (
                 <tr key={`${entry.source}-${entry.id}`}>
-                  <td><strong>{entry.document_number}</strong></td>
+                  <td>
+                    <strong>{entry.sequence_number}</strong>
+                    {entry.reference && <><br /><small className="v2-muted">{entry.reference}</small></>}
+                  </td>
                   <td>{formatDate(entry.entry_date)}</td>
                   <td>
                     {entry.category}
@@ -1597,7 +1600,7 @@ function NativeCashbook({data, csrfToken}) {
                         method="post"
                         action={`/kassabuch/${entry.id}/delete`}
                         onSubmit={(event) => {
-                          if (!window.confirm(`Buchung ${entry.document_number} wirklich löschen?`)) event.preventDefault();
+                          if (!window.confirm(`Buchung ${entry.sequence_number} (${entry.reference}) wirklich löschen?`)) event.preventDefault();
                         }}
                       >
                         <input type="hidden" name="csrf_token" value={csrfToken || ''} />

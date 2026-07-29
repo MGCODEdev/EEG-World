@@ -99,6 +99,7 @@
     <thead>
         <tr>
             <th>Beleg-Nr</th>
+            <th>Referenz</th>
             <th>Datum</th>
             <th>Kategorie</th>
             <th>Begründung</th>
@@ -112,13 +113,14 @@
     </thead>
     <tbody>
         <tr class="opening">
-            <td colspan="8">Anfangssaldo{% if book['period']['from_de'] %} am {{ book['period']['from_de'] }}{% endif %}</td>
+            <td colspan="9">Anfangssaldo{% if book['period']['from_de'] %} am {{ book['period']['from_de'] }}{% endif %}</td>
             <td class="num">{{ s['opening_balance']|euro }}</td>
             <td></td>
         </tr>
     {% for row in book['rows_chronological'] %}
         <tr>
-            <td>{{ row['document_number'] }}</td>
+            <td>{{ row['sequence_number'] }}</td>
+            <td>{{ row['reference'] }}</td>
             <td>{{ row['entry_date_de'] }}</td>
             <td>{{ row['category'] }}</td>
             <td>{{ row['description'] }}</td>
@@ -130,17 +132,17 @@
             <td>{{ 'ja' if row['has_receipt'] else '' }}</td>
         </tr>
     {% else %}
-        <tr><td colspan="10">Keine Buchungen in diesem Zeitraum.</td></tr>
+        <tr><td colspan="11">Keine Buchungen in diesem Zeitraum.</td></tr>
     {% endfor %}
         <tr class="total">
-            <td colspan="6">Summe ({{ s['entry_count'] }} Buchungen)</td>
+            <td colspan="7">Summe ({{ s['entry_count'] }} Buchungen)</td>
             <td class="num">{{ s['income_total']|euro }}</td>
             <td class="num">{{ s['expense_total']|euro }}</td>
             <td class="num">{{ s['result']|euro }}</td>
             <td></td>
         </tr>
         <tr class="closing">
-            <td colspan="8">Endsaldo{% if book['period']['to_de'] %} am {{ book['period']['to_de'] }}{% endif %}</td>
+            <td colspan="9">Endsaldo{% if book['period']['to_de'] %} am {{ book['period']['to_de'] }}{% endif %}</td>
             <td class="num">{{ s['closing_balance']|euro }}</td>
             <td></td>
         </tr>

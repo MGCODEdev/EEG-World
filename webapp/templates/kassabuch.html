@@ -213,7 +213,7 @@
         <table class="table table-sm table-hover mb-0 align-middle">
             <thead class="table-light">
                 <tr>
-                    <th>Beleg-Nr</th>
+                    <th>Beleg-Nr <small class="text-muted fw-normal">/ Referenz</small></th>
                     <th>Datum</th>
                     <th>Kategorie</th>
                     <th>Begründung</th>
@@ -228,7 +228,10 @@
             <tbody>
             {% for row in book['rows'] %}
                 <tr>
-                    <td><small class="text-muted">{{ row['document_number'] }}</small></td>
+                    <td>
+                        <strong>{{ row['sequence_number'] }}</strong>
+                        <br><small class="text-muted">{{ row['reference'] }}</small>
+                    </td>
                     <td><small>{{ row['entry_date_de'] }}</small></td>
                     <td>
                         {{ row['category'] }}
@@ -257,7 +260,7 @@
                     <td class="text-center">
                         {% if row['deletable'] %}
                         <form method="post" action="{{ url_for('cashbook_delete', id=row['id']) }}" class="d-inline"
-                              onsubmit="return confirm('Buchung {{ row['document_number'] }} wirklich löschen?')">
+                              onsubmit="return confirm('Buchung {{ row['sequence_number'] }} ({{ row['reference'] }}) wirklich löschen?')">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                             <button type="submit" class="btn btn-sm btn-outline-danger" title="Buchung löschen">
                                 <i class="bi bi-trash"></i>
