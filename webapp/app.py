@@ -1759,12 +1759,49 @@ def _v2_payments_data(db):
                 'reason': change['reason'] or '',
             } for change in booking['changes']],
         } for booking in row['bookings']]
+        item['sepa'] = {
+            'name': _sepa_text(row.get('account_holder') or row['member_name'], 70),
+            'iban': row.get('iban') or '',
+            'bic': _sepa_text(row.get('bic') or '', 11),
+            'reference': _sepa_text(payment_transfer_reference(row), 140),
+            'qr_url': url_for('payment_transfer_qr', invoice_id=row['invoice_id'],
+                              member_id=row['member_id']) if row.get('iban') else '',
+        }
         return item
 
     active_open = [row for row in rows if not row['paid'] and not row['is_settled_by_carryover']]
+
+    booked_sort = request.args.get('booked_sort') or 'date'
+    booked_dir = request.args.get('booked_dir') or 'desc'
+    if booked_sort not in BOOKED_SORT_KEYS:
+        booked_sort = 'date'
+    if booked_dir not in {'asc', 'desc'}:
+        booked_dir = 'desc'
+    paid_entries_raw = booked_payment_entries(rows, booked_sort, booked_dir)
+    paid_entries = []
+    for entry in paid_entries_raw:
+        row = entry['row']
+        booking = entry['booking']
+        paid_entries.append({
+            'kind': entry['kind'],
+            'position': entry['position'],
+            'total_bookings': entry['total_bookings'],
+            'amount': entry['amount'],
+            'booking_date': entry['booking_date'],
+            'row': serialize(row),
+            'booking': {
+                'id': booking['id'],
+                'amount_eur': booking['amount_eur'],
+                'booking_date': booking['booking_date'],
+                'note': booking.get('note') or '',
+            } if booking else None,
+        })
+
     return {
         'type': 'payments',
         'today': local_now().date().isoformat(),
+        'booked_sort': booked_sort,
+        'booked_dir': booked_dir,
         'summary': {
             'open_claims_count': len([row for row in active_open if row['open_amount'] > 0]),
             'open_credits_count': len([row for row in active_open if row['open_amount'] < 0]),
@@ -1773,6 +1810,7 @@ def _v2_payments_data(db):
             'open_claims_total': round(sum(row['open_amount'] for row in active_open if row['open_amount'] > 0), 2),
             'open_credits_total': round(sum(row['open_amount'] for row in active_open if row['open_amount'] < 0), 2),
         },
+        'booked_entries': paid_entries,
         'payments': [serialize(row) for row in rows],
     }
 

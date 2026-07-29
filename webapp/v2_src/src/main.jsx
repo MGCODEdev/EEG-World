@@ -61,6 +61,7 @@ import {
   Pencil,
   Plug,
   Plus,
+  QrCode,
   ReceiptText,
   RefreshCw,
   RotateCcw,
@@ -1988,6 +1989,10 @@ function NativePayments({data, csrfToken}) {
   const payments = data.payments || [];
   const summary = data.summary || {};
   const today = data.today || '';
+  const bookedEntries = data.booked_entries || [];
+  const bookedSort = data.booked_sort || 'date';
+  const bookedDir = data.booked_dir || 'desc';
+  const [qrRow, setQrRow] = useState(null);
   const openClaims = payments.filter((row) => !row.paid && !row.is_settled_by_carryover && Number(row.net_total) > 0);
   const openCredits = payments.filter((row) => !row.paid && !row.is_settled_by_carryover && Number(row.net_total) < 0);
   const carried = payments.filter((row) => row.is_settled_by_carryover);
@@ -2020,7 +2025,22 @@ function NativePayments({data, csrfToken}) {
       </>
     )},
     {key: 'booking_date', header: 'Buchungsdatum', width: pixel(165), renderCell: (row) => <PaymentDateInput row={row} today={today} />},
-    {key: 'action', header: 'Aktion', align: 'end', width: pixel(145), renderCell: (row) => <PaymentPaidForm row={row} csrfToken={csrfToken} label="Überwiesen" />},
+    {key: 'action', header: 'Aktion', align: 'end', width: pixel(170), renderCell: (row) => (
+      <div className="v2-payment-actions">
+        {row.sepa?.qr_url && (
+          <button
+            type="button"
+            className="v2-icon-action"
+            onClick={() => setQrRow(row)}
+            aria-label="QR-Code für Überweisung"
+            title="QR-Code für Überweisung"
+          >
+            <QrCode size={18} />
+          </button>
+        )}
+        <PaymentPaidForm row={row} csrfToken={csrfToken} label="Überwiesen" />
+      </div>
+    )},
   ];
   const carriedColumns = [
     {key: 'member', header: 'Mitglied', width: proportional(1.2, {minWidth: 220}), renderCell: (row) => row.member_name},
@@ -2028,25 +2048,6 @@ function NativePayments({data, csrfToken}) {
     {key: 'amount', header: 'Vorgetragener Betrag', align: 'end', width: pixel(180), renderCell: (row) => formatSignedCurrency(row.net_total)},
     {key: 'carried_to', header: 'Berücksichtigt in', width: proportional(1, {minWidth: 180}), renderCell: (row) => <span className="v2-tag is-muted">Abrechnung #{row.carried_forward_to_invoice_id}</span>},
   ];
-  const paidColumns = [
-    {key: 'member', header: 'Mitglied', width: proportional(1.2, {minWidth: 220}), renderCell: (row) => row.member_name},
-    {key: 'period', header: 'Zeitraum', width: proportional(1, {minWidth: 190}), renderCell: (row) => formatDateRange(row.period_from, row.period_to)},
-    {key: 'amount', header: 'Betrag', align: 'end', width: pixel(130), renderCell: (row) => formatSignedCurrency(row.net_total)},
-    {key: 'paid_at', header: 'Gebucht am', width: pixel(140), renderCell: (row) => formatDate(row.booking_date || row.paid_at)},
-    {key: 'action', header: 'Aktion', align: 'end', width: pixel(95), renderCell: (row) => (
-      <form method="post" action="/payments/mark_unpaid" onSubmit={(event) => confirmPaymentReset(event)}>
-        <input type="hidden" name="csrf_token" value={csrfToken || ''} />
-        <input type="hidden" name="next" value="/v2/payments" />
-        <input type="hidden" name="invoice_id" value={row.invoice_id} />
-        <input type="hidden" name="member_id" value={row.member_id} />
-        <input type="hidden" name="change_reason" value="" />
-        <button type="submit" className="v2-icon-action is-warning" aria-label="Buchung zurücksetzen" title="Zurücksetzen">
-          <RotateCcw size={18} />
-        </button>
-      </form>
-    )},
-  ];
-
   return (
     <div className="v2-native-page v2-payments-page">
       <div className="v2-page-heading">
@@ -2136,12 +2137,17 @@ function NativePayments({data, csrfToken}) {
         />
       )}
 
-      <PaymentTable
-        title="Gebuchte Zahlungen"
-        tone="success"
-        rows={paid}
-        emptyText="Noch keine Zahlungen gebucht"
-        columns={paidColumns}
+      <BookedPaymentsTable
+        entries={bookedEntries}
+        sort={bookedSort}
+        dir={bookedDir}
+        csrfToken={csrfToken}
+      />
+
+      <QrModal
+        isOpen={!!qrRow}
+        onClose={() => setQrRow(null)}
+        row={qrRow}
       />
     </div>
   );
@@ -2176,6 +2182,121 @@ function PaymentTable({title, tone, rows, columns, emptyText, footerLabel, foote
         </div>
       )}
     </Card>
+  );
+}
+
+function SortLink({sortKey, label, currentSort, currentDir, anchor}) {
+  const nextDir = currentSort === sortKey && currentDir === 'desc' ? 'asc' : 'desc';
+  const arrow = currentSort === sortKey ? (currentDir === 'asc' ? '↑' : '↓') : '↕';
+  const href = `/v2/payments?booked_sort=${sortKey}&booked_dir=${nextDir}${anchor ? `#${anchor}` : ''}`;
+  return (
+    <a href={href} className="v2-sort-link">
+      {label} <span className="v2-sort-arrow">{arrow}</span>
+    </a>
+  );
+}
+
+function BookedPaymentsTable({entries, sort, dir, csrfToken}) {
+  return (
+    <Card className="v2-native-card v2-payments-card is-success" padding={0} id="gebuchte-zahlungen">
+      <div className="v2-dashboard-card-title">
+        <Banknote size={24} />
+        <h3>
+          Gebuchte Zahlungen
+          <small> – {entries.length} Buchungen</small>
+        </h3>
+      </div>
+      <div className="v2-table-wrap">
+        {entries.length ? (
+          <table className="v2-native-table v2-payments-booked-table">
+            <thead>
+              <tr>
+                <th><SortLink sortKey="member" label="Mitglied" currentSort={sort} currentDir={dir} anchor="gebuchte-zahlungen" /></th>
+                <th><SortLink sortKey="period" label="Zeitraum" currentSort={sort} currentDir={dir} anchor="gebuchte-zahlungen" /></th>
+                <th className="v2-number-cell"><SortLink sortKey="amount" label="Gebuchter Betrag" currentSort={sort} currentDir={dir} anchor="gebuchte-zahlungen" /></th>
+                <th><SortLink sortKey="date" label="Gebucht am" currentSort={sort} currentDir={dir} anchor="gebuchte-zahlungen" /></th>
+                <th>Aktion</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => {
+                const row = entry.row || {};
+                const booking = entry.booking || {};
+                const isLegacy = entry.kind === 'legacy';
+                const key = `${entry.kind}-${row.invoice_id || 0}-${row.member_id || 0}-${booking.id || 0}`;
+                return (
+                  <tr key={key}>
+                    <td>
+                      <strong>{row.member_name}</strong>
+                      {entry.total_bookings > 1 && (
+                        <><br /><small className="v2-tag is-muted">Teilbuchung {entry.position}/{entry.total_bookings}</small></>
+                      )}
+                      {isLegacy && (
+                        <><br /><small className="v2-tag is-muted">Altbestand</small></>
+                      )}
+                      {!row.paid && (
+                        <><br /><small className="v2-error-text">offen: {formatCurrency(row.open_amount)}</small></>
+                      )}
+                    </td>
+                    <td>{formatDateRange(row.period_from, row.period_to)}</td>
+                    <td className="v2-number-cell">{formatSignedCurrency(entry.amount)}</td>
+                    <td>{formatDate(entry.booking_date)}</td>
+                    <td className="v2-table-action">
+                      <form method="post" action="/payments/mark_unpaid" onSubmit={(event) => confirmPaymentReset(event)}>
+                        <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                        <input type="hidden" name="next" value="/v2/payments" />
+                        <input type="hidden" name="invoice_id" value={row.invoice_id} />
+                        <input type="hidden" name="member_id" value={row.member_id} />
+                        <input type="hidden" name="change_reason" value="" />
+                        <button type="submit" className="v2-icon-action is-warning" aria-label="Buchung zurücksetzen" title="Buchung zurücksetzen">
+                          <RotateCcw size={18} />
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : <EmptyState text="Noch keine Zahlungen gebucht" />}
+      </div>
+    </Card>
+  );
+}
+
+function QrModal({isOpen, onClose, row}) {
+  if (!isOpen || !row) return null;
+  const qrUrl = row.sepa?.qr_url || '';
+  const amount = Math.abs(Number(row.net_total) || 0);
+  return (
+    <div className="v2-modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="QR-Code für SEPA-Überweisung">
+      <div className="v2-modal-content" onClick={(event) => event.stopPropagation()}>
+        <div className="v2-modal-header">
+          <h3><QrCode size={20} /> Überweisung per QR-Code</h3>
+          <button type="button" className="v2-icon-action" onClick={onClose} aria-label="Schließen"><X size={20} /></button>
+        </div>
+        <div className="v2-modal-body">
+          {qrUrl && (
+            <div className="v2-qr-wrap">
+              <img src={qrUrl} alt="QR-Code für die SEPA-Überweisung" />
+            </div>
+          )}
+          <table className="v2-native-table v2-qr-details">
+            <tbody>
+              <tr><th>Empfänger</th><td>{row.sepa?.name}</td></tr>
+              <tr><th>IBAN</th><td className="v2-monospace">{row.sepa?.iban}</td></tr>
+              {row.sepa?.bic && <tr><th>BIC</th><td className="v2-monospace">{row.sepa?.bic}</td></tr>}
+              <tr><th>Betrag</th><td><strong>{formatCurrency(amount)}</strong></td></tr>
+              <tr><th>Verwendungszweck</th><td>{row.sepa?.reference}</td></tr>
+            </tbody>
+          </table>
+          <p className="v2-muted">Mit der Banking-App scannen (SEPA-Überweisung nach EPC069-12, auch GiroCode genannt). Empfänger, IBAN, Betrag und Verwendungszweck sind enthalten.</p>
+        </div>
+        <div className="v2-modal-footer">
+          <button type="button" className="v2-action-button" onClick={onClose}>Schließen</button>
+        </div>
+      </div>
+    </div>
   );
 }
 

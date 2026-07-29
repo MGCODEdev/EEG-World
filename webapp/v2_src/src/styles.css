@@ -3209,3 +3209,129 @@ h1 {
     flex-direction: column;
   }
 }
+
+/* V2 Zahlungen: Sortierlinks und QR-Modal */
+.v2-sort-link {
+  color: inherit;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  white-space: nowrap;
+}
+
+.v2-sort-link:hover {
+  color: var(--v2-accent-strong);
+}
+
+.v2-sort-arrow {
+  color: var(--v2-muted);
+  font-size: .85em;
+}
+
+.v2-sort-link:hover .v2-sort-arrow {
+  color: var(--v2-accent-strong);
+}
+
+.v2-payment-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  justify-content: flex-end;
+}
+
+.v2-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(18, 38, 43, .55);
+  backdrop-filter: blur(2px);
+}
+
+.v2-modal-content {
+  background: var(--v2-surface);
+  border-radius: var(--radius-card, 12px);
+  box-shadow: var(--v2-shadow);
+  max-width: 28rem;
+  width: 100%;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.v2-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--v2-line);
+}
+
+.v2-modal-header h3 {
+  margin: 0;
+  font-size: var(--v2-text-lg);
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+}
+
+.v2-modal-body {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.v2-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: .5rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--v2-line);
+}
+
+.v2-qr-wrap {
+  text-align: center;
+  padding: .75rem;
+  background: #fff;
+  border: 1px solid var(--v2-line);
+  border-radius: var(--radius-element, 7px);
+  align-self: center;
+}
+
+.v2-qr-wrap img {
+  width: 15rem;
+  height: 15rem;
+  display: block;
+}
+
+.v2-qr-details th {
+  width: 40%;
+  color: var(--v2-muted);
+  font-weight: var(--v2-weight-regular);
+  text-align: left;
+  vertical-align: top;
+}
+
+.v2-qr-details td {
+  word-break: break-word;
+}
+
+.v2-monospace {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.v2-payments-booked-table th,
+.v2-payments-booked-table td {
+  vertical-align: middle;
+}
+
+.v2-payments-booked-table .v2-table-action {
+  white-space: nowrap;
+}
