@@ -84,6 +84,55 @@ DEFAULT_ORG_WEBSITE = os.environ.get('EEG_ORG_WEBSITE', 'https://example.org/')
 DEFAULT_ORG_ADDRESS = os.environ.get('EEG_ORG_ADDRESS', 'Adresse bitte konfigurieren')
 DEFAULT_ORG_LEGAL = os.environ.get('EEG_ORG_LEGAL', 'Vereinsdaten bitte konfigurieren')
 
+# Release Notes: Datum und kurze Beschreibung der letzten Änderungen.
+# Die neueste Version steht immer an erster Stelle.
+RELEASE_NOTES = [
+    {
+        'date': '2026-07-29',
+        'title': 'V2 Zahlungen: Sortierung + QR-Code',
+        'changes': [
+            'Gebuchte Zahlungen in V2 sind sortierbar (Mitglied, Zeitraum, Betrag, Datum).',
+            'QR-Code für Gutschriften im V2-Design (EPC069-12/GiroCode, Revolut-kompatibel).',
+            'Parität der Zahlungsansicht zwischen V1 und V2.',
+        ],
+    },
+    {
+        'date': '2026-07-29',
+        'title': 'Kassabuch: Belegnummern, Zeitraum, Excel/PDF',
+        'changes': [
+            'Fortlaufende Belegnummer je Jahr in chronologischer Reihenfolge.',
+            'Kassabuch-Bericht mit wählbarem Zeitraum, Anfangs- und Endsaldo.',
+            'PDF-Export mit Logo, Vereinsdaten, Kennzahlen und österreichischer Schreibweise.',
+            'Excel-Export zusätzlich zu CSV mit zwei Blättern, fixierter Kopfzeile und Autofilter.',
+            'Sortierung innerhalb eines Tages nach Belegnummer.',
+        ],
+    },
+    {
+        'date': '2026-07-29',
+        'title': 'Buchungsdaten an Kontoauszug angeglichen',
+        'changes': [
+            'Altbestände und Greimer-Cent-Korrektur nach Revolut-Kontoauszug angepasst.',
+            'Buchungsdatum nachträglich korrigierbar.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'V2 Kassabuch + QR-Code in V1 Zahlungen',
+        'changes': [
+            'V2-Kassabuch mit Zeitraumfiltern, Schnellauswahl, CSV/Excel/PDF.',
+            'QR-Code für Gutschriften in V1 Zahlungen.',
+            'Sortierbare Spalten in V1 „Gebuchte Zahlungen“.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'Erste Release Notes',
+        'changes': [
+            'Neue Seite „Release Notes“ in V1 und V2 übersichtlich aufgelistet.',
+        ],
+    },
+]
+
 # Proxy-Fix: Hinter HAProxy/Nginx die echte Client-IP lesen
 # x_for=1: Ein Proxy-Level (HAProxy/Nginx) leitet X-Forwarded-For weiter
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1, x_prefix=1)
@@ -2520,6 +2569,13 @@ def _v2_change_password_data():
     return {'type': 'change_password'}
 
 
+def _v2_release_notes_data():
+    return {
+        'type': 'release_notes',
+        'release_notes': RELEASE_NOTES,
+    }
+
+
 def _v2_cashbook_data(db):
     filters = _cashbook_filters()
     book = build_cashbook(db, **filters)
@@ -2629,6 +2685,8 @@ def _v2_native_data(db, current_path):
         return _v2_database_data()
     if current_path == '/settings':
         return _v2_settings_data(db)
+    if current_path == '/release-notes':
+        return _v2_release_notes_data()
     return None
 
 
@@ -5178,6 +5236,13 @@ def calculate_billing(db, period_from, period_to, price_cons, price_gen):
 
 
 # === Settings ===
+
+@app.route('/release-notes')
+@login_required
+def release_notes():
+    """Release Notes: Liste der letzten Änderungen nach Datum."""
+    return render_template('release_notes.html', release_notes=RELEASE_NOTES)
+
 
 @app.route('/settings', methods=['GET', 'POST'])
 @admin_required

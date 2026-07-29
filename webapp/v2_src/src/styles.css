@@ -3335,3 +3335,63 @@ h1 {
 .v2-payments-booked-table .v2-table-action {
   white-space: nowrap;
 }
+
+/* Release Notes */
+.v2-release-notes-page .v2-page-title {
+  align-items: flex-start;
+}
+
+.v2-release-notes-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 22rem);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.v2-release-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.v2-release-note-card {
+  border-left: 4px solid var(--v2-accent);
+}
+
+.v2-release-note-header {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: .75rem;
+}
+
+.v2-release-note-header h3 {
+  margin: 0;
+  font-size: var(--v2-text-lg);
+  font-weight: var(--v2-weight-semibold);
+}
+
+.v2-release-note-changes {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--v2-ink);
+}
+
+.v2-release-note-changes li {
+  margin-bottom: .35rem;
+  line-height: var(--v2-leading-body);
+}
+
+.v2-release-note-changes li:last-child {
+  margin-bottom: 0;
+}
+
+.v2-release-note-info .v2-dashboard-card-title {
+  margin-bottom: .75rem;
+}
+
+@media (max-width: 900px) {
+  .v2-release-notes-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Release Notes{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="d-flex align-items-center mb-4">
+        <i class="bi bi-journal-check fs-3 text-secondary me-3"></i>
+        <div>
+            <h1 class="h3 mb-0">Release Notes</h1>
+            <p class="text-muted mb-0">Letzte Änderungen am EEG Portal</p>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            {% for note in release_notes %}
+            <div class="card mb-3 shadow-sm">
+                <div class="card-body">
+                    <div class="d-flex align-items-center mb-2">
+                        <span class="badge bg-primary me-2">{{ note.date }}</span>
+                        <h2 class="h5 mb-0">{{ note.title }}</h2>
+                    </div>
+                    <ul class="mb-0">
+                        {% for change in note.changes %}
+                        <li>{{ change }}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            {% else %}
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle"></i> Noch keine Release Notes vorhanden.
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h3 class="h6"><i class="bi bi-info-circle"></i> Hinweis</h3>
+                    <p class="small text-muted mb-0">
+                        Hier werden neue Funktionen, Korrekturen und Verbesserungen
+                        übersichtlich nach Datum aufgelistet. Die neuesten Änderungen
+                        stehen immer oben.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

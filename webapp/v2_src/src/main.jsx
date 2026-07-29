@@ -63,6 +63,7 @@ import {
   Plus,
   QrCode,
   ReceiptText,
+  ScrollText,
   RefreshCw,
   RotateCcw,
   Settings,
@@ -91,6 +92,7 @@ const adminNavItems = [
   {label: 'Kassabuch', path: '/kassabuch', icon: BookOpenText},
   {label: 'Reports', path: '/reports', icon: ChartNoAxesCombined},
   {label: 'Newsletter', path: '/newsletter', icon: Mail},
+  {label: 'Release Notes', path: '/release-notes', icon: ScrollText},
   {type: 'section', label: 'Verwaltung'},
   {label: 'Benutzer', path: '/admin/users', icon: UserCog},
   {label: 'Audit-Log', path: '/admin/audit', icon: NotebookText},
@@ -369,6 +371,8 @@ function V2Shell() {
       ? <NativeSettings data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'database'
       ? <NativeDatabase data={nativeData} csrfToken={security.csrf_token} />
+    : nativeData?.type === 'release_notes'
+      ? <NativeReleaseNotes data={nativeData} />
     : nativeData?.type === 'portal_dashboard'
       ? <NativePortalDashboard data={nativeData} />
     : nativeData?.type === 'portal_data'
@@ -4186,6 +4190,52 @@ function confirmDatabaseMaintenance(event, action) {
   if ((action === 'vacuum' || action === 'full') && !window.confirm('Diese Wartung kann kurz dauern. Es wird vorher ein Backup erstellt. Fortfahren?')) {
     event.preventDefault();
   }
+}
+
+function NativeReleaseNotes({data}) {
+  const notes = data.release_notes || [];
+  return (
+    <div className="v2-native-page v2-release-notes-page">
+      <div className="v2-page-heading">
+        <div className="v2-page-title">
+          <ScrollText size={34} strokeWidth={1.8} />
+          <div>
+            <h2>Release Notes</h2>
+            <small className="v2-page-subtitle">Letzte Änderungen am EEG Portal</small>
+          </div>
+        </div>
+      </div>
+
+      <div className="v2-release-notes-grid">
+        <div className="v2-release-notes-list">
+          {notes.length ? notes.map((note) => (
+            <Card key={`${note.date}-${note.title}`} className="v2-native-card v2-release-note-card" padding="lg">
+              <div className="v2-release-note-header">
+                <span className="v2-tag is-accent">{formatDate(note.date)}</span>
+                <h3>{note.title}</h3>
+              </div>
+              <ul className="v2-release-note-changes">
+                {note.changes.map((change, index) => (
+                  <li key={index}>{change}</li>
+                ))}
+              </ul>
+            </Card>
+          )) : <EmptyState text="Noch keine Release Notes vorhanden." />}
+        </div>
+
+        <Card className="v2-native-card v2-release-note-info" padding="lg">
+          <div className="v2-dashboard-card-title">
+            <ScrollText size={24} />
+            <h3>Hinweis</h3>
+          </div>
+          <p className="v2-muted">
+            Hier werden neue Funktionen, Korrekturen und Verbesserungen übersichtlich
+            nach Datum aufgelistet. Die neuesten Änderungen stehen immer oben.
+          </p>
+        </Card>
+      </div>
+    </div>
+  );
 }
 
 function NativePortalDashboard({data}) {
