@@ -89,6 +89,14 @@ DEFAULT_ORG_LEGAL = os.environ.get('EEG_ORG_LEGAL', 'Vereinsdaten bitte konfigur
 RELEASE_NOTES = [
     {
         'date': '2026-07-29',
+        'title': 'Release Notes Seite in V1 und V2',
+        'changes': [
+            'Neue Seite „Release Notes“ mit allen Änderungen chronologisch aufgelistet.',
+            'In der klassischen UI unter /release-notes und in der V2-Oberfläche unter /v2/release-notes erreichbar.',
+        ],
+    },
+    {
+        'date': '2026-07-29',
         'title': 'V2 Zahlungen: Sortierung + QR-Code',
         'changes': [
             'Gebuchte Zahlungen in V2 sind sortierbar (Mitglied, Zeitraum, Betrag, Datum).',
@@ -98,37 +106,148 @@ RELEASE_NOTES = [
     },
     {
         'date': '2026-07-29',
-        'title': 'Kassabuch: Belegnummern, Zeitraum, Excel/PDF',
+        'title': 'Fortlaufende Belegnummern im Kassabuch',
         'changes': [
-            'Fortlaufende Belegnummer je Jahr in chronologischer Reihenfolge.',
-            'Kassabuch-Bericht mit wählbarem Zeitraum, Anfangs- und Endsaldo.',
-            'PDF-Export mit Logo, Vereinsdaten, Kennzahlen und österreichischer Schreibweise.',
-            'Excel-Export zusätzlich zu CSV mit zwei Blättern, fixierter Kopfzeile und Autofilter.',
-            'Sortierung innerhalb eines Tages nach Belegnummer.',
+            'Belegnummer läuft je Jahr aufsteigend mit dem Buchungsdatum (z.B. 2026/001).',
+            'Bisherige Referenznummer bleibt erhalten und verweist auf die manuelle Buchung bzw. Abrechnung.',
+            'Suche findet sowohl Belegnummer als auch Referenz.',
+            'Neue Spalte Referenz in CSV-, Excel- und PDF-Export.',
         ],
     },
     {
         'date': '2026-07-29',
-        'title': 'Buchungsdaten an Kontoauszug angeglichen',
+        'title': 'Kassabuch-Bericht mit Zeitraum, Salden, Logo und Excel',
         'changes': [
-            'Altbestände und Greimer-Cent-Korrektur nach Revolut-Kontoauszug angepasst.',
+            'Freier Berichtszeitraum von/bis mit Schnellwahl für laufendes Jahr, Vorjahr und Quartal.',
+            'Anfangs- und Endsaldo je Zeitraum, getrennt nach bar und Bank.',
+            'PDF-Export mit Logo, Vereinsdaten, Kennzahlenblock, Seitenzahlen und österreichischer Schreibweise.',
+            'Excel-Export zusätzlich zu CSV mit zwei Blättern, fixierter Kopfzeile und Autofilter.',
+            'Sortierung innerhalb eines Tages nach Belegnummer.',
+            'Dateiname der Exporte enthält den Zeitraum.',
+        ],
+    },
+    {
+        'date': '2026-07-29',
+        'title': 'Buchungsdaten an Revolut-Kontoauszug angeglichen',
+        'changes': [
+            'Altbestände und Greimer-Cent-Korrektur nach Kontoauszug korrigiert.',
             'Buchungsdatum nachträglich korrigierbar.',
         ],
     },
     {
         'date': '2026-07-28',
-        'title': 'V2 Kassabuch + QR-Code in V1 Zahlungen',
+        'title': 'QR-Code zum Auszahlen offener Gutschriften',
         'changes': [
-            'V2-Kassabuch mit Zeitraumfiltern, Schnellauswahl, CSV/Excel/PDF.',
-            'QR-Code für Gutschriften in V1 Zahlungen.',
-            'Sortierbare Spalten in V1 „Gebuchte Zahlungen“.',
+            'QR-Button bei offenen Gutschriften öffnet Popup mit SEPA-Überweisungscode (EPC069-12/GiroCode).',
+            'Kompatibel mit Banking-Apps im SEPA-Raum, inklusive Revolut.',
+            'Empfänger, IBAN, BIC, Betrag und Verwendungszweck werden kodiert; IBAN inklusive Prüfziffer geprüft.',
         ],
     },
     {
         'date': '2026-07-28',
-        'title': 'Erste Release Notes',
+        'title': 'Gebuchte Zahlungen sortierbar',
         'changes': [
-            'Neue Seite „Release Notes“ in V1 und V2 übersichtlich aufgelistet.',
+            'Tabelle „Gebuchte Zahlungen“ lässt sich nach Mitglied, Zeitraum, Betrag und Buchungsdatum sortieren.',
+            'Buchungen und Altbestände in einer gemeinsamen sortierten Liste.',
+            'Aktive Spalte zeigt Sortierrichtung als Pfeil.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'Altbestand-Buchungen korrigierbar',
+        'changes': [
+            'Route /payments/legacy_booking trägt den tatsächlichen Betrag für alte Abrechnungen nach.',
+            'Altbestand-Zeilen haben Eingabefelder für Betrag und Buchungsdatum.',
+            'Änderungsgrund ist Pflicht; Vorgang erscheint in der Historie.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'Sicherheitsabfrage mit Pflicht-Änderungsgrund',
+        'changes': [
+            'Änderungen an Zahlungsbuchungen laufen über einen Bestätigungsdialog mit Detailübersicht.',
+            'Pflichtfeld für Änderungsgrund beim Ändern, Stornieren und bei Abweichung vom Sollbetrag.',
+            'Vollständige Änderungshistorie je Buchung als Popup.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'Teilzahlungen, Buchungskorrektur und Mitgliedskonten',
+        'changes': [
+            'Je Abrechnung und Mitglied sind mehrere Buchungen möglich.',
+            'Buchungsbetrag frei eingebbar; Differenz bleibt als Restforderung oder Guthaben offen.',
+            'Bestehende Buchungen können in Betrag und Datum korrigiert werden.',
+            'Einzelne Buchungen stornierbar; Guthaben durch negative Buchung rückerstattbar.',
+            'Neue Seite „Mitgliedskonten“ mit Saldo je Mitglied und Kontoauszug.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'Vereinskassabuch für Admins',
+        'changes': [
+            'Neue Tabellen cashbook_categories und cashbook_entries mit Startkategorien.',
+            'Manuelle Buchungen (Bar/Überweisung) mit Begründung, Kategorie, Gegenpartei und Beleg-Upload.',
+            'Strombewegungen aus Zahlungsbuchungen laufen automatisch mit.',
+            'Laufender Saldo sowie Kassastand bar und Bank.',
+            'Filter nach Jahr, Kategorie, Art, Zahlungsart und Text.',
+            'Klassische Oberfläche und V2-Ansicht.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'Sicherheitshärtung',
+        'changes': [
+            'Zentrale Passwortrichtlinie: mindestens 12 Zeichen, keine Trivialpasswörter, Benutzername nicht enthalten.',
+            'Sitzungen laufen nach 60 Minuten Inaktivität bzw. spätestens nach 8 Stunden ab.',
+            'Login-Sperre liegt in der Datenbank und überlebt Neustarts.',
+            '404-Bremse gegen Scanner: 30 Fehlversuche in 5 Minuten sperren eine IP für 15 Minuten.',
+            'Technische Ausnahmetexte erscheinen nicht mehr in der Oberfläche.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'V2-Oberfläche (Beta)',
+        'changes': [
+            'Experimentelle V2-UI parallel zur Jinja-Oberfläche.',
+            'Unterstützt Dashboard, Portal, Newsletter, Backup, Audit und Einstellungen.',
+            'Zugriffskontrolle: Nicht-Admins erhalten nur Portal-Daten.',
+        ],
+    },
+    {
+        'date': '2026-07-28',
+        'title': 'WSGI-Einstiegspunkt für gunicorn',
+        'changes': [
+            'Neue wsgi.py führt Initialisierung (init_db, Mail-Konfiguration, Backup-Scheduler) aus.',
+            'Ermöglicht Betrieb unter gunicorn als unprivilegierter Benutzer.',
+        ],
+    },
+    {
+        'date': '2026-07-04',
+        'title': 'Backup, Reporting und Sicherheit',
+        'changes': [
+            'Erweiterung von Abrechnung, Backup und Reporting.',
+            'Sicherheitskontrollen gehärtet.',
+        ],
+    },
+    {
+        'date': '2026-07-03',
+        'title': 'Backup- und Datenbank-Verwaltung',
+        'changes': [
+            'Admin-Backup-Restore-Seite.',
+            'Konfigurierbare automatische Backups (lokal standardmäßig aktiviert).',
+            'Datenbankwartungsseite mit manueller Löschung.',
+            'Google Drive Backup-Upload mit OAuth-PKCE-Flow.',
+            'Google Drive Backup-Health-Check.',
+        ],
+    },
+    {
+        'date': '2026-05-16',
+        'title': 'Initialer Import und Konfiguration',
+        'changes': [
+            'Initialer Source-Import des EEG Portals.',
+            'Öffentliche Einstellungen in allen Templates verfügbar.',
+            'Newsletter-Abmeldung und Newsletter-Opt-in für Mitglieder verbessert.',
+            'Audit-Log mit österreichischer Zeitdarstellung.',
         ],
     },
 ]
