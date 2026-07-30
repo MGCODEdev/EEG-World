@@ -725,7 +725,7 @@
             const previewUrl = new URL(url, window.location.href);
             previewUrl.searchParams.set('preview', '1');
             const downloadUrl = previewUrl.toString();
-            previewUrl.searchParams.set('preview', '1');
+            previewUrl.searchParams.set('embed', '1');
             frameEl.src = previewUrl.toString();
             titleEl.textContent = title || 'PDF Vorschau';
             downloadEl.href = downloadUrl;
@@ -761,17 +761,34 @@
             }
         }
 
-        document.querySelectorAll('a[href]').forEach(function (link) {
+        function bindPdfLink(link) {
             if (link.closest('#eegPdfPreview')) return;
+            if (link.dataset.eegPdfBound) return;
             const href = link.getAttribute('href') || '';
             if (!isPdfUrl(href)) return;
+            link.dataset.eegPdfBound = '1';
             link.addEventListener('click', function (event) {
                 if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
                 if (link.target && link.target !== '_self') return;
                 event.preventDefault();
-                openPdfPreview(href, link.getAttribute('title') || link.textContent.trim() || 'PDF');
+                openPdfPreview(link.getAttribute('href') || href, link.getAttribute('title') || link.textContent.trim() || 'PDF');
+            });
+        }
+
+        document.querySelectorAll('a[href]').forEach(bindPdfLink);
+
+        // Links, die z.B. per AJAX/fetch nachtraeglich eingefuegt werden (z.B. Vertragsliste),
+        // werden ebenfalls fuer die PDF-Vorschau gebunden.
+        const pdfLinkObserver = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
+                mutation.addedNodes.forEach(function (node) {
+                    if (node.nodeType !== 1) return;
+                    if (node.matches && node.matches('a[href]')) bindPdfLink(node);
+                    if (node.querySelectorAll) node.querySelectorAll('a[href]').forEach(bindPdfLink);
+                });
             });
         });
+        pdfLinkObserver.observe(document.body, { childList: true, subtree: true });
     })();
 </script>
 {% if request.args.get('embed') == '1' %}
@@ -838,7 +855,9 @@
             }
         }
 
-        document.querySelectorAll('a[href]').forEach(function (link) {
+        function bindEmbedLink(link) {
+            if (link.dataset.eegEmbedBound) return;
+            link.dataset.eegEmbedBound = '1';
             if (link.target && link.target !== '_self') return;
             const rawHref = link.getAttribute('href');
             const pdfUrl = previewPdfUrl(rawHref);
@@ -859,7 +878,21 @@
                     notifyLoading();
                 }
             });
+        }
+
+        document.querySelectorAll('a[href]').forEach(bindEmbedLink);
+
+        // Nachtraeglich eingefuegte Links (z.B. Vertragsliste per fetch) ebenfalls binden.
+        const embedLinkObserver = new MutationObserver(function (mutations) {
+            mutations.forEach(function (mutation) {
+                mutation.addedNodes.forEach(function (node) {
+                    if (node.nodeType !== 1) return;
+                    if (node.matches && node.matches('a[href]')) bindEmbedLink(node);
+                    if (node.querySelectorAll) node.querySelectorAll('a[href]').forEach(bindEmbedLink);
+                });
+            });
         });
+        embedLinkObserver.observe(document.body, { childList: true, subtree: true });
 
         document.querySelectorAll('form').forEach(function (form) {
             form.setAttribute('action', withEmbed(form.getAttribute('action') || window.location.href));

@@ -195,9 +195,11 @@ function V2Shell() {
       event.preventDefault();
       const parsed = new URL(href, window.location.href);
       parsed.searchParams.set('preview', '1');
+      const downloadUrl = parsed.toString();
+      parsed.searchParams.set('embed', '1');
       setPdfPreview({
         url: parsed.toString(),
-        downloadUrl: parsed.toString(),
+        downloadUrl,
         title: link.getAttribute('title') || link.textContent.trim() || 'PDF Vorschau',
       });
     }

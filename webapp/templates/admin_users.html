@@ -138,16 +138,56 @@
 </div>
 {% endfor %}
 
+<!-- Fehlende Verträge -->
+{% if missing_contracts %}
+<div class="card mb-4">
+    <div class="card-header bg-white"><strong><i class="bi bi-exclamation-triangle text-warning"></i> Fehlende Verträge</strong></div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Mitglied</th>
+                        <th>Fehlender Vertragstyp</th>
+                        <th class="text-end">Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for mc in missing_contracts %}
+                <tr>
+                    <td>{{ mc.member_name }}</td>
+                    <td>
+                        {% if mc.type == 'bezieher' %}
+                        <span class="badge bg-primary"><i class="bi bi-plug"></i> Bezieher-Vertrag</span>
+                        {% else %}
+                        <span class="badge bg-warning text-dark"><i class="bi bi-sun"></i> Einspeiser-Vertrag</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-primary eeg-missing-contract-upload"
+                                data-member-id="{{ mc.member_id }}" data-type="{{ mc.type }}">
+                            <i class="bi bi-upload"></i> Hochladen
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Verträge hochladen -->
 <div class="card mb-4">
     <div class="card-header bg-white"><strong><i class="bi bi-file-earmark-text"></i> Vertrag hochladen</strong></div>
     <div class="card-body">
-        <form method="POST" action="{{ url_for('admin_contract_upload') }}" enctype="multipart/form-data">
+        <form method="POST" action="{{ url_for('admin_contract_upload') }}" enctype="multipart/form-data" id="eegContractUploadForm">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div class="row g-3 align-items-end">
                 <div class="col-md-4">
                     <label class="form-label">Mitglied</label>
-                    <select name="member_id" class="form-select" required>
+                    <select name="member_id" id="eegContractMemberSelect" class="form-select" required>
                         <option value="">— Mitglied wählen —</option>
                         {% for m in members %}
                         <option value="{{ m['id'] }}">{{ m['name'] }}</option>
@@ -156,7 +196,7 @@
                 </div>
                 <div class="col-md-3">
                     <label class="form-label">Vertragstyp</label>
-                    <select name="type" class="form-select" required>
+                    <select name="type" id="eegContractTypeSelect" class="form-select" required>
                         <option value="bezieher">Bezieher-Vertrag</option>
                         <option value="einspeiser">Einspeiser-Vertrag</option>
                     </select>
@@ -229,5 +269,17 @@ fetch('{{ url_for("api_contracts") }}')
             </tr>`;
         });
     });
+
+// Fehlende Verträge: Klick auf "Hochladen" wählt Mitglied/Typ im Upload-Formular vor
+document.querySelectorAll('.eeg-missing-contract-upload').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        const memberSelect = document.getElementById('eegContractMemberSelect');
+        const typeSelect = document.getElementById('eegContractTypeSelect');
+        if (memberSelect) memberSelect.value = btn.dataset.memberId;
+        if (typeSelect) typeSelect.value = btn.dataset.type;
+        const form = document.getElementById('eegContractUploadForm');
+        if (form) form.scrollIntoView({behavior: 'smooth', block: 'center'});
+    });
+});
 </script>
 {% endblock %}

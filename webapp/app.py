@@ -89,6 +89,17 @@ DEFAULT_ORG_LEGAL = os.environ.get('EEG_ORG_LEGAL', 'Vereinsdaten bitte konfigur
 # Die neueste Version steht immer an erster Stelle.
 RELEASE_NOTES = [
     {
+        'date': '2026-07-30',
+        'title': 'Fehlende Verträge erkennen + PDF-Vorschau für nachgeladene Links',
+        'changes': [
+            'Neue Übersicht „Fehlende Verträge“ unter /admin/users zeigt aktive Mitglieder mit Benutzerkonto ohne hochgeladenen Bezieher- bzw. Einspeiser-Vertrag, inkl. Direktlink zum Hochladen.',
+            'Einheitlich generierter Dateiname für neu hochgeladene Verträge (Typ, Name, Mitgliedsnummer, Datum).',
+            'PDF-Vorschau erkennt jetzt auch Vertragslinks, die nachträglich per JavaScript in die Seite eingefügt werden (V1).',
+            'PDF-Vorschau in V2 lädt korrekt die Embed-Ansicht statt der Download-URL.',
+            'Fehler beim Download einzelner Verträge (500) behoben.',
+        ],
+    },
+    {
         'date': '2026-07-29',
         'title': 'Release Notes Seite in V1 und V2',
         'changes': [
@@ -8639,6 +8650,27 @@ def cashbook_category_delete(id):
 CONTRACTS_FOLDER = os.path.join(BASE_DIR, '..', 'contracts')
 os.makedirs(CONTRACTS_FOLDER, exist_ok=True)
 
+CONTRACT_TYPE_LABELS = {'bezieher': 'Bezieher', 'einspeiser': 'Einspeiser'}
+_CONTRACT_UMLAUT_MAP = {
+    'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue', 'ß': 'ss',
+}
+
+
+def _contract_name_slug(name):
+    """Wandelt einen Mitgliedsnamen in einen dateinamentauglichen Slug um (Umlaute transliteriert)."""
+    text = ''.join(_CONTRACT_UMLAUT_MAP.get(ch, ch) for ch in str(name or ''))
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    text = re.sub(r'[^A-Za-z0-9]+', '_', text).strip('_')
+    return text or 'Mitglied'
+
+
+def generate_contract_filename(member_name, member_id, contract_type, upload_date=None):
+    """Erzeugt einen einheitlichen, sprechenden Dateinamen fuer einen Vertrags-Upload,
+    z.B. Vertrag_Bezieher_Max_Mustermann_M42_2026-07-29.pdf"""
+    typ_label = CONTRACT_TYPE_LABELS.get(contract_type, contract_type.capitalize())
+    date_str = upload_date or datetime.now().strftime('%Y-%m-%d')
+    return f'Vertrag_{typ_label}_{_contract_name_slug(member_name)}_M{member_id}_{date_str}.pdf'
+
 
 def _admin_users_redirect_target():
     next_url = request.form.get('next') or request.args.get('next')
@@ -8678,7 +8710,33 @@ def admin_users():
         ORDER BY u.is_admin DESC, u.username
     """).fetchall()
     members = db.execute("SELECT id, name, email FROM members WHERE active=1 ORDER BY name").fetchall()
-    return render_template('admin_users.html', users=users, members=members)
+
+    active_members = db.execute(
+        "SELECT id, name, bezug_zp, einspeiser_zp FROM members WHERE active=1 ORDER BY name"
+    ).fetchall()
+    # "Aktive Nutzer" = Mitglieder mit einem bereits akzeptierten Benutzerkonto
+    # (kein offener Einladungslink). Mitglieder ohne oder mit nur offener Einladung
+    # sollen nicht als "fehlender Vertrag" auftauchen.
+    active_user_member_ids = {
+        row['member_id'] for row in db.execute(
+            "SELECT DISTINCT member_id FROM users WHERE member_id IS NOT NULL AND invite_token IS NULL"
+        ).fetchall()
+    }
+    existing_types = {}
+    for row in db.execute("SELECT member_id, type FROM contracts").fetchall():
+        existing_types.setdefault(row['member_id'], set()).add(row['type'])
+    missing_contracts = []
+    for m in active_members:
+        if m['id'] not in active_user_member_ids:
+            continue
+        have = existing_types.get(m['id'], set())
+        if m['bezug_zp'] and 'bezieher' not in have:
+            missing_contracts.append({'member_id': m['id'], 'member_name': m['name'], 'type': 'bezieher'})
+        if m['einspeiser_zp'] and 'einspeiser' not in have:
+            missing_contracts.append({'member_id': m['id'], 'member_name': m['name'], 'type': 'einspeiser'})
+
+    return render_template('admin_users.html', users=users, members=members,
+                           missing_contracts=missing_contracts)
 
 
 @app.route('/admin/users/create', methods=['POST'])
@@ -8837,8 +8895,8 @@ def admin_contract_upload():
     if not file or file.filename == '':
         flash('Keine Datei ausgewählt.', 'danger')
         return redirect(_admin_users_redirect_target())
-    filename = secure_filename(file.filename)
-    if not filename.lower().endswith('.pdf'):
+    original_name = secure_filename(file.filename)
+    if not original_name.lower().endswith('.pdf'):
         flash('Nur PDF-Dateien sind als Vertrag erlaubt.', 'danger')
         return redirect(_admin_users_redirect_target())
     file_data = file.read()
@@ -8848,11 +8906,15 @@ def admin_contract_upload():
     if not file_data.startswith(b'%PDF-'):
         flash('Die hochgeladene Datei ist keine gültige PDF-Datei.', 'danger')
         return redirect(_admin_users_redirect_target())
+    member = db.execute("SELECT name FROM members WHERE id=?", (member_id,)).fetchone()
+    if not member:
+        flash('Mitglied nicht gefunden.', 'danger')
+        return redirect(_admin_users_redirect_target())
+    filename = generate_contract_filename(member['name'], member_id, contract_type)
     db.execute("""INSERT INTO contracts (member_id, type, filename, file_data, uploaded_by)
                   VALUES (?, ?, ?, ?, ?)""",
                (member_id, contract_type, filename, file_data, current_user.username))
     db.commit()
-    member = db.execute("SELECT name FROM members WHERE id=?", (member_id,)).fetchone()
     audit_log('contract_upload', f'Vertrag hochgeladen: {filename} ({contract_type}) für {member["name"]}')
     flash(f'Vertrag "{filename}" hochgeladen.', 'success')
     return redirect(_admin_users_redirect_target())
@@ -8874,7 +8936,7 @@ def contract_download(id):
     import io
     is_preview = request.args.get('preview') == '1'
     filename = contract['filename'] or ''
-    mimetype = contract.get('file_mimetype') or mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+    mimetype = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
     return send_file(
         io.BytesIO(contract['file_data']),
         mimetype=mimetype,
