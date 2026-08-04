@@ -103,6 +103,17 @@ DEFAULT_ORG_LEGAL = os.environ.get('EEG_ORG_LEGAL', 'Vereinsdaten bitte konfigur
 # Die neueste Version steht immer an erster Stelle.
 RELEASE_NOTES = [
     {
+        'date': '2026-08-04',
+        'title': 'Modulare Codebasis und stabilere Zahlungsseite',
+        'changes': [
+            'Sicherheitsvalidierung, Newsletter-Sanitizing, SEPA/EPC-QR-Logik und Abrechnungsberechnung wurden aus der zentralen app.py in eigenständige, testbare Module ausgelagert.',
+            'Das V2-Frontend wurde mit einem gemeinsamen Formatierungsmodul und einer eigenständigen Release-Notes-Seite übersichtlicher strukturiert.',
+            'Regression der klassischen Zahlungsseite /payments nach der Modularisierung behoben; klassische und V2-Zahlungsansicht werden jetzt gemeinsam getestet.',
+            'Neue gezielte Tests für sichere Weiterleitungen, Passwortregeln, Newsletter-HTML und Abrechnungsberechnung ergänzt.',
+            'Vollständige Testsuite und produktiver V2-Build erfolgreich geprüft.',
+        ],
+    },
+    {
         'date': '2026-07-30',
         'title': 'Fehlende Verträge erkennen + PDF-Vorschau für nachgeladene Links',
         'changes': [

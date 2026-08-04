@@ -47,6 +47,20 @@ class V2UITests(unittest.TestCase):
         self.assertIn('id="root"', html)
         self.assertIn('"type": "dashboard"', html)
 
+    def test_release_notes_show_latest_modularization_entry(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            classic = client.get('/release-notes')
+            v2 = client.get('/v2/release-notes')
+
+        self.assertEqual(classic.status_code, 200)
+        self.assertIn('Modulare Codebasis', classic.get_data(as_text=True))
+        self.assertEqual(v2.status_code, 200)
+        self.assertIn('Modulare Codebasis', v2.get_data(as_text=True))
+
     def test_v2_members_renders_native_data_for_admin(self):
         with eegapp.app.test_client() as client:
             with client.session_transaction() as sess:
