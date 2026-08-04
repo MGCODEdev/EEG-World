@@ -116,6 +116,17 @@ class V2UITests(unittest.TestCase):
         self.assertIn('"type": "payments"', html)
         self.assertIn('"csrf_token"', html)
 
+    def test_classic_payments_renders_for_admin(self):
+        with eegapp.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess['_user_id'] = str(self._admin_id())
+                sess['_fresh'] = True
+
+            response = client.get('/payments')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('Überweisungen & Forderungen', response.get_data(as_text=True))
+
     def test_v2_newsletter_renders_native_data_for_admin(self):
         with eegapp.app.test_client() as client:
             with client.session_transaction() as sess:

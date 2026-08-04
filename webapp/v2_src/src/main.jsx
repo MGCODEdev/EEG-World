@@ -78,6 +78,23 @@ import '@astryxdesign/core/reset.css';
 import '@astryxdesign/core/astryx.css';
 import '@astryxdesign/theme-neutral/theme.css';
 import {eegTheme} from './eegTheme.js';
+import ReleaseNotesPage from './pages/ReleaseNotesPage.jsx';
+import {
+  formatBytes,
+  formatCurrency,
+  formatDate,
+  formatDateRange,
+  formatDateTime,
+  formatFullAddress,
+  formatMonth,
+  formatNumber,
+  formatParticipation,
+  formatParticipationShort,
+  formatSignedCurrency,
+  invoiceStatusLabel,
+  isActivePath,
+  v2Href,
+} from './utils/formatters.js';
 import './eegTheme.generated.css';
 import './styles.css';
 
@@ -413,7 +430,7 @@ function V2Shell() {
     : nativeData?.type === 'database'
       ? <NativeDatabase data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'release_notes'
-      ? <NativeReleaseNotes data={nativeData} />
+      ? <ReleaseNotesPage data={nativeData} />
     : nativeData?.type === 'portal_dashboard'
       ? <NativePortalDashboard data={nativeData} />
     : nativeData?.type === 'portal_data'
@@ -4233,52 +4250,6 @@ function confirmDatabaseMaintenance(event, action) {
   }
 }
 
-function NativeReleaseNotes({data}) {
-  const notes = data.release_notes || [];
-  return (
-    <div className="v2-native-page v2-release-notes-page">
-      <div className="v2-page-heading">
-        <div className="v2-page-title">
-          <ScrollText size={34} strokeWidth={1.8} />
-          <div>
-            <h2>Release Notes</h2>
-            <small className="v2-page-subtitle">Letzte Änderungen am EEG Portal</small>
-          </div>
-        </div>
-      </div>
-
-      <div className="v2-release-notes-grid">
-        <div className="v2-release-notes-list">
-          {notes.length ? notes.map((note) => (
-            <Card key={`${note.date}-${note.title}`} className="v2-native-card v2-release-note-card" padding="lg">
-              <div className="v2-release-note-header">
-                <span className="v2-tag is-accent">{formatDate(note.date)}</span>
-                <h3>{note.title}</h3>
-              </div>
-              <ul className="v2-release-note-changes">
-                {note.changes.map((change, index) => (
-                  <li key={index}>{change}</li>
-                ))}
-              </ul>
-            </Card>
-          )) : <EmptyState text="Noch keine Release Notes vorhanden." />}
-        </div>
-
-        <Card className="v2-native-card v2-release-note-info" padding="lg">
-          <div className="v2-dashboard-card-title">
-            <ScrollText size={24} />
-            <h3>Hinweis</h3>
-          </div>
-          <p className="v2-muted">
-            Hier werden neue Funktionen, Korrekturen und Verbesserungen übersichtlich
-            nach Datum aufgelistet. Die neuesten Änderungen stehen immer oben.
-          </p>
-        </Card>
-      </div>
-    </div>
-  );
-}
-
 function NativePortalDashboard({data}) {
   const member = data.member;
   const account = data.account || {};
@@ -4603,114 +4574,6 @@ function StatusPill({value}) {
 
 function EmptyState({text}) {
   return <div className="v2-empty">{text}</div>;
-}
-
-function formatNumber(value, digits = 0) {
-  const number = Number(value) || 0;
-  return new Intl.NumberFormat('de-AT', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(number);
-}
-
-function formatCurrency(value) {
-  return new Intl.NumberFormat('de-AT', {
-    style: 'currency',
-    currency: 'EUR',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value) || 0);
-}
-
-function formatSignedCurrency(value) {
-  const number = Number(value) || 0;
-  if (number > 0) return `+${formatCurrency(number)}`;
-  if (number < 0) return `-${formatCurrency(Math.abs(number))}`;
-  return formatCurrency(0);
-}
-
-function formatBytes(value) {
-  const bytes = Number(value) || 0;
-  if (bytes < 1024) return `${formatNumber(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${formatNumber(bytes / 1024, 1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / 1024 / 1024, 1)} MB`;
-  return `${formatNumber(bytes / 1024 / 1024 / 1024, 2)} GB`;
-}
-
-function formatDate(value) {
-  if (!value) return '';
-  const dateValue = String(value).slice(0, 10);
-  const date = new Date(`${dateValue}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('de-AT', {day: '2-digit', month: '2-digit', year: 'numeric'}).format(date);
-}
-
-function formatDateTime(value) {
-  if (!value) return '-';
-  const normalized = String(value).includes('T') ? value : String(value).replace(' ', 'T');
-  const date = new Date(normalized.endsWith('Z') ? normalized : `${normalized}Z`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('de-AT', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
-}
-
-function formatMonth(value) {
-  if (!value) return 'Unbekannt';
-  const date = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('de-AT', {month: 'long', year: 'numeric'}).format(date);
-}
-
-function formatDateRange(from, to) {
-  if (!from && !to) return 'Zeitraum offen';
-  if (from === to || !to) return formatDate(from);
-  return `${formatDate(from)} - ${formatDate(to)}`;
-}
-
-function formatParticipation(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return 'Teilnahme nicht gesetzt';
-  return `${formatNumber(number * 100, number % 1 ? 1 : 0)} % Teilnahme`;
-}
-
-function formatParticipationShort(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return '-';
-  return `${formatNumber(number * 100, number % 1 ? 1 : 0)}%`;
-}
-
-function formatFullAddress(member) {
-  const street = member.address_street || '';
-  const location = formatLocation(member.address_zip, member.address_city);
-  return [street, location !== 'Kein Ort' ? location : ''].filter(Boolean).join(', ') || 'Keine Adresse';
-}
-
-function formatLocation(zip, city) {
-  return [zip, city].filter(Boolean).join(' ') || 'Kein Ort';
-}
-
-function invoiceStatusLabel(status) {
-  const labels = {
-    draft: 'Noch nicht abgeschlossen',
-    sent: 'Versendet',
-    paid: 'Bezahlt',
-  };
-  return labels[status] || status || 'Status offen';
-}
-
-function isActivePath(currentPath, itemPath) {
-  if (itemPath === '/') return currentPath === '/';
-  return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
-}
-
-function v2Href(path) {
-  if (path === '/') return '/v2/';
-  return `/v2${path}`;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

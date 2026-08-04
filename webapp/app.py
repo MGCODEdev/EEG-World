@@ -20,7 +20,6 @@ from functools import wraps
 from email.header import Header
 from email.utils import formataddr
 from html import escape
-from html.parser import HTMLParser
 from urllib.parse import urlparse, urljoin, urlencode
 from zoneinfo import ZoneInfo
 
@@ -34,6 +33,21 @@ from flask_wtf.csrf import CSRFProtect, CSRFError, generate_csrf
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+from core.security import (
+    MIN_PASSWORD_LENGTH,
+    is_safe_redirect_url as _is_safe_redirect_url,
+    sanitize_newsletter_html,
+    validate_password,
+)
+from services.sepa import (
+    EPC_MAX_PAYLOAD_BYTES,
+    build_epc_payload,
+    normalize_iban,
+    render_epc_qr_svg,
+    sepa_text as _sepa_text,
+)
+from services.billing import calculate_billing as _calculate_billing
 
 try:
     from dotenv import load_dotenv
@@ -410,107 +424,9 @@ def inject_template_globals():
     }
 
 
-class _NewsletterHTMLSanitizer(HTMLParser):
-    """Kleine Allowlist fuer Newsletter-HTML ohne externe Abhaengigkeit."""
-
-    ALLOWED_TAGS = {
-        'a', 'b', 'br', 'blockquote', 'div', 'em', 'h2', 'h3', 'h4', 'hr',
-        'i', 'img', 'li', 'ol', 'p', 'span', 'strong', 'table', 'tbody',
-        'td', 'th', 'thead', 'tr', 'u', 'ul'
-    }
-    ALLOWED_ATTRS = {
-        'a': {'href', 'title'},
-        'img': {'src', 'alt', 'width', 'height'},
-        'table': {'width'},
-        'td': {'colspan', 'rowspan'},
-        'th': {'colspan', 'rowspan'},
-    }
-    SAFE_URL_SCHEMES = {'http', 'https', 'mailto'}
-    VOID_TAGS = {'br', 'hr', 'img'}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts = []
-
-    def _safe_attrs(self, tag, attrs):
-        allowed = self.ALLOWED_ATTRS.get(tag, set())
-        safe_attrs = []
-        for key, value in attrs:
-            key = (key or '').lower()
-            value = value or ''
-            if key not in allowed:
-                continue
-            if key in {'href', 'src'}:
-                parsed = urlparse(value.strip())
-                if parsed.scheme.lower() not in self.SAFE_URL_SCHEMES:
-                    continue
-            safe_attrs.append(f'{key}="{escape(value, quote=True)}"')
-        return (' ' + ' '.join(safe_attrs)) if safe_attrs else ''
-
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-        if tag in self.ALLOWED_TAGS:
-            self.parts.append(f'<{tag}{self._safe_attrs(tag, attrs)}>')
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        if tag in self.ALLOWED_TAGS and tag not in self.VOID_TAGS:
-            self.parts.append(f'</{tag}>')
-
-    def handle_data(self, data):
-        self.parts.append(escape(data))
-
-    def handle_entityref(self, name):
-        self.parts.append(f'&{name};')
-
-    def handle_charref(self, name):
-        self.parts.append(f'&#{name};')
-
-
-def sanitize_newsletter_html(html):
-    sanitizer = _NewsletterHTMLSanitizer()
-    sanitizer.feed(html or '')
-    sanitizer.close()
-    return ''.join(sanitizer.parts)
-
-
 def is_safe_redirect_url(target):
     """Erlaubt nur relative oder gleiche Host-Weiterleitungen."""
-    if not target:
-        return False
-    ref = urlparse(request.host_url)
-    test = urlparse(urljoin(request.host_url, target))
-    return test.scheme in {'http', 'https'} and ref.netloc == test.netloc
-
-
-# === Passwortrichtlinie ===
-# Orientiert an NIST SP 800-63B: Laenge schlaegt Sonderzeichen-Pflicht.
-MIN_PASSWORD_LENGTH = int(os.environ.get('EEG_MIN_PASSWORD_LENGTH', '12'))
-
-# Auswahl der in Leaks am haeufigsten auftauchenden Passwoerter.
-_WEAK_PASSWORDS = {
-    '123456789012', '1234567890123', 'passwort1234', 'password1234',
-    'passwort2024', 'passwort2025', 'passwort2026', 'password2024',
-    'password2025', 'password2026', 'qwertzuiopas', 'qwertyuiopas',
-    'administrator', 'willkommen12', 'willkommen123', 'sommer2025!',
-    'geheim123456', 'iloveyou1234', 'letmein12345', 'trustno1234',
-}
-
-
-def validate_password(password, username=None):
-    """Prueft ein neues Passwort. Liefert eine Fehlermeldung oder '' bei OK."""
-    password = password or ''
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return (f'Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen haben. '
-                'Eine Passphrase aus mehreren Woertern ist am einfachsten zu merken.')
-    normalized = password.strip().lower()
-    if normalized in _WEAK_PASSWORDS:
-        return 'Dieses Passwort ist zu leicht zu erraten. Bitte ein anderes waehlen.'
-    if len(set(normalized)) < 5:
-        return 'Passwort besteht aus zu wenigen unterschiedlichen Zeichen.'
-    if username and len(username) >= 3 and username.strip().lower() in normalized:
-        return 'Passwort darf den Benutzernamen nicht enthalten.'
-    return ''
+    return _is_safe_redirect_url(target, request.host_url)
 
 
 # === Fehlerausgabe ===
@@ -4149,86 +4065,6 @@ def invoice_pdf(id, member_id):
 
 # === SEPA-Ueberweisung als QR-Code (EPC069-12, GiroCode) ===
 
-# Zeichenvorrat laut SEPA; alles andere wird ersetzt oder entfernt, damit jede
-# Bank den Datensatz annimmt.
-SEPA_ALLOWED_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789/-?:().,'+ ")
-SEPA_REPLACEMENTS = {
-    'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue', 'ß': 'ss',
-    '&': 'und', '"': "'", '_': '-', '–': '-', '—': '-',
-}
-EPC_MAX_PAYLOAD_BYTES = 331
-
-
-def _sepa_text(value, limit):
-    """Wandelt Text in den SEPA-Zeichenvorrat und kuerzt ihn auf die Maximallaenge."""
-    text = ''.join(SEPA_REPLACEMENTS.get(char, char) for char in str(value or ''))
-    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
-    text = ''.join(char if char in SEPA_ALLOWED_CHARS else ' ' for char in text)
-    return ' '.join(text.split())[:limit]
-
-
-def normalize_iban(value):
-    """Prueft Format und Pruefziffer der IBAN und liefert sie ohne Leerzeichen."""
-    iban = re.sub(r'\s+', '', str(value or '')).upper()
-    if not iban:
-        raise ValueError('Für den QR-Code ist keine IBAN hinterlegt.')
-    if not re.fullmatch(r'[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}', iban):
-        raise ValueError('Die IBAN hat kein gültiges Format.')
-    rearranged = iban[4:] + iban[:4]
-    if int(''.join(str(int(char, 36)) for char in rearranged)) % 97 != 1:
-        raise ValueError('Die IBAN ist ungültig, die Prüfziffer stimmt nicht.')
-    return iban
-
-
-def build_epc_payload(recipient, iban, amount, remittance='', bic=''):
-    """Datensatz nach EPC069-12 fuer den SEPA-Ueberweisungs-QR-Code.
-
-    Version 002 wird verwendet, damit der BIC entfallen darf. Das unterstuetzen
-    Banking-Apps im SEPA-Raum, darunter Revolut.
-    """
-    name = _sepa_text(recipient, 70)
-    if not name:
-        raise ValueError('Für den QR-Code fehlt der Name des Empfängers.')
-    amount = round(float(amount), 2)
-    if not 0.01 <= amount <= 999999999.99:
-        raise ValueError('Der Betrag lässt sich nicht als QR-Code darstellen.')
-    lines = [
-        'BCD',                                  # Service Tag
-        '002',                                  # Version, BIC optional
-        '1',                                    # Zeichensatz UTF-8
-        'SCT',                                  # SEPA Credit Transfer
-        _sepa_text(bic, 11).replace(' ', ''),
-        name,
-        normalize_iban(iban),
-        f'EUR{amount:.2f}',
-        '',                                     # Zweckcode
-        '',                                     # strukturierte Referenz
-        _sepa_text(remittance, 140),            # Verwendungszweck
-        '',                                     # Hinweis an den Zahler
-    ]
-    payload = '\n'.join(lines).rstrip('\n')
-    if len(payload.encode('utf-8')) > EPC_MAX_PAYLOAD_BYTES:
-        raise ValueError('Die Zahlungsdaten sind für einen QR-Code zu lang.')
-    return payload
-
-
-def render_epc_qr_svg(payload):
-    """QR-Code als SVG, damit er in jeder Groesse scharf bleibt."""
-    import qrcode
-    import qrcode.image.svg
-
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
-                       box_size=10, border=2)
-    qr.add_data(payload)
-    qr.make(fit=True)
-    buffer = io.BytesIO()
-    qr.make_image(image_factory=qrcode.image.svg.SvgPathImage).save(buffer)
-    return buffer.getvalue().decode('utf-8')
-
-
 def generate_epc_qr(amount, invoice, member):
     """Generiert einen EPC/GiroCode QR-Code als data URI (base64 PNG)."""
     import qrcode
@@ -5282,88 +5118,11 @@ def portal_reports():
 # === Billing Calculation ===
 
 def calculate_billing(db, period_from, period_to, price_cons, price_gen):
-    """Berechnet die Abrechnung für einen Zeitraum. Pro Mitglied Bezug + Einspeisung separat."""
-    # Zeitraum in DB-Format konvertieren
-    ts_from = period_from + "T00:00:00" if "T" not in period_from else period_from
-    ts_to = period_to + "T23:45:00" if "T" not in period_to else period_to
-
-    items = []
-    total_income = 0
-    total_expense = 0
-    total_kwh = 0
-
-    # Alle aktiven Mitglieder
-    members = db.execute("SELECT id, name, bezug_zp, einspeiser_zp FROM members WHERE active=1").fetchall()
-
-    for member in members:
-        cons_kwh = 0
-        gen_kwh = 0
-
-        # Verbrauch: Eigendeckung G.03
-        if member['bezug_zp']:
-            row = db.execute("""
-                SELECT ROUND(SUM(m.value_kwh), 3) as kwh
-                FROM measurements m
-                JOIN meter_codes mc ON mc.id = m.meter_code_id
-                WHERE mc.code = '1-1:2.9.0 G.03'
-                  AND m.metering_point_id = ?
-                  AND m.timestamp_start >= ? AND m.timestamp_start <= ?
-            """, (member['bezug_zp'], ts_from, ts_to)).fetchone()
-            cons_kwh = row['kwh'] or 0
-
-        # Erzeugung: G.01T - P.01T
-        if member['einspeiser_zp']:
-            row = db.execute("""
-                SELECT
-                    ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 G.01T' THEN m.value_kwh ELSE 0 END), 3) as g01t,
-                    ROUND(SUM(CASE WHEN mc.code='1-1:2.9.0 P.01T' THEN m.value_kwh ELSE 0 END), 3) as p01t
-                FROM measurements m
-                JOIN meter_codes mc ON mc.id = m.meter_code_id
-                WHERE mc.code IN ('1-1:2.9.0 G.01T', '1-1:2.9.0 P.01T')
-                  AND m.metering_point_id = ?
-                  AND m.timestamp_start >= ? AND m.timestamp_start <= ?
-            """, (member['einspeiser_zp'], ts_from, ts_to)).fetchone()
-            gen_kwh = max(0, (row['g01t'] or 0) - (row['p01t'] or 0))
-
-        # Nur Mitglieder mit Aktivität aufnehmen
-        if cons_kwh <= 0 and gen_kwh <= 0:
-            continue
-
-        # Bezugsposition
-        if cons_kwh > 0:
-            cons_amount = round(cons_kwh * price_cons / 100.0, 2)
-            items.append({
-                'member_id': member['id'],
-                'type': 'consumption',
-                'kwh': round(cons_kwh, 3),
-                'price': price_cons,
-                'amount': cons_amount,
-            })
-            total_income += cons_amount
-            total_kwh += cons_kwh
-
-        # Einspeiseposition (Gutschrift)
-        if gen_kwh > 0:
-            gen_amount = round(gen_kwh * price_gen / 100.0, 2)
-            items.append({
-                'member_id': member['id'],
-                'type': 'generation',
-                'kwh': round(gen_kwh, 3),
-                'price': price_gen,
-                'amount': gen_amount,
-            })
-            total_expense += gen_amount
-
-    carryovers = calculate_carryovers_for_period(db, period_from)
-
-    return {
-        'items': items,
-        'carryovers': carryovers,
-        'total_kwh': total_kwh,
-        'total_income': round(total_income, 2),
-        'total_expense': round(total_expense, 2),
-        'total_margin': round(total_income - total_expense, 2)
-    }
+    """Kompatible Fassade für den ausgelagerten Abrechnungsservice."""
+    return _calculate_billing(
+        db, period_from, period_to, price_cons, price_gen,
+        carryover_provider=calculate_carryovers_for_period,
+    )
 
 
 # === Settings ===

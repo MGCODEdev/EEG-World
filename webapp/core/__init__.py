@@ -1,0 +1,1 @@
+"""Gemeinsame, fachbereichsunabhängige Webapp-Bausteine."""
