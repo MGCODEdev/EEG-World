@@ -27,14 +27,17 @@ class ImportRunTests(unittest.TestCase):
         captured = {}
         fake_module = types.ModuleType('import_eda')
 
-        def fake_import_file(filepath, conn, allow_duplicate=False):
+        def fake_import_file(filepath, conn, allow_duplicate=False,
+                             commit_progress=True, on_batch_created=None):
             captured['filepath'] = filepath
             captured['conn_type'] = type(conn).__name__
             captured['allow_duplicate'] = allow_duplicate
-            conn.execute("""
+            cursor = conn.execute("""
                 INSERT INTO import_batches (source_file, report_code, period_start, period_end, data_status)
                 VALUES (?, 'RC', '2026-05-01T00:00:00', '2026-05-31T23:45:00', 'final')
             """, (os.path.basename(filepath),))
+            if on_batch_created:
+                on_batch_created(cursor.lastrowid)
             return 42
 
         fake_module.import_file = fake_import_file
@@ -46,7 +49,9 @@ class ImportRunTests(unittest.TestCase):
         sys.modules['import_eda'] = fake_module
 
         with tempfile.NamedTemporaryFile(suffix='.xlsx') as upload:
-            result = eegapp.run_import(upload.name, overwrite=False, data_status='provisional')
+            result = eegapp.run_import(
+                upload.name, overwrite=False, data_status='provisional', validate_preview=False
+            )
 
         self.assertEqual(result['status'], 'success')
         self.assertEqual(result['data_status'], 'provisional')
@@ -66,12 +71,15 @@ class ImportRunTests(unittest.TestCase):
         captured = {}
         fake_module = types.ModuleType('import_eda')
 
-        def fake_import_file(filepath, conn, allow_duplicate=False):
+        def fake_import_file(filepath, conn, allow_duplicate=False,
+                             commit_progress=True, on_batch_created=None):
             captured['allow_duplicate'] = allow_duplicate
             cur = conn.execute("""
                 INSERT INTO import_batches (source_file, report_code, period_start, period_end, data_status)
                 VALUES (?, 'RC', '2026-06-01T00:00:00', '2026-06-30T23:45:00', 'final')
             """, (os.path.basename(filepath),))
+            if on_batch_created:
+                on_batch_created(cur.lastrowid)
             conn.execute("""
                 INSERT INTO measurements (
                     batch_id, metering_point_id, timestamp_start, timestamp_end,
@@ -103,7 +111,9 @@ class ImportRunTests(unittest.TestCase):
             db.commit()
 
         with tempfile.NamedTemporaryFile(suffix='.xlsx') as upload:
-            result = eegapp.run_import(upload.name, overwrite=False, data_status='final')
+            result = eegapp.run_import(
+                upload.name, overwrite=False, data_status='final', validate_preview=False
+            )
 
         self.assertEqual(result['status'], 'success')
         self.assertEqual(result['data_status'], 'final')
@@ -140,6 +150,70 @@ class ImportRunTests(unittest.TestCase):
             blocker = eegapp.invoice_finalization_blocker(db, invoice_row)
 
         self.assertIn('neu berechnen', blocker)
+
+    def test_failed_replacement_rolls_back_and_preserves_original_measurements(self):
+        fake_module = types.ModuleType('import_eda')
+
+        def failing_import(filepath, conn, allow_duplicate=False,
+                           commit_progress=True, on_batch_created=None):
+            new_batch = conn.execute("""
+                INSERT INTO import_batches (
+                    source_file, report_code, period_start, period_end, data_status
+                ) VALUES (?, 'RC', '2026-09-01T00:00:00',
+                          '2026-09-30T23:45:00', 'final')
+            """, (os.path.basename(filepath),)).lastrowid
+            if on_batch_created:
+                on_batch_created(new_batch)
+            raise ValueError('simulierter Parserfehler')
+
+        fake_module.import_file = failing_import
+        fake_module.parse_filename = lambda filename: {
+            'report_code': 'RC',
+            'period_start': '2026-09-01T00:00:00',
+            'period_end': '2026-09-30T23:45:00',
+        }
+        sys.modules['import_eda'] = fake_module
+
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            old_batch = db.execute("""
+                INSERT INTO import_batches (
+                    source_file, report_code, period_start, period_end, data_status
+                ) VALUES ('original.xlsx', 'RC', '2026-09-01T00:00:00',
+                          '2026-09-30T23:45:00', 'final')
+            """).lastrowid
+            db.execute("""
+                INSERT INTO measurements (
+                    batch_id, metering_point_id, timestamp_start, timestamp_end,
+                    interval_minutes, meter_code_id, value_kwh, quality, is_estimated
+                ) VALUES (?, 'AT001', '2026-09-01T00:00:00',
+                          '2026-09-01T00:15:00', 15, 1, 1.0, 'L1', 0)
+            """, (old_batch,))
+            db.commit()
+
+        with tempfile.NamedTemporaryFile(suffix='.xlsx') as upload:
+            result = eegapp.run_import(
+                upload.name, overwrite=True, data_status='final', validate_preview=False
+            )
+
+        self.assertEqual(result['status'], 'error')
+        with eegapp.app.app_context():
+            db = eegapp.get_db()
+            original = db.execute(
+                "SELECT replaced_at FROM import_batches WHERE source_file='original.xlsx'"
+            ).fetchone()
+            original_values = db.execute(
+                'SELECT COUNT(*) FROM measurements WHERE batch_id=?', (old_batch,)
+            ).fetchone()[0]
+            revisions = db.execute('SELECT COUNT(*) FROM measurement_revisions').fetchone()[0]
+            new_batches = db.execute(
+                "SELECT COUNT(*) FROM import_batches WHERE source_file=?",
+                (os.path.basename(upload.name),),
+            ).fetchone()[0]
+        self.assertIsNone(original['replaced_at'])
+        self.assertEqual(original_values, 1)
+        self.assertEqual(revisions, 0)
+        self.assertEqual(new_batches, 0)
 
     def test_provisional_invoice_detail_renders_without_redirect(self):
         with eegapp.app.app_context():

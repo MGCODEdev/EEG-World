@@ -1665,6 +1665,36 @@ h1 {
   background: #fff;
 }
 
+.v2-import-preview {
+  grid-template-columns: 1fr;
+}
+
+.v2-import-preview form {
+  display: grid;
+  gap: .75rem;
+  justify-items: start;
+}
+
+.v2-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .75rem;
+}
+
+.v2-summary-grid > div {
+  display: grid;
+  gap: .2rem;
+  padding: .75rem;
+  border: 1px solid #dce5e3;
+  border-radius: 7px;
+}
+
+.v2-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: .55rem;
+}
+
 .v2-file-input {
   display: grid;
   gap: .42rem;
@@ -1993,7 +2023,32 @@ h1 {
 }
 
 .v2-users-table {
-  min-width: 70rem;
+  min-width: 86rem;
+}
+
+.v2-user-email-form {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  min-width: 15rem;
+  margin: 0;
+}
+
+.v2-user-email-form input[type="email"] {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: .38rem .55rem;
+  border: 1px solid #cfdcda;
+  border-radius: 7px;
+  background: var(--v2-surface);
+  color: var(--v2-ink);
+  font: inherit;
+}
+
+.v2-user-email-form input[type="email"]:focus-visible {
+  border-color: var(--v2-accent);
+  outline: 2px solid color-mix(in srgb, var(--v2-accent) 22%, transparent);
+  outline-offset: 1px;
 }
 
 .v2-contracts-table {
@@ -3337,6 +3392,19 @@ h1 {
 }
 
 /* Release Notes */
+.v2-user-mail-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--color-text-secondary, #5f6b65);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.v2-user-mail-toggle input { accent-color: #28705d; }
+
 .v2-release-notes-page .v2-page-title {
   align-items: flex-start;
 }

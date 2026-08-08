@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: transparent; overflow: hidden; -webkit-user-select: none; -webkit-text-size-adjust: 100%; }
+    #chart { width: 100%; min-height: 260px; }
+    .plot-scroll { width: 100%; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+    .plot-scroll svg { display: block; width: auto; max-width: none; overflow: visible; touch-action: pan-x manipulation; shape-rendering: geometricPrecision; }
+    text { fill: currentColor; }
+    .axis { font-size: 12px; opacity: .76; }
+    .axis path, .axis line { stroke: currentColor; opacity: .15; }
+    .grid line { stroke: currentColor; opacity: .10; }
+    .grid path { display: none; }
+    .legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 7px 14px; padding: 4px 8px 7px; font-size: 12px; font-weight: 600; line-height: 1.25; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .detail { min-height: 44px; margin: 3px 8px 0; padding: 8px 10px; border-radius: 11px; background: rgba(128,128,128,.10); font-size: 12px; line-height: 1.3; overflow-wrap: anywhere; }
+    .detail-title { font-weight: 700; margin-bottom: 4px; }
+    .detail-values { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+    .detail-value { display: inline-flex; white-space: normal; font-variant-numeric: tabular-nums; }
+    .estimated { opacity: .62; }
+    .bar { stroke: rgba(255,255,255,.30); stroke-width: .7px; }
+    .price-line { stroke-width: 3.2px; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 2px 2px rgba(0,0,0,.12)); }
+    .donut-top { filter: drop-shadow(0 5px 5px rgba(0,0,0,.18)); }
+    .donut-details { display: grid; gap: 6px; padding: 2px 6px 0; }
+    .donut-detail { min-width: 0; min-height: 34px; padding: 6px 5px; border-radius: 9px; background: rgba(128,128,128,.08); display: flex; align-items: center; justify-content: center; text-align: center; font-size: 12px; line-height: 1.25; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    @media (prefers-color-scheme: dark) { body { color: #f4f4f5; } }
+    @media (prefers-color-scheme: light) { body { color: #202124; } }
+  </style>
+</head>
+<body>
+  <div id="chart" aria-live="polite"></div>
+  <script src="energy-chart.bundle.js"></script>
+</body>
+</html>

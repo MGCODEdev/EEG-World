@@ -1,0 +1,48 @@
+name: EEGMemberApp
+options:
+  bundleIdPrefix: at.eeg.trabocherstrasse
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: 5.10
+    DEVELOPMENT_TEAM: LQFUQM34Z5
+targets:
+  EEGMemberApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: EEGMemberApp
+        excludes:
+          - Resources/Chord
+          - Resources/ThirdPartyLicenses
+      - path: EEGMemberApp/Resources/Chord
+        buildPhase: resources
+      - path: EEGMemberApp/Resources/ThirdPartyLicenses
+        buildPhase: resources
+    info:
+      path: EEGMemberApp/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: EEG Trabocherstraße
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        API_BASE_URL: https://admin.eeg-trabocherstrasse.at/api/v1
+        NSFaceIDUsageDescription: Schützt Ihre persönlichen EEG-Daten und Abrechnungen.
+        NSCameraUsageDescription: Wird zum Scannen eines EEG-Verbindungscodes und zum Fotografieren freiwilliger Anlagen verwendet.
+        NSLocationWhenInUseUsageDescription: Beim Senden einer Nachricht an die EEG wird der aktuelle Standort zur Zuordnung und Dokumentation beigefügt.
+        UIBackgroundModes:
+          - remote-notification
+        CFBundleURLTypes:
+          - CFBundleURLName: at.eeg.trabocherstrasse.member.connect
+            CFBundleURLSchemes:
+              - eegtrabocherstrasse
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: at.eeg.trabocherstrasse.member
+        PRODUCT_NAME: EEG Trabocherstraße
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: EEGMemberApp/Resources/EEGMemberApp.entitlements
+    scheme:
+      testTargets: []

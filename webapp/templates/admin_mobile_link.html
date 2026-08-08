@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}iPhone-App verbinden{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2 class="mb-0"><i class="bi bi-phone"></i> iPhone-App verbinden</h2>
+    <a href="{{ back_url }}" class="btn btn-outline-secondary">Zurück</a>
+</div>
+<div class="card mx-auto" style="max-width: 680px">
+    <div class="card-body text-center p-4">
+        <h3 class="h5">{{ user['member_name'] or user['username'] }}</h3>
+        <p class="text-muted">Der Code ist zehn Minuten gültig und kann genau einmal verwendet werden.</p>
+        <img src="{{ qr_data_uri }}" alt="QR-Code zur einmaligen Verbindung der iPhone-App"
+             width="280" height="280" class="img-fluid border rounded mb-3">
+        <div class="small text-muted">Manueller Verbindungscode</div>
+        <div class="display-6 fw-bold font-monospace mb-3" style="letter-spacing:.08em">{{ code }}</div>
+        <div class="alert alert-warning text-start mb-0">
+            <strong>Vertraulich behandeln:</strong> Code und QR-Code verbinden die App mit diesem Mitgliedskonto.
+            Nicht per ungeschützter Nachricht weiterleiten. Nach Verwendung oder Ablauf sind beide ungültig.
+        </div>
+    </div>
+</div>
+{% endblock %}

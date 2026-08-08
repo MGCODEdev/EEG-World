@@ -15,6 +15,7 @@
     <div class="card-body">
         <form method="post" enctype="multipart/form-data">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="import_action" value="preview">
             <div class="mb-3">
                 <label class="form-label">Excel-Dateien (*.xlsx)</label>
                 <input type="file" name="files" class="form-control" multiple accept=".xlsx" required>
@@ -43,13 +44,97 @@
                     Bestehende Daten überschreiben bei Überschneidung
                 </label>
             </div>
-            <button type="submit" class="btn btn-success"
-                    onclick="if (document.getElementById('data_status_final').checked) { return confirm('Diese Datei als endgültige Daten importieren? Vorläufige Daten im gleichen Zeitraum werden ersetzt.'); } return true;">
-                <i class="bi bi-upload"></i> Importieren
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-search"></i> Datei prüfen und Vorschau anzeigen
             </button>
+            <div class="form-text mt-2">In diesem Schritt werden noch keine Messdaten verändert.</div>
         </form>
     </div>
 </div>
+
+{% if preview_errors is defined and preview_errors %}
+<div class="alert alert-danger" role="alert">
+    <strong>Vorschau konnte nicht erstellt werden.</strong>
+    <ul class="mb-0 mt-2">
+        {% for item in preview_errors %}
+        <li><strong>{{ item.filename }}:</strong> {{ item.error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if previews is defined and previews %}
+<h3 class="h4 mb-3">Importvorschau – noch nicht importiert</h3>
+{% for item in previews %}
+{% set p = item.preview %}
+<div class="card mb-4 border-{{ 'danger' if item.has_blocking_errors else 'primary' }}">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>{{ item.filename }}</strong>
+        <span class="badge {{ 'bg-success' if item.data_status == 'final' else 'bg-warning text-dark' }}">
+            {{ 'Endgültig' if item.data_status == 'final' else 'Vorläufig' }}
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="alert alert-info py-2">
+            Sicherheitsprüfung abgeschlossen. Die Datenbank wurde noch nicht verändert.
+            Die Vorschau läuft um {{ item.expires_at }} UTC ab.
+        </div>
+        <div class="row g-3 mb-3">
+            <div class="col-md-3"><small class="text-muted d-block">Datenzeitraum</small>{{ p.data_available_from or '—' }}<br>bis {{ p.data_available_until or '—' }}</div>
+            <div class="col-md-2"><small class="text-muted d-block">Zählpunkte</small>{{ p.metering_point_count }}</div>
+            <div class="col-md-2"><small class="text-muted d-block">Messreihen</small>{{ p.series_count }}</div>
+            <div class="col-md-2"><small class="text-muted d-block">Intervalle</small>{{ p.interval_count }}</div>
+            <div class="col-md-3"><small class="text-muted d-block">Messwerte</small>{{ "{:,.0f}".format(p.measurement_count) }}</div>
+        </div>
+        <div class="small mb-3">
+            <strong>Integrität:</strong> SHA-256 {{ p.sha256[:16] }}… ·
+            {{ "{:,.0f}".format(p.size_bytes) }} Byte · {{ p.interval_minutes or '—' }} Minuten Raster
+            {% if item.overwrite %} · <span class="text-danger fw-bold">Überschreiben aktiviert</span>{% endif %}
+        </div>
+        {% if p.warnings %}
+        <div class="mb-3">
+            <strong>Prüfhinweise</strong>
+            <ul class="mb-0">
+                {% for warning in p.warnings %}
+                <li class="text-{{ 'danger' if warning.severity == 'error' else 'warning' }}">
+                    {{ warning.message }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% else %}
+        <div class="alert alert-success py-2">Keine strukturellen Warnungen erkannt.</div>
+        {% endif %}
+
+        {% if item.has_blocking_errors %}
+        <div class="alert alert-danger">Dieser Import ist wegen blockierender Fehler nicht freigegeben.</div>
+        {% else %}
+        <form method="post" class="mb-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="import_action" value="confirm">
+            <input type="hidden" name="preview_token" value="{{ item.token }}">
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" name="confirm_import" value="1"
+                       id="confirm_import_{{ loop.index }}" required>
+                <label class="form-check-label" for="confirm_import_{{ loop.index }}">
+                    Ich habe Zeitraum, Datenstatus und Warnungen geprüft und bestätige den Import.
+                </label>
+            </div>
+            <button type="submit" class="btn btn-success">
+                <i class="bi bi-check2-circle"></i> Jetzt verbindlich importieren
+            </button>
+        </form>
+        {% endif %}
+        <form method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="import_action" value="cancel">
+            <input type="hidden" name="preview_token" value="{{ item.token }}">
+            <button type="submit" class="btn btn-outline-secondary btn-sm">Vorschau verwerfen</button>
+        </form>
+    </div>
+</div>
+{% endfor %}
+{% endif %}
 
 {% if results is defined and results %}
 <div class="card mb-4">

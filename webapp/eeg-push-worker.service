@@ -1,0 +1,19 @@
+[Unit]
+Description=EEG Apple Push Notification Outbox
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=eeg
+Group=eeg
+WorkingDirectory=/var/www/eeg/webapp
+EnvironmentFile=/var/www/eeg/.env
+Environment=EEG_APNS_BUNDLE_ID=at.eeg.trabocherstrasse.member
+Environment=EEG_APNS_TEAM_ID=LQFUQM34Z5
+Environment=EEG_APNS_KEY_ID=CL4JC32C7X
+Environment=EEG_APNS_KEY_PATH=/var/www/eeg/instance/AuthKey_CL4JC32C7X.p8
+ExecStart=/usr/bin/python3 /var/www/eeg/webapp/push_worker.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/www/eeg

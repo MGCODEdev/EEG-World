@@ -57,6 +57,7 @@ import {
   LayoutDashboard,
   LogOut,
   Mail,
+  MessageSquareText,
   NotebookText,
   Pencil,
   Plug,
@@ -109,6 +110,7 @@ const adminNavItems = [
   {label: 'Kassabuch', path: '/kassabuch', icon: BookOpenText},
   {label: 'Reports', path: '/reports', icon: ChartNoAxesCombined},
   {label: 'Newsletter', path: '/newsletter', icon: Mail},
+  {label: 'Mitgliedsnachrichten', path: '/admin/member-feedback', icon: MessageSquareText},
   {label: 'Release Notes', path: '/release-notes', icon: ScrollText},
   {type: 'section', label: 'Verwaltung'},
   {label: 'Benutzer', path: '/admin/users', icon: UserCog},
@@ -436,7 +438,7 @@ function V2Shell() {
     : nativeData?.type === 'portal_data'
       ? <NativePortalData data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'portal_invoices'
-      ? <NativePortalInvoices data={nativeData} />
+      ? <NativePortalInvoices data={nativeData} csrfToken={security.csrf_token} />
     : nativeData?.type === 'portal_contracts'
       ? <NativePortalContracts data={nativeData} />
     : nativeData?.type === 'change_password'
@@ -1097,6 +1099,8 @@ function NativeImport({data, csrfToken}) {
   const [importFiles, setImportFiles] = useState([]);
   const [isImporting, setIsImporting] = useState(false);
   const results = data.results || [];
+  const previews = data.previews || [];
+  const previewErrors = data.preview_errors || [];
   const imports = data.imports || [];
   const activeImports = imports.filter((row) => !row.replaced_at);
   const provisionalCount = activeImports.filter((row) => row.data_status !== 'final').length;
@@ -1114,11 +1118,11 @@ function NativeImport({data, csrfToken}) {
         {isImporting && (
           <Banner
             status="info"
-            title="Import läuft"
-            description="Die Datei wird verarbeitet. Bitte diese Seite geöffnet lassen, bis das Ergebnis erscheint."
+            title="Datei wird geprüft"
+            description="Die Datei wird nur validiert. Messdaten werden in diesem Schritt nicht verändert."
             container="section"
           >
-            <ProcessingStatus label="Import läuft" description="Excel-Dateien werden geprüft und Messwerte werden übernommen." />
+            <ProcessingStatus label="Prüfung läuft" description="Struktur, Zeitraum, Vollständigkeit und Integrität werden geprüft." />
           </Banner>
         )}
         <Banner
@@ -1143,16 +1147,15 @@ function NativeImport({data, csrfToken}) {
           encType="multipart/form-data"
           action="/v2/import"
           onSubmit={(event) => {
-            if (confirmFinalImport(event)) {
-              if (Array.isArray(importFiles) ? importFiles.length : Boolean(importFiles)) {
-                setIsImporting(true);
-              }
-              submitMultipartFormWithFiles(event, [{name: 'files', files: importFiles, requiredMessage: 'Bitte mindestens eine Excel-Datei auswählen.'}])
-                .catch(() => setIsImporting(false));
+            if (Array.isArray(importFiles) ? importFiles.length : Boolean(importFiles)) {
+              setIsImporting(true);
             }
+            submitMultipartFormWithFiles(event, [{name: 'files', files: importFiles, requiredMessage: 'Bitte mindestens eine Excel-Datei auswählen.'}])
+              .catch(() => setIsImporting(false));
           }}
         >
           <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+          <input type="hidden" name="import_action" value="preview" />
           <FormFileInput
             name="files"
             label="Excel-Dateien"
@@ -1184,10 +1187,80 @@ function NativeImport({data, csrfToken}) {
 
           <button type="submit" className="v2-primary-action v2-submit-action">
             <Upload size={20} />
-            <span>Importieren</span>
+            <span>Datei prüfen und Vorschau anzeigen</span>
           </button>
+          <small>In diesem Schritt werden noch keine Messdaten verändert.</small>
         </form>
       </Card>
+
+      {previewErrors.length > 0 && (
+        <Banner
+          status="error"
+          title="Vorschau konnte nicht erstellt werden"
+          description={previewErrors.map((item) => `${item.filename}: ${item.error}`).join(' · ')}
+          container="section"
+        />
+      )}
+
+      {previews.map((item, index) => {
+        const preview = item.preview || {};
+        const warnings = preview.warnings || [];
+        return (
+          <Card className="v2-native-card v2-import-card" padding={0} key={`${item.filename}-${index}`}>
+            <div className="v2-dashboard-card-title">
+              <CircleCheck size={24} />
+              <h3>Importvorschau – noch nicht importiert</h3>
+            </div>
+            <div className="v2-import-form v2-import-preview">
+              <StatusLine variant={item.has_blocking_errors ? 'error' : 'success'} label={item.filename}>
+                Datenbank unverändert · Vorschau gültig bis {formatDateTime(item.expires_at)}
+              </StatusLine>
+              <div className="v2-summary-grid">
+                <div><small>Datenzeitraum</small><strong>{formatDateTime(preview.data_available_from)} – {formatDateTime(preview.data_available_until)}</strong></div>
+                <div><small>Zählpunkte</small><strong>{formatNumber(preview.metering_point_count)}</strong></div>
+                <div><small>Messreihen</small><strong>{formatNumber(preview.series_count)}</strong></div>
+                <div><small>Messwerte</small><strong>{formatNumber(preview.measurement_count)}</strong></div>
+              </div>
+              <p>
+                <StatusPill value={item.data_status} /> · SHA-256 {String(preview.sha256 || '').slice(0, 16)}… · {formatNumber(preview.size_bytes)} Byte
+                {item.overwrite ? ' · Überschreiben aktiviert' : ''}
+              </p>
+              {warnings.length ? (
+                <ul>
+                  {warnings.map((warning, warningIndex) => (
+                    <li className={warning.severity === 'error' ? 'v2-error-text' : ''} key={`${warning.code}-${warningIndex}`}>
+                      {warning.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : <StatusLine variant="success" label="Keine strukturellen Warnungen erkannt" />}
+
+              {!item.has_blocking_errors && (
+                <form method="post" action="/v2/import">
+                  <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                  <input type="hidden" name="import_action" value="confirm" />
+                  <input type="hidden" name="preview_token" value={item.token || ''} />
+                  <label className="v2-checkbox-row">
+                    <input type="checkbox" name="confirm_import" value="1" required />
+                    <span>Ich habe Zeitraum, Datenstatus und Warnungen geprüft und bestätige den Import.</span>
+                  </label>
+                  <button type="submit" className="v2-primary-action v2-submit-action">
+                    <CircleCheck size={20} />
+                    <span>Jetzt verbindlich importieren</span>
+                  </button>
+                </form>
+              )}
+              {item.has_blocking_errors && <StatusLine variant="error" label="Import wegen blockierender Fehler gesperrt" />}
+              <form method="post" action="/v2/import">
+                <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                <input type="hidden" name="import_action" value="cancel" />
+                <input type="hidden" name="preview_token" value={item.token || ''} />
+                <button type="submit" className="v2-action-button">Vorschau verwerfen</button>
+              </form>
+            </div>
+          </Card>
+        );
+      })}
 
       <ImportResultProgress results={results} />
 
@@ -1277,16 +1350,6 @@ function ImportTable({title, icon: Icon, columns, rows, renderRow, emptyText}) {
       </div>
     </Card>
   );
-}
-
-function confirmFinalImport(event) {
-  const form = event.currentTarget;
-  const status = new FormData(form).get('data_status');
-  if (status === 'final' && !window.confirm('Diese Datei als endgültige Daten importieren? Vorläufige Daten im gleichen Zeitraum werden ersetzt.')) {
-    event.preventDefault();
-    return false;
-  }
-  return true;
 }
 
 function NativePrices({data, csrfToken}) {
@@ -3113,6 +3176,7 @@ function NativeUsers({data, csrfToken}) {
             <thead>
               <tr>
                 <th>Benutzername</th>
+                <th>E-Mail-Adresse</th>
                 <th>Mitglied</th>
                 <th>Rolle</th>
                 <th>Einladung</th>
@@ -3125,13 +3189,41 @@ function NativeUsers({data, csrfToken}) {
                 <tr key={user.id}>
                   <td>
                     <strong>{user.username}</strong>
-                    {user.email && <small>{user.email}</small>}
+                  </td>
+                  <td>
+                    <form className="v2-user-email-form" method="post" action={`/admin/users/${user.id}/email`}>
+                      <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                      <input type="hidden" name="next" value="/v2/admin/users" />
+                      <input
+                        type="email"
+                        name="email"
+                        defaultValue={user.email || ''}
+                        maxLength="254"
+                        autoComplete="email"
+                        aria-label={`E-Mail-Adresse für ${user.username}`}
+                        placeholder="name@beispiel.at"
+                      />
+                      <button type="submit" className="v2-icon-action" aria-label={`E-Mail-Adresse für ${user.username} speichern`} title="E-Mail-Adresse speichern">
+                        <Check size={18} />
+                      </button>
+                    </form>
                   </td>
                   <td>{user.member_name || '-'}</td>
                   <td>
                     <span className={`v2-tag ${user.role === 'admin' ? 'is-warning' : 'is-info'}`}>
                       {user.role === 'admin' ? 'Admin' : 'Teilnehmer'}
                     </span>
+                    {user.role === 'admin' && (
+                      <form method="post" action={`/admin/users/${user.id}/feedback-email`}>
+                        <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                        <input type="hidden" name="next" value="/v2/admin/users" />
+                        <input type="hidden" name="enabled" value="0" />
+                        <label className="v2-user-mail-toggle" title="Mitgliedsnachrichten per E-Mail erhalten">
+                          <input type="checkbox" name="enabled" value="1" defaultChecked={Boolean(user.admin_feedback_email)} onChange={(event) => event.currentTarget.form.submit()} />
+                          <span>EEG-Post per Mail</span>
+                        </label>
+                      </form>
+                    )}
                   </td>
                   <td>
                     {user.invite_open
@@ -3149,6 +3241,26 @@ function NativeUsers({data, csrfToken}) {
                           <Mail size={18} />
                         </button>
                       </form>
+                      {user.member_id && !user.invite_open && (
+                        <>
+                          <form method="post" action={`/admin/users/${user.id}/mobile-link`}>
+                            <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                            <input type="hidden" name="next" value="/v2/admin/users" />
+                            <button type="submit" className="v2-icon-action" aria-label="iPhone-App verbinden" title="iPhone-App verbinden">
+                              <QrCode size={18} />
+                            </button>
+                          </form>
+                          <form method="post" action={`/admin/users/${user.id}/mobile-access/revoke`} onSubmit={(event) => {
+                            if (!window.confirm(`Alle ${user.mobile_sessions || ''} App-Sitzungen dieses Benutzers widerrufen?`)) event.preventDefault();
+                          }}>
+                            <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+                            <input type="hidden" name="next" value="/v2/admin/users" />
+                            <button type="submit" className="v2-icon-action is-danger" aria-label="App-Zugänge widerrufen" title="App-Zugänge widerrufen">
+                              <Plug size={18} />
+                            </button>
+                          </form>
+                        </>
+                      )}
                       <form method="post" action={`/admin/users/${user.id}/toggle-role`} onSubmit={(event) => confirmUserRoleChange(event)}>
                         <input type="hidden" name="csrf_token" value={csrfToken || ''} />
                         <input type="hidden" name="next" value="/v2/admin/users" />
@@ -3169,7 +3281,7 @@ function NativeUsers({data, csrfToken}) {
                   </td>
                 </tr>
               )) : (
-                <tr><td colSpan="6"><EmptyState text="Noch keine Benutzer vorhanden." /></td></tr>
+                <tr><td colSpan="7"><EmptyState text="Noch keine Benutzer vorhanden." /></td></tr>
               )}
             </tbody>
           </table>
@@ -4355,7 +4467,7 @@ function NativePortalData({data, csrfToken}) {
   );
 }
 
-function NativePortalInvoices({data}) {
+function NativePortalInvoices({data, csrfToken}) {
   const account = data.account || {};
   return (
     <div className="v2-native-page v2-portal-invoices-page">
@@ -4371,7 +4483,7 @@ function NativePortalInvoices({data}) {
         <DashboardStat icon={Euro} label="Guthaben" value={formatCurrency(Math.abs(Number(account.open_credits) || 0))} />
         <DashboardStat icon={Clock3} label="Buchungsrückstand" value={formatCurrency(account.overdue_claims)} />
       </section>
-      <PortalInvoiceTable invoices={data.invoices || []} memberId={data.member_id} />
+      <PortalInvoiceTable invoices={data.invoices || []} memberId={data.member_id} csrfToken={csrfToken} />
       <PortalAccountHistory account={account} />
     </div>
   );
@@ -4402,7 +4514,7 @@ function NativePortalContracts({data}) {
   );
 }
 
-function PortalInvoiceTable({invoices, memberId}) {
+function PortalInvoiceTable({invoices, memberId, csrfToken}) {
   const rows = invoices || [];
   const columns = [
     {key: 'id', header: '#', width: pixel(70), renderCell: (row) => <strong>{row.id}</strong>},
@@ -4411,8 +4523,17 @@ function PortalInvoiceTable({invoices, memberId}) {
     {key: 'net_total', header: 'Betrag', align: 'end', width: pixel(130), renderCell: (row) => <strong>{formatSignedCurrency(row.net_total)}</strong>},
     {key: 'status', header: 'Status', width: pixel(140), renderCell: (row) => <StatusPill value={row.paid ? 'paid' : row.status} />},
     {key: 'data', header: 'Daten', width: pixel(120), renderCell: (row) => <StatusPill value={row.data_status} />},
-    {key: 'actions', header: 'PDF', align: 'end', width: pixel(90), renderCell: (row) => memberId ? (
-      <a className="v2-icon-action" href={`/invoices/${row.id}/pdf/${memberId}`} aria-label="PDF öffnen" title="PDF öffnen"><FileText size={18} /></a>
+    {key: 'actions', header: 'Aktionen', align: 'end', width: pixel(130), renderCell: (row) => memberId ? (
+      <div className="v2-row-actions">
+        <a className="v2-icon-action" href={`/invoices/${row.id}/pdf/${memberId}`} aria-label="PDF öffnen" title="PDF öffnen"><FileText size={18} /></a>
+        <form method="post" action={`/portal/invoices/${row.id}/send`}>
+          <input type="hidden" name="csrf_token" value={csrfToken || ''} />
+          <input type="hidden" name="next" value="/v2/portal/invoices" />
+          <button type="submit" className="v2-icon-action is-success" aria-label="PDF per E-Mail senden" title="PDF per E-Mail senden">
+            <Mail size={18} />
+          </button>
+        </form>
+      </div>
     ) : null},
   ];
   return (

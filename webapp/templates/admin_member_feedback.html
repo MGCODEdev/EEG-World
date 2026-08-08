@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Mitgliedsnachrichten{% endblock %}
+{% block extra_css %}
+<style>
+  .feedback-attachment-trigger { color: inherit; }
+  .feedback-attachment-trigger:hover,
+  .feedback-attachment-trigger:focus-visible { border-color: var(--bs-primary) !important; box-shadow: 0 0 0 .2rem rgba(40,112,93,.12); }
+  .feedback-attachment-frame { height: 180px; overflow: hidden; background: #eef2f0; border-bottom: 1px solid rgba(0,0,0,.08); }
+  .feedback-attachment-frame img { display: block; width: 100%; height: 100%; border: 0; object-fit: cover; pointer-events: none; }
+  .feedback-document-tile { display: flex; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: .35rem; color: #b23b3b; }
+  .feedback-document-tile i { font-size: 3rem; }
+  .feedback-document-tile strong { font-size: .8rem; letter-spacing: .08em; }
+  .feedback-attachment-modal-body { min-height: 64vh; background: #202523; }
+  .feedback-attachment-modal-body img { display: block; max-width: 100%; max-height: 76vh; margin: auto; object-fit: contain; }
+  .feedback-attachment-modal-body iframe { width: 100%; height: 76vh; border: 0; background: white; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <div>
+    <h1 class="h3 mb-1"><i class="bi bi-chat-square-text"></i> Mitgliedsnachrichten</h1>
+    <p class="text-muted mb-0">Nachrichten, Dokumente, Fotos, Standort und Verbindungs-IP aus der iOS-App.</p>
+  </div>
+</div>
+<div class="row g-4">
+  <div class="col-lg-5">
+    <div class="list-group shadow-sm">
+      {% for item in messages %}
+      <a class="list-group-item list-group-item-action {% if selected and selected['id'] == item['id'] %}active{% endif %}"
+         href="{{ url_for('admin_member_feedback', id=item['id']) }}">
+        <div class="d-flex justify-content-between gap-3">
+          <strong>{{ item['member_name'] }}</strong>
+          <small>{{ item['created_at']|localdate }}</small>
+        </div>
+        <div class="small text-truncate mt-1">{{ item['message'] or 'Ohne Textnachricht' }}</div>
+        <div class="d-flex gap-2 mt-2">
+          <span class="badge {% if item['status'] == 'new' %}bg-danger{% elif item['status'] == 'processing' %}bg-warning text-dark{% else %}bg-success{% endif %}">
+            {{ {'new':'Neu','processing':'In Bearbeitung','done':'Erledigt'}.get(item['status'], item['status']) }}
+          </span>
+          {% if item['attachment_count'] %}<span class="badge bg-secondary"><i class="bi bi-paperclip"></i> {{ item['attachment_count'] }}</span>{% endif %}
+          {% if item['latitude'] is not none %}<span class="badge bg-info text-dark"><i class="bi bi-geo-alt"></i> Standort</span>{% endif %}
+        </div>
+      </a>
+      {% else %}
+      <div class="list-group-item text-muted">Noch keine Mitgliedsnachrichten vorhanden.</div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="col-lg-7">
+    {% if selected %}
+    <div class="card shadow-sm">
+      <div class="card-header bg-white d-flex flex-wrap gap-2 justify-content-between align-items-center">
+        <strong>{{ selected['member_name'] }} · Nachricht #{{ selected['id'] }}</strong>
+        <div class="d-flex flex-wrap gap-2">
+          <form method="post" action="{{ url_for('admin_member_feedback_status', id=selected['id']) }}" class="d-flex gap-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="status" class="form-select form-select-sm">
+              <option value="new" {% if selected['status']=='new' %}selected{% endif %}>Neu</option>
+              <option value="processing" {% if selected['status']=='processing' %}selected{% endif %}>In Bearbeitung</option>
+              <option value="done" {% if selected['status']=='done' %}selected{% endif %}>Erledigt</option>
+            </select>
+            <button class="btn btn-sm btn-primary">Speichern</button>
+          </form>
+          <form method="post" action="{{ url_for('admin_member_feedback_delete', id=selected['id']) }}"
+                onsubmit="return confirm('Diese Mitgliedsnachricht und alle Anlagen endgültig löschen?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-outline-danger" type="submit"><i class="bi bi-trash"></i> Löschen</button>
+          </form>
+        </div>
+      </div>
+      <div class="card-body">
+        <dl class="row small">
+          <dt class="col-sm-3">E-Mail</dt><dd class="col-sm-9">{{ selected['member_email'] or '—' }}</dd>
+          <dt class="col-sm-3">Telefon</dt><dd class="col-sm-9">{{ selected['member_phone'] or '—' }}</dd>
+          <dt class="col-sm-3">IP-Adresse</dt><dd class="col-sm-9"><code>{{ selected['source_ip'] or '—' }}</code></dd>
+          <dt class="col-sm-3">Übermittelt</dt><dd class="col-sm-9">{{ selected['created_at']|localdate }}</dd>
+        </dl>
+        <div class="p-3 rounded bg-light" style="white-space:pre-wrap">{{ selected['message'] or 'Keine Textnachricht' }}</div>
+        {% if selected['latitude'] is not none and selected['longitude'] is not none %}
+        <a class="btn btn-outline-primary mt-3" target="_blank" rel="noopener"
+           href="https://www.openstreetmap.org/?mlat={{ selected['latitude'] }}&mlon={{ selected['longitude'] }}#map=18/{{ selected['latitude'] }}/{{ selected['longitude'] }}">
+          <i class="bi bi-geo-alt-fill"></i> Standort öffnen
+          {% if selected['location_accuracy_m'] %}<small>± {{ selected['location_accuracy_m']|round|int }} m</small>{% endif %}
+        </a>
+        {% endif %}
+        {% if attachments %}
+        <h2 class="h6 mt-4">Anlagen</h2>
+        <div class="row g-3">
+          {% for attachment in attachments %}
+          <div class="col-sm-6">
+            <button type="button" class="card h-100 w-100 p-0 text-start feedback-attachment-trigger"
+                    data-bs-toggle="modal" data-bs-target="#attachmentPreviewModal"
+                    data-attachment-id="{{ attachment['id'] }}"
+                    data-preview-url="{{ url_for('admin_member_feedback_attachment', id=attachment['id']) }}"
+                    data-embed-url="{{ url_for('admin_member_feedback_attachment', id=attachment['id'], embed=1) }}"
+                    data-download-url="{{ url_for('admin_member_feedback_attachment', id=attachment['id'], download=1) }}"
+                    data-mime-type="{{ attachment['mime_type'] }}"
+                    data-filename="{{ attachment['filename'] }}">
+              <span class="feedback-attachment-frame">
+                {% if attachment['mime_type'].startswith('image/') %}
+                <img loading="lazy" src="{{ url_for('admin_member_feedback_attachment', id=attachment['id']) }}" alt="Vorschau von {{ attachment['filename'] }}">
+                {% else %}
+                <span class="feedback-document-tile" aria-label="PDF-Dokument {{ attachment['filename'] }}">
+                  <i class="bi bi-file-earmark-pdf"></i><strong>PDF-DOKUMENT</strong>
+                </span>
+                {% endif %}
+              </span>
+              <span class="card-body d-flex gap-3 align-items-center w-100">
+                <i class="bi {% if attachment['mime_type'].startswith('image/') %}bi-image{% else %}bi-file-earmark-pdf{% endif %} fs-3"></i>
+                <span class="text-truncate"><strong class="d-block text-truncate">{{ attachment['filename'] }}</strong><small class="text-muted">{{ (attachment['file_size'] / 1024)|round|int }} KB · Vorschau öffnen</small></span>
+              </span>
+            </button>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="modal fade" id="attachmentPreviewModal" tabindex="-1" aria-labelledby="attachmentPreviewTitle" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 class="modal-title fs-5 text-truncate" id="attachmentPreviewTitle">Anlage</h2>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+          </div>
+          <div class="modal-body feedback-attachment-modal-body d-flex align-items-center justify-content-center">
+            <img id="attachmentPreviewImage" class="d-none" alt="Große Bildvorschau">
+            <iframe id="attachmentPreviewDocument" class="d-none" title="Große Dokumentvorschau"></iframe>
+          </div>
+          <div class="modal-footer">
+            <a id="attachmentPreviewOpen" class="btn btn-outline-secondary" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> Separat öffnen</a>
+            <a id="attachmentPreviewDownload" class="btn btn-primary"><i class="bi bi-download"></i> Herunterladen</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="alert alert-info">Wählen Sie links eine Nachricht aus.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const modalElement = document.getElementById('attachmentPreviewModal');
+  if (!modalElement) return;
+  const title = document.getElementById('attachmentPreviewTitle');
+  const image = document.getElementById('attachmentPreviewImage');
+  const documentFrame = document.getElementById('attachmentPreviewDocument');
+  const openLink = document.getElementById('attachmentPreviewOpen');
+  const downloadLink = document.getElementById('attachmentPreviewDownload');
+
+  modalElement.addEventListener('show.bs.modal', function (event) {
+    const trigger = event.relatedTarget;
+    if (!trigger) return;
+    const url = trigger.dataset.previewUrl;
+    const isImage = (trigger.dataset.mimeType || '').startsWith('image/');
+    title.textContent = trigger.dataset.filename || 'Anlage';
+    openLink.href = url;
+    downloadLink.href = trigger.dataset.downloadUrl;
+    image.classList.toggle('d-none', !isImage);
+    documentFrame.classList.toggle('d-none', isImage);
+    image.src = isImage ? url : '';
+    documentFrame.src = isImage ? 'about:blank' : trigger.dataset.embedUrl + '#view=FitH';
+  });
+
+  modalElement.addEventListener('hidden.bs.modal', function () {
+    image.src = '';
+    documentFrame.src = 'about:blank';
+  });
+
+  {% if attachment_to_open %}
+  const initialTrigger = document.querySelector('[data-attachment-id="{{ attachment_to_open }}"]');
+  if (initialTrigger) bootstrap.Modal.getOrCreateInstance(modalElement).show(initialTrigger);
+  {% endif %}
+});
+</script>
+{% endblock %}

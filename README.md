@@ -99,6 +99,37 @@ python3 -m pip_audit -r requirements.txt
 `pip-audit` nutzt die Python Packaging Advisory Database/PyPI-Daten und sollte
 vor Deployments oder mindestens regelmäßig ausgeführt werden.
 
+## Native iOS-Mitglieder-App
+
+Unter `ios/EEGMemberApp` liegt ein natives SwiftUI-MVP für iOS 17+. Es nutzt die
+versionierte Mitglieder-API `/api/v1` und bietet Dashboard, Energiekennzahlen,
+Charts, PDF-Abrechnungsvorschau, App-Nachrichten, Kontoverlauf, Verträge und
+Profilpflege. Access- und Refresh-Tokens
+werden serverseitig nur gehasht und auf dem Gerät in der Keychain gespeichert.
+
+Die Startseite zeigt zwei interaktive D3-Donuts mit dezenter räumlicher Tiefe
+für die geschlossenen Energiebilanzen: Verbrauch aus EEG/Netz und – bei
+Erzeugern – Einspeisung an EEG/öffentliches Netz. Tag, Monat und Jahr können
+frei gewählt und die Werte zwischen kWh und geschätzten Eurobeträgen
+umgeschaltet werden. Der Energie-Reiter verwendet dazu konsistente, lokal
+gebündelte D3-Balkendiagramme für Tag, Woche, Monat und Jahr.
+
+Historische Energieauswertungen verwenden ausschließlich abgeschlossene
+EDA-Importdaten. Die App kennzeichnet den Datenstand und zeigt ausdrücklich
+keine Live- oder Echtzeitwerte. Die freigegebenen MeterCode-Formeln sind in
+`docs/eda-energy-semantics.md` dokumentiert.
+
+Das Xcode-Projekt wird auf einem Mac reproduzierbar mit XcodeGen erzeugt:
+
+```bash
+cd ios/EEGMemberApp
+xcodegen generate
+open EEGMemberApp.xcodeproj
+```
+
+Weitere Hinweise zu Signing, API-Adresse und Ausbauphasen stehen in
+`ios/EEGMemberApp/README.md`.
+
 ## Dateistruktur
 
 ```

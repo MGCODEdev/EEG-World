@@ -4,6 +4,7 @@
 *.sqlite3
 *.db-wal
 *.db-shm
+*.db.bak*
 *.zip
 backups/
 
@@ -35,6 +36,17 @@ htmlcov/
 venv/
 node_modules/
 webapp/v2_src/node_modules/
+.npm/
+android/**/.gradle/
+android/**/build/
+android/**/local.properties
+android/**/*.jks
+android/**/keystore.properties
+android/**/*.bak*
+ios/**/DerivedData/
+ios/**/*.xcodeproj/xcuserdata/
+ios/**/*.xcworkspace/xcuserdata/
+*.xcuserstate
 .idea/
 .vscode/
 *.swp

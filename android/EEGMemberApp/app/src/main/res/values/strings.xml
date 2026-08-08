@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">EEG Trabocherstraße</string>
+    <string name="camera_permission">Die Kamera wird ausschließlich für freiwillige Anlagen an Nachrichten verwendet.</string>
+    <string name="location_permission">Beim Senden einer Nachricht wird der Standort zur Zuordnung und Dokumentation beigefügt.</string>
+    <string name="notification_permission">Informiert über Abrechnungen und wichtige Nachrichten der EEG.</string>
+</resources>

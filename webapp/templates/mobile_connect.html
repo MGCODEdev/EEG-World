@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="robots" content="noindex,nofollow">
+    <title>EEG-App verbinden</title>
+    <style>
+        body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f7f5;color:#17231d;margin:0;padding:24px}
+        main{max-width:520px;margin:8vh auto;background:#fff;border:1px solid #dbe5df;border-radius:16px;padding:28px;text-align:center}
+        a{display:inline-block;background:#276b52;color:#fff;text-decoration:none;padding:14px 20px;border-radius:10px;font-weight:700}
+        p{line-height:1.55}.muted{color:#5f6d65;font-size:.92rem}
+    </style>
+</head>
+<body><main>
+    <h1>EEG-App verbinden</h1>
+    <p id="message">Der sichere Link wird geprüft.</p>
+    <p><a id="open-app" href="#" hidden>App öffnen</a></p>
+    <p class="muted">Der Link ist nur einmal und für kurze Zeit gültig. Ist die App nicht installiert, wenden Sie sich bitte an die EEG-Verwaltung.</p>
+</main>
+<script>
+(() => {
+    const params = new URLSearchParams(location.hash.slice(1));
+    const token = params.get('token') || '';
+    const button = document.getElementById('open-app');
+    const message = document.getElementById('message');
+    if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        message.textContent = 'Dieser Verbindungslink ist ungültig.';
+        return;
+    }
+    button.href = 'eegtrabocherstrasse://connect?token=' + encodeURIComponent(token);
+    button.hidden = false;
+    message.textContent = 'Öffnen Sie den Link auf Ihrem iPhone.';
+    button.click();
+})();
+</script></body></html>

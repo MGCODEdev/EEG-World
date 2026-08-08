@@ -24,7 +24,8 @@ from urllib.parse import urlparse, urljoin, urlencode
 from zoneinfo import ZoneInfo
 
 from flask import (Flask, render_template, request, redirect, url_for,
-                   flash, send_file, jsonify, g, abort, get_flashed_messages)
+                   flash, send_file, jsonify, g, abort, get_flashed_messages,
+                   make_response)
 from flask import has_request_context
 from flask import session
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
@@ -48,6 +49,19 @@ from services.sepa import (
     sepa_text as _sepa_text,
 )
 from services.billing import calculate_billing as _calculate_billing
+from services.eda_preview import preview_eda_xlsx
+from services.historical_schema import ensure_historical_energy_schema
+from services.import_staging import (
+    ImportStagingError,
+    cancel_staged_import,
+    claim_staged_import,
+    cleanup_expired_staged_imports,
+    consume_staged_import,
+    release_staged_import,
+    stage_uploaded_import,
+)
+from services.mobile_link import create_mobile_link, ensure_mobile_link_schema
+from services.mobile_schema import ensure_mobile_device_schema
 
 try:
     from dotenv import load_dotenv
@@ -64,7 +78,14 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, '..', 'data')
 INVOICE_FOLDER = os.path.join(BASE_DIR, 'invoices')
 BACKUP_FOLDER = os.path.join(BASE_DIR, '..', 'backups')
 INSTANCE_DIR = os.path.join(BASE_DIR, '..', 'instance')
+IMPORT_STAGING_FOLDER = os.environ.get(
+    'EEG_IMPORT_STAGING_DIR', os.path.join(UPLOAD_FOLDER, '.import-staging'))
 APP_TIMEZONE = ZoneInfo(os.environ.get('EEG_TIMEZONE', 'Europe/Vienna'))
+APPLE_TEAM_ID = (
+    os.environ.get('EEG_APPLE_TEAM_ID')
+    or os.environ.get('EEG_APNS_TEAM_ID')
+    or 'LQFUQM34Z5'
+).strip().upper()
 
 app = Flask(__name__)
 _IS_PRODUCTION = os.environ.get('EEG_ENV', '').lower() == 'production' or os.environ.get('FLASK_ENV') == 'production'
@@ -73,6 +94,7 @@ if _IS_PRODUCTION and not _SECRET_KEY:
     raise RuntimeError('EEG_SECRET_KEY muss im Produktivbetrieb gesetzt sein.')
 app.config['SECRET_KEY'] = _SECRET_KEY or secrets.token_hex(32)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['IMPORT_STAGING_FOLDER'] = IMPORT_STAGING_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50 MB
 app.config['WTF_CSRF_ENABLED'] = True
 app.config['PREFERRED_URL_SCHEME'] = 'https'
@@ -102,6 +124,79 @@ DEFAULT_ORG_LEGAL = os.environ.get('EEG_ORG_LEGAL', 'Vereinsdaten bitte konfigur
 # Release Notes: Datum und kurze Beschreibung der letzten Änderungen.
 # Die neueste Version steht immer an erster Stelle.
 RELEASE_NOTES = [
+    {
+        'date': '2026-08-08',
+        'title': 'Ruhigere App-Übersicht und besser lesbare Diagramme',
+        'changes': [
+            'iOS-Übersicht auf einen zurückhaltenden Portal-Kopf reduziert und doppelte Schnellzugriffe sowie Buchungs- und Abrechnungsbuttons entfernt.',
+            'Datenstand auf Übersicht und Energie als dezente dynamische Zeile „Energiedaten bis zum …“ vereinheitlicht.',
+            'D3-Donuts vergrößert und Beschriftungen in Donut-, Balken- und Preisdiagrammen für bessere Lesbarkeit angehoben.',
+            'Nachrichten-Upload trennt Fotos, berechtigungsgeprüfte iOS-Kamera im Vollbild und UIDocumentPicker strikt; der zusätzliche Drehhinweis unter dem Ausweis wurde entfernt.',
+        ],
+    },
+    {
+        'date': '2026-08-07',
+        'title': 'Sichere App-Verbindung, Energieverlauf und eigener EEG-Ton',
+        'changes': [
+            'Übersicht und Energieansicht verwenden nun klar unterscheidbare, durchgehend identische Farben für EEG-Bezug, Netzbezug, EEG-Einspeisung und öffentliche Netzeinspeisung.',
+            'Energiewerte lassen sich in kWh oder als auf zwei Nachkommastellen formatierte Tarifschätzung in Euro anzeigen; Datums- und Zeitraumsteuerung sind typografisch vereinheitlicht.',
+            'Der Energie-Reiter zeigt EEG- und Netzanteile zusätzlich gleichzeitig in kWh und als Euro-Tarifschätzung mit zwei Nachkommastellen.',
+            'Strompreise um einen interaktiven D3-Kursverlauf für EEG-Bezug und EEG-Einspeisung mit 3-, 6-, 12-Monats- und Maximalansicht ergänzt; frühere EEG-Tarife bleiben darunter verfügbar.',
+            'Digitalen Mitgliedsausweis als hochwertige, drehbare Karte mit Vereinsdaten, ZVR-Nummer, Adresse, Gültigkeit und deutlich rotem Inaktiv-Status neu gestaltet.',
+            'Mitglieder können direkt unter dem Ausweis Nachrichten, Fotos und PDFs sicher übermitteln; Standort und Verbindungs-IP werden beim Versand automatisch zur Dokumentation beigefügt.',
+            'App-Startseite als kompaktes Energieportal mit Schnellzugriffen und einheitlicher Datumssteuerung gestaltet.',
+            'Mitgliedsausweis auf Bankkartenproportion gebracht und um einen räumlichen Lift- und Dreheffekt ergänzt; Messpunktnummern wurden von der Rückseite entfernt.',
+            'Neue geschützte Admin-Inbox für Mitgliedsnachrichten ergänzt; Administratoren können den Bearbeitungsstatus pflegen und E-Mail-Benachrichtigungen samt Anlagen individuell aktivieren.',
+            'App-Verbindung per E-Mail-Magic-Link, kurzlebigem Einmalcode und nativem QR-Code-Scanner ergänzt.',
+            'Mobile Sitzungen an die jeweilige App-Installation gebunden und Offline-Daten mit iOS-Dateischutz abgesichert.',
+            'Historische Energieansicht für Tag, Woche, Monat und Jahr sowie einzelne eigene Zählpunkte ergänzt.',
+            'Tagesverlauf stellt EEG- und Netzanteile in gut lesbaren Stundenblöcken dar; Woche und Monat werden täglich, das Jahr monatlich aggregiert.',
+            'Übersicht und Energieansicht kompakter gestaltet: vier zentrale Kennzahlen und der Tagesverlauf stehen ohne lange Erklärungstexte im Fokus; Zusatz- und Qualitätswerte sind einklappbar.',
+            'Energieverlauf als gestapeltes Balkendiagramm mit konsistenten EEG- und Netzanteilen dargestellt.',
+            'Digitalen Mitgliedsausweis in „Mein Konto“ und eigenen App-Reiter für aktuelle EEG-Strompreise ergänzt.',
+            'Monatsauswertung als Standard und einheitlich benannte Energiekennzahlen eingeführt.',
+            'iOS-Startübersicht neu strukturiert: zentrale EEG-Deckungsquote und klar getrennte Verbrauchs- und Einspeisebilanzen statt eines missverständlichen Flussdiagramms.',
+            'Energieverlauf auf konsistente, gestapelte D3-Balken umgestellt: Tag stündlich, Woche und Monat täglich, Jahr monatlich.',
+            'Mobile Energie-API liefert je Zeitraum dieselbe fachliche Bilanzstruktur für EEG- und Netzanteile; Datenqualitätsfehler bleiben sichtbar.',
+            'Balken im historischen D3-Energieverlauf verbreitert und längere Reihen touchfähig horizontal scrollbar dargestellt.',
+            'Alle iOS-Energiediagramme auf lokale D3-Bilanz- und Balkendiagramme mit Touch-Auswahl, Detailwerten und einheitlichen Farben umgestellt.',
+            'Übersicht und Energie-Reiter um interaktive D3-Donuts mit räumlicher Tiefe, größeren Beschriftungen und klarer Touch-Auswahl erweitert.',
+            'Profilfoto-Upload aus dem Mitgliedsausweis in „Meine Daten“ verschoben; das gespeicherte Bild wird weiterhin automatisch im Ausweis verwendet.',
+            'Abrechnungen chronologisch sortiert, vorläufige Beträge deutlich gekennzeichnet und mit Überweisungswarnung sowie direkter PDF-Vorschau versehen.',
+            'Mitgliedsausweis um servergespeichertes Profilfoto, EEG-Logo, animierte Rückseite, Rollen, Zählpunkte und hinterlegte Vertrags-PDFs erweitert.',
+            'Buchungsübersicht und Rechnungszeilen mit buchungsähnlicher Typografie und klaren Statussymbolen überarbeitet.',
+            'Wochen-, Monats- und Jahresansichten verwenden übersichtliche Vergleichsbalken und weisen Ersatzwerte aus.',
+            'Produktiven APNs-Worker mit dauerhaftem Versand-Timer aktiviert und erfolgreiche Testzustellung bestätigt.',
+            'Eigenen kurzen EEG-Benachrichtigungsklang samt Testfunktion in den App-Einstellungen ergänzt.',
+        ],
+    },
+    {
+        'date': '2026-08-06',
+        'title': 'iOS-App wird zur nativen Mitgliederbegleiterin',
+        'changes': [
+            'App-Nachrichten von In-App-Popups auf Apple Push Notifications mit Ton, Badge und Deep-Link-Grundlage umgestellt.',
+            'Sichere Geräteregistrierung, individuelle Mitteilungseinstellungen und dauerhafte APNs-Versandwarteschlange ergänzt.',
+            'Navigation auf die vier aufgabenorientierten Bereiche Heute, Energie, Dokumente und Profil vereinfacht.',
+            'Face-ID-Schutz, Offline-Anzeige der letzten Dashboarddaten und haptische Rückmeldungen ergänzt.',
+            'Abrechnungen und Verträge in einem nativen Dokumentenbereich mit PDF-Vorschau und iOS-Teilen-Funktion zusammengeführt.',
+            'Energiecharts interaktiv gemacht und Datumsangaben für Österreich lesbar formatiert.',
+        ],
+    },
+    {
+        'date': '2026-08-05',
+        'title': 'Native iOS-Mitglieder-App als MVP',
+        'changes': [
+            'Native SwiftUI-App mit Dashboard, Abrechnungen, Kontoverlauf, Verträgen und bearbeitbarem Mitgliederprofil ergänzt.',
+            'Dashboard um gut lesbare Begrüßung, eindeutige Kennzeichnung der letzten Abrechnungsperiode sowie native Energie- und Eigendeckungs-Charts erweitert.',
+            'Abrechnungen können direkt in der App als geschützte PDF-Vorschau geöffnet werden.',
+            'Neue App-Nachrichten lassen sich im Adminbereich global oder gezielt an Mitglieder veröffentlichen und erscheinen einmalig als Popup.',
+            'Neues App-Icon auf Basis des offiziellen Sonnen- und Solarmodul-Motivs ergänzt.',
+            'Versionierte Mitglieder-API unter /api/v1 mit kurzlebigen Access-Tokens und rotierenden Refresh-Tokens eingeführt.',
+            'App-Zugangsdaten werden nur als Hash im Backend und die ausgegebenen Tokens ausschließlich in der iOS-Keychain gespeichert.',
+            'API-Zugriffe sind auf das angemeldete aktive Mitglied beschränkt; Isolation von Abrechnungen und Verträgen wird automatisiert getestet.',
+            'Passwortänderungen widerrufen bestehende mobile Sitzungen automatisch.',
+        ],
+    },
     {
         'date': '2026-08-04',
         'title': 'Modulare Codebasis und stabilere Zahlungsseite',
@@ -706,6 +801,9 @@ def init_db():
     with open(schema_path) as f:
         db.executescript(f.read())
     ensure_import_schema(db)
+    ensure_historical_energy_schema(db)
+    ensure_mobile_link_schema(db)
+    ensure_mobile_device_schema(db)
     # Users: member_id, role, invite_token, invite_expires vor Admin-Anlage migrieren
     for col, coldef in [('member_id', 'INTEGER'), ('role', "TEXT DEFAULT 'member'"),
                         ('invite_token', 'TEXT'), ('invite_expires', 'TEXT')]:
@@ -713,6 +811,14 @@ def init_db():
             db.execute(f"ALTER TABLE users ADD COLUMN {col} {coldef}")
         except sqlite3.OperationalError:
             pass
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN admin_feedback_email INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        db.execute("ALTER TABLE member_feedback ADD COLUMN source_ip TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Admin-User anlegen falls nicht vorhanden
     existing = db.execute("SELECT id FROM users WHERE username='SuperAdmin'").fetchone()
     if not existing:
@@ -822,6 +928,13 @@ def init_db():
         uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
         uploaded_by TEXT,
         FOREIGN KEY (member_id) REFERENCES members(id)
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS member_profile_photos (
+        member_id INTEGER PRIMARY KEY,
+        mime_type TEXT NOT NULL,
+        photo_data BLOB NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
     )""")
     # Audit-Log-Tabelle
     db.execute("""CREATE TABLE IF NOT EXISTS audit_log (
@@ -1252,6 +1365,212 @@ def send_invitation_email(db, user_row, invite_url, invite_expires):
         server.send_message(msg, from_addr=mail_cfg['from_address'], to_addrs=[recipient])
 
 
+def send_mobile_link_email(db, user_row, magic_url, code, expires_at):
+    """Sendet einen kurzlebigen App-Link; Geheimnisse werden nicht protokolliert."""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    recipient = (user_row['email'] or '').strip()
+    if not _is_valid_email(recipient):
+        raise RuntimeError('Keine gültige E-Mail-Adresse hinterlegt.')
+    mail_cfg = _get_valid_mail_config(db)
+    public_cfg = get_public_config(db)
+    org_name = public_cfg.get('org_name') or DEFAULT_ORG_NAME
+    member_name = user_row['member_name'] if 'member_name' in user_row.keys() else ''
+    subject = f'{org_name}: iPhone-App verbinden'
+    body_text = (
+        f'Hallo {member_name or user_row["username"]},\n\n'
+        'öffnen Sie den folgenden Link auf Ihrem iPhone, um die EEG-App zu verbinden:\n'
+        f'{magic_url}\n\nAlternativ geben Sie diesen Einmalcode ein: {code}\n'
+        f'Der Zugang läuft um {expires_at} ab und kann nur einmal verwendet werden.\n\n'
+        'Falls Sie diese Anfrage nicht gestellt haben, ignorieren Sie diese E-Mail.'
+    )
+    body_html = f"""<!doctype html><html lang="de"><body style="font-family:-apple-system,Arial,sans-serif;color:#1f2a24">
+        <h2>{escape(org_name)}: App verbinden</h2>
+        <p>Hallo {escape(member_name or user_row['username'])},</p>
+        <p>Öffnen Sie diesen Link auf Ihrem iPhone. Er ist zehn Minuten gültig und nur einmal verwendbar.</p>
+        <p><a href="{escape(magic_url)}" style="display:inline-block;padding:12px 18px;background:#276b52;color:white;text-decoration:none;border-radius:8px">EEG-App verbinden</a></p>
+        <p>Alternativ können Sie diesen Verbindungscode in der App eingeben:</p>
+        <p style="font-size:24px;font-weight:700;letter-spacing:.12em">{escape(code)}</p>
+        <p style="color:#58665e">Falls Sie diese Anfrage nicht gestellt haben, ignorieren Sie diese E-Mail.</p>
+    </body></html>"""
+    msg = MIMEMultipart('alternative')
+    msg['From'] = mail_cfg['from_header']
+    msg['Reply-To'] = mail_cfg['reply_to_header']
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body_text, 'plain', 'utf-8'))
+    msg.attach(MIMEText(body_html, 'html', 'utf-8'))
+    _log_mail_send(mail_cfg, recipient, subject)
+    with smtplib.SMTP(mail_cfg['smtp_host'], mail_cfg['smtp_port']) as server:
+        if mail_cfg['smtp_tls']:
+            server.starttls()
+        server.login(mail_cfg['smtp_user'], mail_cfg['smtp_pass'])
+        server.send_message(msg, from_addr=mail_cfg['from_address'], to_addrs=[recipient])
+
+
+def send_member_feedback_email(db, feedback_id):
+    """Versendet eine formatierte Mitgliedsnachricht an freigeschaltete Admins."""
+    import smtplib
+    from email.mime.application import MIMEApplication
+    from email.mime.image import MIMEImage
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    feedback = db.execute("""
+        SELECT f.*, m.name AS member_name, m.email AS member_email,
+               m.phone AS member_phone
+        FROM member_feedback f
+        JOIN members m ON m.id=f.member_id
+        WHERE f.id=?
+    """, (feedback_id,)).fetchone()
+    if not feedback:
+        return 0
+    recipients = [
+        row['email'].strip() for row in db.execute("""
+            SELECT DISTINCT email FROM users
+            WHERE is_admin=1 AND admin_feedback_email=1
+              AND email IS NOT NULL AND TRIM(email)!=''
+            ORDER BY email
+        """).fetchall()
+        if _is_valid_email(row['email'])
+    ]
+    if not recipients:
+        return 0
+    attachments = db.execute("""
+        SELECT id, filename, mime_type, file_size, file_data
+        FROM member_feedback_attachments
+        WHERE feedback_id=? ORDER BY id
+    """, (feedback_id,)).fetchall()
+    mail_cfg = _get_valid_mail_config(db)
+    public_cfg = get_public_config(db)
+    subject = (
+        f'{public_cfg.get("org_name") or DEFAULT_ORG_NAME}: '
+        f'Neue Mitgliedsnachricht #{feedback_id}'
+    )
+    feedback_url = f'{public_base_url()}/admin/member-feedback?id={feedback_id}'
+    location_url = None
+    if feedback['latitude'] is not None and feedback['longitude'] is not None:
+        location_url = (
+            'https://www.openstreetmap.org/?mlat='
+            f'{float(feedback["latitude"]):.6f}&mlon={float(feedback["longitude"]):.6f}'
+            f'#map=18/{float(feedback["latitude"]):.6f}/{float(feedback["longitude"]):.6f}'
+        )
+    body_text = (
+        f'Neue Nachricht von {feedback["member_name"]} (Mitglied #{feedback["member_id"]})\n\n'
+        f'{feedback["message"] or "Keine Textnachricht"}\n\n'
+        f'E-Mail: {feedback["member_email"] or "–"}\n'
+        f'Telefon: {feedback["member_phone"] or "–"}\n'
+        f'Standort: {location_url or "nicht übermittelt"}\n'
+        f'IP-Adresse: {feedback["source_ip"] or "–"}\n'
+        f'Anlagen: {len(attachments)}\n'
+        f'Zeitpunkt: {feedback["created_at"]}\n'
+        f'Webansicht: {feedback_url}'
+    )
+    message_html = escape(feedback['message'] or 'Keine Textnachricht').replace('\n', '<br>')
+    location_html = (
+        f'<a href="{escape(location_url)}">Standort auf OpenStreetMap öffnen</a>'
+        if location_url else 'nicht übermittelt'
+    )
+    attachment_cells = []
+    for attachment in attachments:
+        preview_url = f'{feedback_url}&attachment={attachment["id"]}'
+        filename = escape(attachment['filename'])
+        size_kb = max(1, round((attachment['file_size'] or 0) / 1024))
+        if attachment['mime_type'].startswith('image/'):
+            content_id = f'feedback-{feedback_id}-attachment-{attachment["id"]}'
+            preview = (
+                f'<img src="cid:{content_id}" alt="{filename}" width="260" height="140" '
+                'style="display:block;width:100%;height:140px;object-fit:cover;background:#edf1ef">'
+            )
+            type_label = 'BILD'
+        else:
+            preview = (
+                '<div style="height:140px;background:#f4f5f5;display:flex;align-items:center;'
+                'justify-content:center;text-align:center;color:#b23b3b;font-size:30px;font-weight:800">PDF</div>'
+            )
+            type_label = 'DOKUMENT'
+        attachment_cells.append(f"""
+          <td class="attachment-column" width="50%" valign="top" style="width:50%;padding:6px">
+            <a href="{escape(preview_url)}" style="display:block;border:1px solid #dce5e0;border-radius:12px;overflow:hidden;color:#1d2922;text-decoration:none;background:#fff">
+              {preview}
+              <span style="display:block;padding:10px 11px 3px;font-size:11px;font-weight:700;letter-spacing:.04em;color:#64726a">{type_label}</span>
+              <strong style="display:block;padding:0 11px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{filename}</strong>
+              <span style="display:block;padding:4px 11px 11px;font-size:12px;color:#64726a">{size_kb} KB · Zum Vergrößern öffnen</span>
+            </a>
+          </td>""")
+    attachment_rows = []
+    for index in range(0, len(attachment_cells), 2):
+        cells = attachment_cells[index:index + 2]
+        if len(cells) == 1:
+            cells.append('<td class="attachment-column" width="50%" style="width:50%;padding:6px"></td>')
+        attachment_rows.append(f'<tr>{"".join(cells)}</tr>')
+    attachments_html = ''
+    if attachment_rows:
+        attachments_html = f"""
+          <h2 style="margin:24px 0 8px;font-size:17px">Anlagen</h2>
+          <p style="margin:0 0 8px;color:#64726a;font-size:13px">Vorschau anklicken, um Bild oder Dokument groß zu öffnen.</p>
+          <table role="presentation" width="100%" style="width:100%;border-collapse:collapse;table-layout:fixed">{''.join(attachment_rows)}</table>
+        """
+    body_html = f"""<!doctype html><html lang="de"><body style="margin:0;background:#f3f6f4;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif;color:#1d2922">
+      <style>@media only screen and (max-width:560px){{.attachment-column{{display:block!important;width:100%!important}}}}</style>
+      <div style="max-width:680px;margin:24px auto;background:white;border-radius:18px;overflow:hidden;box-shadow:0 8px 28px rgba(0,0,0,.10)">
+        <div style="padding:22px 26px;background:#28705d;color:white"><div style="font-size:13px;opacity:.8">MITGLIEDSNACHRICHT #{feedback_id}</div><h1 style="margin:6px 0 0;font-size:24px">{escape(feedback['member_name'])}</h1></div>
+        <div style="padding:24px 26px"><div style="padding:16px;background:#f1f7f4;border-left:4px solid #2ea65c;border-radius:10px;line-height:1.55">{message_html}</div>
+          <table style="width:100%;margin-top:20px;border-collapse:collapse;font-size:14px">
+            <tr><td style="padding:7px;color:#64726a">Mitglied</td><td style="padding:7px;font-weight:600">#{feedback['member_id']}</td></tr>
+            <tr><td style="padding:7px;color:#64726a">E-Mail</td><td style="padding:7px">{escape(feedback['member_email'] or '–')}</td></tr>
+            <tr><td style="padding:7px;color:#64726a">Telefon</td><td style="padding:7px">{escape(feedback['member_phone'] or '–')}</td></tr>
+            <tr><td style="padding:7px;color:#64726a">Standort</td><td style="padding:7px">{location_html}</td></tr>
+            <tr><td style="padding:7px;color:#64726a">IP-Adresse</td><td style="padding:7px">{escape(feedback['source_ip'] or '–')}</td></tr>
+            <tr><td style="padding:7px;color:#64726a">Anlagen</td><td style="padding:7px">{len(attachments)}</td></tr>
+          </table>
+          {attachments_html}
+          <p style="margin-top:22px"><a href="{escape(feedback_url)}" style="display:inline-block;padding:11px 16px;background:#28705d;color:white;text-decoration:none;border-radius:9px">In der Verwaltung öffnen</a></p>
+        </div>
+      </div></body></html>"""
+    for recipient in recipients:
+        msg = MIMEMultipart('mixed')
+        msg['From'] = mail_cfg['from_header']
+        msg['Reply-To'] = _mail_header(
+            feedback['member_name'], feedback['member_email']
+        ) if _is_valid_email(feedback['member_email']) else mail_cfg['reply_to_header']
+        msg['To'] = recipient
+        msg['Subject'] = subject
+        alternative = MIMEMultipart('alternative')
+        alternative.attach(MIMEText(body_text, 'plain', 'utf-8'))
+        alternative.attach(MIMEText(body_html, 'html', 'utf-8'))
+        related = MIMEMultipart('related')
+        related.attach(alternative)
+        msg.attach(related)
+        for attachment in attachments:
+            if attachment['mime_type'].startswith('image/'):
+                part = MIMEImage(
+                    attachment['file_data'],
+                    _subtype=attachment['mime_type'].split('/', 1)[1],
+                )
+                part.add_header(
+                    'Content-ID',
+                    f'<feedback-{feedback_id}-attachment-{attachment["id"]}>',
+                )
+                part.add_header(
+                    'Content-Disposition', 'inline', filename=attachment['filename'])
+                related.attach(part)
+            else:
+                part = MIMEApplication(attachment['file_data'], _subtype='pdf')
+                part.add_header(
+                    'Content-Disposition', 'attachment', filename=attachment['filename'])
+                msg.attach(part)
+        _log_mail_send(mail_cfg, recipient, subject)
+        with smtplib.SMTP(mail_cfg['smtp_host'], mail_cfg['smtp_port']) as server:
+            if mail_cfg['smtp_tls']:
+                server.starttls()
+            server.login(mail_cfg['smtp_user'], mail_cfg['smtp_pass'])
+            server.send_message(msg, from_addr=mail_cfg['from_address'], to_addrs=[recipient])
+    return len(recipients)
+
+
 def _startup_mail_config_check():
     """Prüft Mail-Konfiguration beim Start und loggt das Ergebnis."""
     db = sqlite3.connect(DB_PATH)
@@ -1579,7 +1898,7 @@ def _v2_dashboard_data(db):
     }
 
 
-def _v2_import_data(db, results=None):
+def _v2_import_data(db, results=None, previews=None, preview_errors=None):
     imports = db.execute("""
         SELECT id, source_file, period_start, period_end, data_status,
                replaced_by_batch_id, replaced_at, imported_at
@@ -1597,6 +1916,8 @@ def _v2_import_data(db, results=None):
     return {
         'type': 'import',
         'results': results or [],
+        'previews': previews or [],
+        'preview_errors': preview_errors or [],
         'imports': [_v2_public_dict(row, (
             'id', 'source_file', 'period_start', 'period_end', 'data_status',
             'replaced_by_batch_id', 'replaced_at', 'imported_at',
@@ -2203,7 +2524,11 @@ def _v2_users_data(db):
     users = db.execute("""
         SELECT u.id, u.username, u.email, u.is_admin, u.role, u.invite_token,
                u.invite_expires, u.created_at, u.member_id,
-               m.name as member_name, m.email as member_email
+               u.admin_feedback_email,
+               m.name as member_name, m.email as member_email,
+               (SELECT COUNT(*) FROM mobile_api_tokens t
+                WHERE t.user_id=u.id AND t.revoked_at IS NULL
+                  AND t.refresh_expires_at>strftime('%Y-%m-%dT%H:%M:%SZ','now')) AS mobile_sessions
         FROM users u LEFT JOIN members m ON u.member_id = m.id
         WHERE NOT EXISTS (
             SELECT 1
@@ -2247,7 +2572,7 @@ def _v2_users_data(db):
         ORDER BY m.name, c.type, c.uploaded_at DESC
     """).fetchall()
     user_fields = ('id', 'username', 'email', 'is_admin', 'role', 'invite_expires',
-                   'created_at', 'member_id', 'member_name', 'member_email')
+                   'created_at', 'member_id', 'member_name', 'member_email', 'mobile_sessions')
     member_fields = ('id', 'name', 'email')
     contract_fields = ('id', 'member_id', 'type', 'filename', 'uploaded_at',
                        'uploaded_by', 'member_name')
@@ -2670,6 +2995,11 @@ def _change_password_from_request(db):
         return False
     db.execute("UPDATE users SET password_hash=?, password_change_required=0 WHERE id=?",
                (generate_password_hash(new_pw), current_user.id))
+    db.execute(
+        "UPDATE mobile_api_tokens SET revoked_at=datetime('now') "
+        "WHERE user_id=? AND revoked_at IS NULL",
+        (current_user.id,),
+    )
     db.commit()
     session.pop('must_change_password', None)
     audit_log('password_change', 'Passwort geändert')
@@ -2952,6 +3282,11 @@ def change_password():
         else:
             db.execute("UPDATE users SET password_hash=?, password_change_required=0 WHERE id=?",
                        (generate_password_hash(new_pw), current_user.id))
+            db.execute(
+                "UPDATE mobile_api_tokens SET revoked_at=datetime('now') "
+                "WHERE user_id=? AND revoked_at IS NULL",
+                (current_user.id,),
+            )
             db.commit()
             session.pop('must_change_password', None)
             audit_log('password_change', 'Passwort geändert')
@@ -3012,32 +3347,93 @@ def dashboard():
                            mon_sort=mon_sort, mon_dir=mon_dir)
 
 
-def _run_import_uploads():
+def _stage_import_uploads():
     files = request.files.getlist('files')
     overwrite = request.form.get('overwrite') == '1'
     data_status = _valid_import_data_status(request.form.get('data_status'))
-    results = []
+    previews = []
+    errors = []
+    db = get_db()
+    cleanup_expired_staged_imports(db, app.config['IMPORT_STAGING_FOLDER'])
     for f in files:
-        if f and f.filename.lower().endswith('.xlsx'):
-            filename = secure_filename(f.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            try:
-                f.save(filepath)
-                result = run_import(filepath, overwrite, data_status)
-            except Exception as e:
-                app.logger.exception('Import upload handling failed for %s', filename)
-                result = {
-                    'filename': filename,
-                    'status': 'error',
-                    'data_status': data_status,
-                    'records': 0,
-                    'overwritten': 0,
-                    'error': str(e),
-                    'imported_at': None,
-                }
-            results.append(result)
-            audit_log('import', f'Datei importiert: {filename} ({result["records"]} Datensätze, Status: {result["status"]})')
-    return results
+        if not f or not f.filename:
+            continue
+        filename = secure_filename(f.filename)
+        try:
+            preview = stage_uploaded_import(
+                db, f, filename, current_user.id, data_status, overwrite,
+                app.config['IMPORT_STAGING_FOLDER'],
+            )
+            previews.append(preview)
+            audit_log('import_preview', f'Importvorschau erstellt: {filename}')
+        except Exception as exc:
+            app.logger.warning('Import preview failed for %s: %s', filename, exc)
+            errors.append({'filename': filename or 'Datei', 'error': str(exc)})
+    if not previews and not errors:
+        errors.append({'filename': 'Datei', 'error': 'Bitte mindestens eine XLSX-Datei auswählen.'})
+    return {'previews': previews, 'preview_errors': errors, 'results': []}
+
+
+def _confirm_import_preview():
+    token = request.form.get('preview_token', '')
+    if request.form.get('confirm_import') != '1':
+        raise ImportStagingError('Die ausdrückliche Importbestätigung fehlt.')
+    db = get_db()
+    stage = claim_staged_import(
+        db, token, current_user.id, app.config['IMPORT_STAGING_FOLDER'])
+    try:
+        result = run_import(
+            stage['path'], stage['overwrite'], stage['data_status'], validate_preview=True)
+    except Exception:
+        release_staged_import(db, stage['id'])
+        app.logger.exception('Confirmed staged import failed unexpectedly for %s', stage['filename'])
+        raise ImportStagingError(
+            'Der Import konnte nicht gestartet werden. Der Datenbestand wurde nicht verändert.')
+    if result['status'] == 'success':
+        consume_staged_import(db, stage, app.config['IMPORT_STAGING_FOLDER'])
+        audit_log(
+            'import',
+            f'Datei bestätigt und importiert: {stage["filename"]} '
+            f'({result["records"]} Datensätze)',
+        )
+        return {'previews': [], 'preview_errors': [], 'results': [result]}
+    release_staged_import(db, stage['id'])
+    retry_preview = {
+        'token': token,
+        'filename': stage['filename'],
+        'data_status': stage['data_status'],
+        'overwrite': stage['overwrite'],
+        'preview': stage['preview'],
+        'has_blocking_errors': False,
+    }
+    return {'previews': [retry_preview], 'preview_errors': [], 'results': [result]}
+
+
+def _cancel_import_preview():
+    cancel_staged_import(
+        get_db(), request.form.get('preview_token', ''), current_user.id,
+        app.config['IMPORT_STAGING_FOLDER'],
+    )
+    audit_log('import_preview_cancel', 'Importvorschau verworfen')
+    flash('Importvorschau wurde sicher verworfen.', 'success')
+    return {'previews': [], 'preview_errors': [], 'results': []}
+
+
+def _handle_import_post():
+    action = request.form.get('import_action', 'preview')
+    try:
+        if action == 'confirm':
+            return _confirm_import_preview()
+        if action == 'cancel':
+            return _cancel_import_preview()
+        return _stage_import_uploads()
+    except ImportStagingError as exc:
+        app.logger.warning('Staged import rejected: %s', exc)
+        return {
+            'previews': [],
+            'preview_errors': [{'filename': 'Importvorschau', 'error': str(exc)}],
+            'results': [],
+        }
 
 
 def _create_price_from_request(db):
@@ -3060,6 +3456,9 @@ def v2_dashboard(subpath=None):
     current_path = '/' + (subpath or '').strip('/')
     if current_path == '/':
         current_path = '/' if current_user.is_admin else '/portal'
+    if request.method == 'GET' and current_path == '/import' and current_user.is_admin:
+        cleanup_expired_staged_imports(
+            get_db(), app.config['IMPORT_STAGING_FOLDER'])
     writable_paths = {'/import', '/prices', '/settings', '/admin/database', '/invoices/new', '/portal/data', '/members/new', '/newsletter/new', '/change-password'}
     writable_patterns = (
         r'/members/\d+/edit',
@@ -3076,7 +3475,8 @@ def v2_dashboard(subpath=None):
         if current_path not in {'/portal/data', '/change-password'} and not current_user.is_admin:
             abort(403)
         if current_path == '/import':
-            results = _run_import_uploads()
+            import_response = _handle_import_post()
+            results = import_response['results']
         elif current_path == '/prices':
             _create_price_from_request(get_db())
             flash('Preis angelegt.', 'success')
@@ -3143,7 +3543,12 @@ def v2_dashboard(subpath=None):
     db = get_db()
     data = _v2_shell_data(db, current_path)
     if current_path == '/import':
-        data['native'] = _v2_import_data(db, results)
+        data['native'] = _v2_import_data(
+            db,
+            results,
+            import_response.get('previews') if request.method == 'POST' else None,
+            import_response.get('preview_errors') if request.method == 'POST' else None,
+        )
     elif current_path == '/admin/database':
         data['native'] = _v2_database_data(check_result, maintenance_result)
     data['content_path'] = _v2_content_path(subpath)
@@ -3177,30 +3582,7 @@ def import_data():
         values_dir = 'asc'
 
     if request.method == 'POST':
-        files = request.files.getlist('files')
-        overwrite = request.form.get('overwrite') == '1'
-        data_status = _valid_import_data_status(request.form.get('data_status'))
-        results = []
-        for f in files:
-            if f and f.filename.lower().endswith('.xlsx'):
-                filename = secure_filename(f.filename)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                try:
-                    f.save(filepath)
-                    result = run_import(filepath, overwrite, data_status)
-                except Exception as e:
-                    app.logger.exception('Import upload handling failed for %s', filename)
-                    result = {
-                        'filename': filename,
-                        'status': 'error',
-                        'data_status': data_status,
-                        'records': 0,
-                        'overwritten': 0,
-                        'error': str(e),
-                        'imported_at': None,
-                    }
-                results.append(result)
-                audit_log('import', f'Datei importiert: {filename} ({result["records"]} Datensätze, Status: {result["status"]})')
+        import_response = _handle_import_post()
         db = get_db()
         imports = db.execute(f"""
             SELECT id, source_file, period_start, period_end, data_status, replaced_by_batch_id, replaced_at, imported_at
@@ -3210,13 +3592,16 @@ def import_data():
             SELECT id, filename, records_imported, records_overwritten, status, data_status, error_message, imported_by, imported_at
             FROM import_log ORDER BY {values_sort} {values_dir.upper()}
         """).fetchall()
-        return render_template('import.html', results=results, imports=imports,
+        return render_template('import.html', results=import_response['results'],
+                               previews=import_response['previews'],
+                               preview_errors=import_response['preview_errors'], imports=imports,
                                import_values=import_values,
                                files_sort=files_sort, files_dir=files_dir,
                                values_sort=values_sort, values_dir=values_dir)
 
-    # Vorhandene Importe zeigen
+    # Abgelaufene Vorschauen sicher entfernen und vorhandene Importe zeigen.
     db = get_db()
+    cleanup_expired_staged_imports(db, app.config['IMPORT_STAGING_FOLDER'])
     imports = db.execute(f"""
         SELECT id, source_file, period_start, period_end, data_status, replaced_by_batch_id, replaced_at, imported_at
         FROM import_batches ORDER BY {files_sort} {files_dir.upper()}
@@ -3278,7 +3663,7 @@ def _mark_batches_replaced(db, batches, replacement_batch_id):
         """, (replacement_batch_id, batch['id']))
 
 
-def run_import(filepath, overwrite=False, data_status='final'):
+def run_import(filepath, overwrite=False, data_status='final', validate_preview=True):
     """Importiert eine Excel-Datei. Bei overwrite=True werden bestehende Daten überschrieben."""
     sys.path.insert(0, os.path.join(BASE_DIR, '..'))
     from import_eda import import_file, parse_filename
@@ -3288,13 +3673,32 @@ def run_import(filepath, overwrite=False, data_status='final'):
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     ensure_import_schema(db)
+    ensure_historical_energy_schema(db)
+    db.commit()
 
     filename = os.path.basename(filepath)
     records_overwritten = 0
     new_batch_id = None
     replacement_candidates = []
+    preview = None
 
     try:
+        if validate_preview:
+            preview = preview_eda_xlsx(filepath)
+            blocking = [warning for warning in preview.warnings if warning.severity == 'error']
+            if blocking:
+                raise ValueError(
+                    'Importvorschau enthält blockierende Fehler: '
+                    + '; '.join(warning.message for warning in blocking[:5])
+                )
+            duplicate_file = db.execute("""
+                SELECT id FROM import_files
+                WHERE sha256=? AND status='committed'
+                ORDER BY id DESC LIMIT 1
+            """, (preview.sha256,)).fetchone()
+            if duplicate_file and not overwrite:
+                raise ValueError('Dieser Dateiinhalt wurde bereits erfolgreich importiert.')
+
         info = parse_filename(filename)
         period_start = info.get('period_start')
         period_end = info.get('period_end')
@@ -3316,31 +3720,81 @@ def run_import(filepath, overwrite=False, data_status='final'):
         elif overwrite:
             replacement_candidates = list(active_provisional)
 
-        count = import_file(filepath, db, allow_duplicate=bool(replacement_candidates or overwrite))
-        new_batch = db.execute("""
-            SELECT id
-            FROM import_batches
-            WHERE source_file=? AND period_start=? AND period_end=? AND replaced_at IS NULL
-            ORDER BY id DESC
-            LIMIT 1
-        """, (filename, period_start, period_end)).fetchone()
-        if new_batch:
-            new_batch_id = new_batch['id']
-            db.execute("UPDATE import_batches SET data_status=? WHERE id=?", (data_status, new_batch_id))
+        db.execute('BEGIN IMMEDIATE')
 
-        if new_batch_id and replacement_candidates:
-            records_overwritten = sum(_delete_batch_measurements(db, batch['id']) for batch in replacement_candidates)
+        def prepare_replacement(created_batch_id):
+            nonlocal new_batch_id, records_overwritten
+            new_batch_id = created_batch_id
             for batch in replacement_candidates:
+                db.execute("""
+                    INSERT INTO measurement_revisions (
+                        original_measurement_id, original_batch_id, replaced_by_batch_id,
+                        metering_point_id, timestamp_start, timestamp_end,
+                        interval_minutes, meter_code_id, value_kwh, quality, is_estimated
+                    )
+                    SELECT id, batch_id, ?, metering_point_id, timestamp_start,
+                           timestamp_end, interval_minutes, meter_code_id,
+                           value_kwh, quality, COALESCE(is_estimated, 0)
+                    FROM measurements WHERE batch_id=?
+                """, (created_batch_id, batch['id']))
+                records_overwritten += _delete_batch_measurements(db, batch['id'])
                 db.execute("""
                     UPDATE import_batches
                     SET replaced_by_batch_id=?, replaced_at=datetime('now')
                     WHERE id=?
-                """, (new_batch_id, batch['id']))
+                """, (created_batch_id, batch['id']))
+
+        count = import_file(
+            filepath,
+            db,
+            allow_duplicate=bool(replacement_candidates or overwrite),
+            commit_progress=False,
+            on_batch_created=prepare_replacement,
+        )
+        if not new_batch_id:
+            raise ValueError('Der Import hat keinen neuen Daten-Batch angelegt.')
+        db.execute("""
+            UPDATE import_batches
+            SET data_status=?, import_status='committed', measurement_count=?,
+                source_sha256=?, source_format='xlsx',
+                detected_period_start=?, detected_period_end=?,
+                data_available_from=?, data_available_until=?,
+                metering_point_count=?, missing_interval_count=?, warning_count=?,
+                committed_at=datetime('now')
+            WHERE id=?
+        """, (
+            data_status,
+            count,
+            preview.sha256 if preview else None,
+            preview.data_available_from if preview else period_start,
+            preview.data_available_until if preview else period_end,
+            preview.data_available_from if preview else period_start,
+            preview.data_available_until if preview else period_end,
+            preview.metering_point_count if preview else None,
+            preview.missing_timestamp_intervals if preview else 0,
+            len(preview.warnings) if preview else 0,
+            new_batch_id,
+        ))
+        if preview:
+            db.execute("""
+                INSERT INTO import_files (
+                    import_batch_id, original_filename, sha256, size_bytes, status
+                ) VALUES (?, ?, ?, ?, 'committed')
+            """, (new_batch_id, filename, preview.sha256, preview.size_bytes))
+            db.executemany("""
+                INSERT INTO import_warnings (
+                    import_batch_id, code, severity, message
+                ) VALUES (?, ?, ?, ?)
+            """, [
+                (new_batch_id, warning.code, warning.severity, warning.message)
+                for warning in preview.warnings
+            ])
 
         db.commit()
         status = 'success'
         error = None
     except Exception as e:
+        db.rollback()
         status = 'error'
         count = 0
         error = str(e)
@@ -3946,16 +4400,8 @@ def invoice_regenerate(id):
     return redirect(url_for('invoice_detail', id=id))
 
 
-@app.route('/invoices/<int:id>/pdf/<int:member_id>')
-@login_required
-def invoice_pdf(id, member_id):
-    """PDF für ein Mitglied generieren (A4, mehrseitig)."""
-    # Members dürfen nur eigene PDFs abrufen
-    if not current_user.is_admin and current_user.member_id != member_id:
-        audit_log('pdf_access_denied', f'PDF-Zugriff verweigert: Rechnung {id}, Mitglied {member_id}')
-        flash('Zugriff verweigert.', 'danger')
-        return redirect(url_for('portal_dashboard'))
-    audit_log('pdf_download', f'PDF heruntergeladen: Rechnung {id}, Mitglied {member_id}')
+def _invoice_pdf_response(id, member_id, preview=False):
+    """PDF-Antwort für einen bereits autorisierten Abruf erzeugen."""
     import math
     db = get_db()
     invoice = db.execute("SELECT * FROM invoices WHERE id=?", (id,)).fetchone()
@@ -4069,9 +4515,21 @@ def invoice_pdf(id, member_id):
     pdf_filename = safe_invoice_pdf_filename(id, member_id, member['name'])
     pdf_bytes = HTML(string=html, base_url=BASE_DIR).write_pdf()
 
-    preview_pdf = request.args.get('preview') == '1'
+    preview_pdf = preview or request.args.get('preview') == '1'
     return send_file(io.BytesIO(pdf_bytes), as_attachment=not preview_pdf,
                      download_name=pdf_filename, mimetype='application/pdf')
+
+
+@app.route('/invoices/<int:id>/pdf/<int:member_id>')
+@login_required
+def invoice_pdf(id, member_id):
+    """PDF für ein Mitglied generieren (A4, mehrseitig)."""
+    if not current_user.is_admin and current_user.member_id != member_id:
+        audit_log('pdf_access_denied', f'PDF-Zugriff verweigert: Rechnung {id}, Mitglied {member_id}')
+        flash('Zugriff verweigert.', 'danger')
+        return redirect(url_for('portal_dashboard'))
+    audit_log('pdf_download', f'PDF heruntergeladen: Rechnung {id}, Mitglied {member_id}')
+    return _invoice_pdf_response(id, member_id)
 
 
 # === SEPA-Ueberweisung als QR-Code (EPC069-12, GiroCode) ===
@@ -8617,6 +9075,111 @@ def admin_user_reinvite(id):
     return redirect(_admin_users_redirect_target())
 
 
+@app.route('/admin/users/<int:id>/mobile-link', methods=['POST'])
+@admin_required
+def admin_user_mobile_link(id):
+    db = get_db()
+    user = db.execute("""
+        SELECT u.id, u.username, u.email, u.member_id, u.password_change_required,
+               m.name AS member_name, m.active AS member_active
+        FROM users u LEFT JOIN members m ON m.id=u.member_id
+        WHERE u.id=?
+    """, (id,)).fetchone()
+    if not user or not user['member_id'] or not user['member_active']:
+        flash('Für diesen Benutzer ist keine aktive Mitgliedschaft zugeordnet.', 'danger')
+        return redirect(_admin_users_redirect_target())
+    if user['password_change_required']:
+        flash('Der Webportal-Zugang muss vor der App-Verbindung aktiviert werden.', 'warning')
+        return redirect(_admin_users_redirect_target())
+    link = create_mobile_link(db, id, current_user.id, delivery='admin')
+    deep_link = public_url_for('mobile_connect_landing') + '#token=' + link['link_token']
+    import qrcode
+    buffer = io.BytesIO()
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=3)
+    qr.add_data(deep_link)
+    qr.make(fit=True)
+    qr.make_image(fill_color='black', back_color='white').save(buffer, format='PNG')
+    qr_data_uri = 'data:image/png;base64,' + base64.b64encode(buffer.getvalue()).decode('ascii')
+    audit_log('mobile_link_created', f'App-Verbindung für Benutzer-ID {id} erstellt')
+    response = make_response(render_template(
+        'admin_mobile_link.html', user=user, code=link['code'],
+        expires_at=link['expires_at'], qr_data_uri=qr_data_uri,
+        back_url=_admin_users_redirect_target(),
+    ))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/admin/users/<int:id>/mobile-access/revoke', methods=['POST'])
+@admin_required
+def admin_user_mobile_access_revoke(id):
+    db = get_db()
+    user = db.execute('SELECT id, username FROM users WHERE id=?', (id,)).fetchone()
+    if not user:
+        flash('Benutzer nicht gefunden.', 'danger')
+        return redirect(_admin_users_redirect_target())
+    now = utc_now_string()
+    db.execute("""
+        UPDATE mobile_connection_links SET revoked_at=?
+        WHERE user_id=? AND used_at IS NULL AND revoked_at IS NULL
+    """, (now, id))
+    token_count = db.execute("""
+        UPDATE mobile_api_tokens SET revoked_at=?
+        WHERE user_id=? AND revoked_at IS NULL
+    """, (now, id)).rowcount
+    db.execute(
+        "UPDATE mobile_devices SET disabled_at=? WHERE user_id=? AND disabled_at IS NULL",
+        (now, id),
+    )
+    db.commit()
+    audit_log('mobile_access_revoked', f'App-Zugänge für Benutzer-ID {id} widerrufen')
+    flash(f'{token_count} aktive App-Sitzung(en) wurden widerrufen.', 'success')
+    return redirect(_admin_users_redirect_target())
+
+
+@app.route('/mobile-connect')
+def mobile_connect_landing():
+    response = make_response(render_template('mobile_connect.html'))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/.well-known/apple-app-site-association')
+@app.route('/apple-app-site-association')
+def apple_app_site_association():
+    details = []
+    if re.fullmatch(r'[A-Z0-9]{10}', APPLE_TEAM_ID):
+        details.append({
+            'appIDs': [f'{APPLE_TEAM_ID}.at.eeg.trabocherstrasse.member'],
+            'components': [{'/': '/mobile-connect', 'comment': 'Sichere App-Verbindung'}],
+        })
+    response = jsonify({'applinks': {'apps': [], 'details': details}})
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
+
+@app.route('/.well-known/assetlinks.json')
+def android_asset_links():
+    fingerprints = [
+        value.strip().upper()
+        for value in os.environ.get('EEG_ANDROID_SHA256_CERT_FINGERPRINTS', '').split(',')
+        if re.fullmatch(r'(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}', value.strip())
+    ]
+    payload = []
+    if fingerprints:
+        payload.append({
+            'relation': ['delegate_permission/common.handle_all_urls'],
+            'target': {
+                'namespace': 'android_app',
+                'package_name': 'at.eeg.trabocherstrasse.member',
+                'sha256_cert_fingerprints': fingerprints,
+            },
+        })
+    response = jsonify(payload)
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
+
 @app.route('/admin/users/<int:id>/toggle-role', methods=['POST'])
 @admin_required
 def admin_user_toggle_role(id):
@@ -8632,6 +9195,79 @@ def admin_user_toggle_role(id):
     db.commit()
     audit_log('user_role_change', f'Rolle geändert: {user["username"]} → {new_role}')
     flash(f'Rolle auf "{new_role}" geändert.', 'success')
+    return redirect(_admin_users_redirect_target())
+
+
+@app.route('/admin/users/<int:id>/feedback-email', methods=['POST'])
+@admin_required
+def admin_user_feedback_email(id):
+    db = get_db()
+    user = db.execute(
+        'SELECT username, is_admin, email FROM users WHERE id=?', (id,)
+    ).fetchone()
+    if not user or not user['is_admin']:
+        flash('Die Mail-Benachrichtigung ist nur für Administratoren verfügbar.', 'warning')
+        return redirect(_admin_users_redirect_target())
+    enabled = 1 if '1' in request.form.getlist('enabled') else 0
+    if enabled and not _is_valid_email(user['email']):
+        flash('Für diesen Admin ist keine gültige E-Mail-Adresse hinterlegt.', 'danger')
+        return redirect(_admin_users_redirect_target())
+    db.execute('UPDATE users SET admin_feedback_email=? WHERE id=?', (enabled, id))
+    db.commit()
+    audit_log(
+        'admin_feedback_email',
+        f'Mail für Mitgliedsnachrichten {"aktiviert" if enabled else "deaktiviert"}: {user["username"]}',
+    )
+    flash('Mail-Einstellung wurde gespeichert.', 'success')
+    return redirect(_admin_users_redirect_target())
+
+
+@app.route('/admin/users/<int:id>/email', methods=['POST'])
+@admin_required
+def admin_user_email(id):
+    """E-Mail-Adresse eines beliebigen Benutzers aktualisieren."""
+    db = get_db()
+    user = db.execute(
+        'SELECT id, username, email, admin_feedback_email FROM users WHERE id=?',
+        (id,),
+    ).fetchone()
+    if not user:
+        flash('Benutzer nicht gefunden.', 'danger')
+        return redirect(_admin_users_redirect_target())
+
+    email = (request.form.get('email') or '').strip()
+    if len(email) > 254 or (email and not _is_valid_email(email)):
+        flash('Bitte geben Sie eine gültige E-Mail-Adresse ein.', 'danger')
+        return redirect(_admin_users_redirect_target())
+
+    if email:
+        collision = db.execute("""
+            SELECT id, username
+            FROM users
+            WHERE id != ?
+              AND (LOWER(email)=LOWER(?) OR LOWER(username)=LOWER(?))
+            LIMIT 1
+        """, (id, email, email)).fetchone()
+        if collision:
+            flash(
+                f'Diese E-Mail-Adresse wird bereits von „{collision["username"]}“ verwendet.',
+                'danger',
+            )
+            return redirect(_admin_users_redirect_target())
+
+    old_email = (user['email'] or '').strip()
+    if old_email.casefold() == email.casefold():
+        flash('Die E-Mail-Adresse ist unverändert.', 'info')
+        return redirect(_admin_users_redirect_target())
+
+    feedback_email = user['admin_feedback_email'] if email else 0
+    db.execute(
+        'UPDATE users SET email=?, admin_feedback_email=? WHERE id=?',
+        (email or None, feedback_email, id),
+    )
+    db.commit()
+    audit_log('user_email_change', f'E-Mail-Adresse geändert: {user["username"]}')
+    flash(f'E-Mail-Adresse für „{user["username"]}“ gespeichert.', 'success')
     return redirect(_admin_users_redirect_target())
 
 
@@ -8759,6 +9395,11 @@ def invite_accept(token):
                           password_change_required=0
                       WHERE id=?""",
                    (generate_password_hash(password), user['id']))
+        db.execute(
+            "UPDATE mobile_api_tokens SET revoked_at=datetime('now') "
+            "WHERE user_id=? AND revoked_at IS NULL",
+            (user['id'],),
+        )
         db.commit()
         audit_log('invite_accept', f'Einladung angenommen, Passwort gesetzt', user_id=user['id'], username=user['username'])
         flash('Passwort erfolgreich gesetzt. Sie können sich jetzt einloggen.', 'success')
@@ -8793,6 +9434,11 @@ def v2_invite_accept(token):
                           password_change_required=0
                       WHERE id=?""",
                    (generate_password_hash(password), user['id']))
+        db.execute(
+            "UPDATE mobile_api_tokens SET revoked_at=datetime('now') "
+            "WHERE user_id=? AND revoked_at IS NULL",
+            (user['id'],),
+        )
         db.commit()
         audit_log('invite_accept', 'Einladung angenommen, Passwort gesetzt', user_id=user['id'], username=user['username'])
         flash('Passwort erfolgreich gesetzt. Sie können sich jetzt einloggen.', 'success')
@@ -9003,6 +9649,56 @@ def portal_invoices():
         member_id=current_user.member_id,
         payment_by_invoice=payment_by_invoice,
     )
+
+
+@app.route('/portal/invoices/<int:id>/send', methods=['POST'])
+@login_required
+def portal_invoice_send(id):
+    """Teilnehmer: Eigene PDF-Abrechnung per E-Mail an die hinterlegte Adresse senden."""
+    if not current_user.member_id:
+        flash('Kein Mitglied zugeordnet.', 'warning')
+        return redirect(url_for('portal_dashboard'))
+    db = get_db()
+    invoice = db.execute("SELECT * FROM invoices WHERE id=?", (id,)).fetchone()
+    if not invoice:
+        flash('Abrechnung nicht gefunden.', 'danger')
+        return redirect(url_for('portal_invoices'))
+    has_invoice = db.execute("""
+        SELECT 1
+        WHERE EXISTS (SELECT 1 FROM invoice_items WHERE invoice_id=? AND member_id=?)
+           OR EXISTS (SELECT 1 FROM invoice_carryovers WHERE invoice_id=? AND member_id=?)
+    """, (id, current_user.member_id, id, current_user.member_id)).fetchone()
+    if not has_invoice:
+        audit_log('invoice_mail_denied', f'Portal-Mail verweigert: Rechnung {id}, Mitglied {current_user.member_id}')
+        flash('Zugriff verweigert.', 'danger')
+        return redirect(url_for('portal_invoices'))
+
+    member = db.execute("SELECT * FROM members WHERE id=?", (current_user.member_id,)).fetchone()
+    if not member or not _is_valid_email(member['email'] or ''):
+        flash('Bitte hinterlegen Sie zuerst eine gültige E-Mail-Adresse in "Meine Daten".', 'danger')
+        return redirect(url_for('portal_invoices'))
+
+    subject = f"EEG Abrechnung {invoice['period_from']} - {invoice['period_to']}"
+    try:
+        member_row = {'member_id': current_user.member_id, 'name': member['name'], 'email': member['email']}
+        send_invoice_email(db, invoice, member_row)
+        db.execute("""INSERT INTO email_log (invoice_id, member_id, recipient_email, subject, status)
+                      VALUES (?, ?, ?, ?, 'sent')""",
+                   (id, current_user.member_id, member['email'], subject))
+        db.commit()
+        audit_log('portal_invoice_mail', f'Portal-Rechnung per E-Mail gesendet: Rechnung {id} an {member["email"]}')
+        flash(f'PDF-Abrechnung wurde an {member["email"]} gesendet.', 'success')
+    except Exception as e:
+        db.execute("""INSERT INTO email_log (invoice_id, member_id, recipient_email, subject, status, error_message)
+                      VALUES (?, ?, ?, ?, 'failed', ?)""",
+                   (id, current_user.member_id, member['email'], subject, str(e)))
+        db.commit()
+        flash_exception(e, 'PDF-Abrechnung konnte nicht per E-Mail gesendet werden.')
+
+    next_url = request.form.get('next') or url_for('portal_invoices')
+    if next_url and is_safe_redirect_url(next_url):
+        return redirect(next_url)
+    return redirect(url_for('portal_invoices'))
 
 
 @app.route('/portal/contracts')
@@ -9339,6 +10035,205 @@ def newsletter_delete(id):
         audit_log('newsletter_delete', f'Newsletter gelöscht: {nl["subject"]} (ID {id})')
         flash('Newsletter gelöscht.', 'success')
     return redirect(_newsletter_redirect_target())
+
+
+# === Nachrichten für die Mitglieder-App ===
+
+@app.route('/admin/mobile-messages', methods=['GET', 'POST'])
+@admin_required
+def admin_mobile_messages():
+    db = get_db()
+    if request.method == 'POST':
+        title = request.form.get('title', '').strip()
+        body = request.form.get('body', '').strip()
+        level = request.form.get('level', 'info').strip()
+        member_id_raw = request.form.get('member_id', '').strip()
+        expires_at_raw = request.form.get('expires_at', '').strip()
+        if not title or not body:
+            flash('Titel und Nachricht sind erforderlich.', 'danger')
+            return redirect(url_for('admin_mobile_messages'))
+        if len(title) > 120 or len(body) > 2000:
+            flash('Titel oder Nachricht ist zu lang.', 'danger')
+            return redirect(url_for('admin_mobile_messages'))
+        if level not in {'info', 'success', 'warning', 'critical'}:
+            level = 'info'
+        member_id = int(member_id_raw) if member_id_raw.isdigit() else None
+        expires_at = None
+        if expires_at_raw:
+            try:
+                local_expiry = datetime.fromisoformat(expires_at_raw).replace(tzinfo=APP_TIMEZONE)
+                expires_at = local_expiry.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                flash('Das Ablaufdatum ist ungültig.', 'danger')
+                return redirect(url_for('admin_mobile_messages'))
+        message_id = db.execute("""
+            INSERT INTO mobile_messages (
+                title, body, level, member_id, expires_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (title, body, level, member_id, expires_at, current_user.username)).lastrowid
+        db.execute("""
+            INSERT OR IGNORE INTO mobile_push_outbox (message_id, device_id)
+            SELECT ?, d.id
+            FROM mobile_devices d
+            JOIN users u ON u.id=d.user_id
+            WHERE d.disabled_at IS NULL
+              AND d.notifications_enabled=1
+              AND d.community_notifications=1
+              AND (? IS NULL OR u.member_id=?)
+        """, (message_id, member_id, member_id))
+        db.commit()
+        audit_log('mobile_message_create', f'App-Nachricht erstellt: {title}')
+        queued = db.execute(
+            'SELECT COUNT(*) FROM mobile_push_outbox WHERE message_id=?',
+            (message_id,),
+        ).fetchone()[0]
+        flash(f'App-Nachricht veröffentlicht; {queued} Push-Zustellungen eingeplant.', 'success')
+        return redirect(url_for('admin_mobile_messages'))
+
+    messages = db.execute("""
+        SELECT msg.*, m.name AS member_name,
+               (SELECT COUNT(*) FROM mobile_message_reads r WHERE r.message_id=msg.id) read_count,
+               (SELECT COUNT(*) FROM mobile_push_outbox p WHERE p.message_id=msg.id) push_count,
+               (SELECT COUNT(*) FROM mobile_push_outbox p WHERE p.message_id=msg.id AND p.status='sent') push_sent
+        FROM mobile_messages msg
+        LEFT JOIN members m ON m.id=msg.member_id
+        ORDER BY msg.created_at DESC, msg.id DESC
+    """).fetchall()
+    members = db.execute(
+        'SELECT id, name FROM members WHERE active=1 ORDER BY name COLLATE NOCASE'
+    ).fetchall()
+    return render_template('admin_mobile_messages.html', messages=messages, members=members)
+
+
+@app.route('/admin/mobile-messages/<int:id>/deactivate', methods=['POST'])
+@admin_required
+def admin_mobile_message_deactivate(id):
+    db = get_db()
+    db.execute('UPDATE mobile_messages SET active=0 WHERE id=?', (id,))
+    db.commit()
+    audit_log('mobile_message_deactivate', f'App-Nachricht #{id} deaktiviert')
+    flash('App-Nachricht wurde deaktiviert.', 'success')
+    return redirect(url_for('admin_mobile_messages'))
+
+
+@app.route('/admin/member-feedback')
+@app.route('/v2/admin/member-feedback')
+@admin_required
+def admin_member_feedback():
+    db = get_db()
+    selected_id = request.args.get('id', type=int)
+    messages = db.execute("""
+        SELECT f.id, f.message, f.latitude, f.longitude, f.location_accuracy_m,
+               f.status, f.created_at, m.name AS member_name,
+               (SELECT COUNT(*) FROM member_feedback_attachments a
+                WHERE a.feedback_id=f.id) AS attachment_count
+        FROM member_feedback f JOIN members m ON m.id=f.member_id
+        ORDER BY CASE f.status WHEN 'new' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,
+                 f.created_at DESC, f.id DESC
+    """).fetchall()
+    selected = None
+    attachments = []
+    attachment_to_open = None
+    if selected_id:
+        selected = db.execute("""
+            SELECT f.*, m.name AS member_name, m.email AS member_email,
+                   m.phone AS member_phone
+            FROM member_feedback f JOIN members m ON m.id=f.member_id
+            WHERE f.id=?
+        """, (selected_id,)).fetchone()
+        if selected:
+            attachments = db.execute("""
+                SELECT id, filename, mime_type, file_size
+                FROM member_feedback_attachments WHERE feedback_id=? ORDER BY id
+            """, (selected_id,)).fetchall()
+            requested_attachment = request.args.get('attachment', type=int)
+            if requested_attachment in {row['id'] for row in attachments}:
+                attachment_to_open = requested_attachment
+    return render_template(
+        'admin_member_feedback.html', messages=messages,
+        selected=selected, attachments=attachments,
+        attachment_to_open=attachment_to_open,
+    )
+
+
+@app.route('/admin/member-feedback/<int:id>/status', methods=['POST'])
+@admin_required
+def admin_member_feedback_status(id):
+    status = request.form.get('status', 'new')
+    if status not in {'new', 'processing', 'done'}:
+        abort(400)
+    db = get_db()
+    db.execute('UPDATE member_feedback SET status=? WHERE id=?', (status, id))
+    db.commit()
+    audit_log('member_feedback_status', f'Mitgliedsnachricht #{id}: {status}')
+    return redirect(url_for('admin_member_feedback', id=id))
+
+
+@app.route('/admin/member-feedback/<int:id>/delete', methods=['POST'])
+@admin_required
+def admin_member_feedback_delete(id):
+    """Löscht eine Mitgliedsnachricht einschließlich aller Anlagen."""
+    db = get_db()
+    feedback = db.execute("""
+        SELECT f.id, m.name AS member_name
+        FROM member_feedback f JOIN members m ON m.id=f.member_id
+        WHERE f.id=?
+    """, (id,)).fetchone()
+    if not feedback:
+        flash('Mitgliedsnachricht nicht gefunden.', 'warning')
+        return redirect(url_for('admin_member_feedback'))
+    attachment_count = db.execute(
+        'SELECT COUNT(*) FROM member_feedback_attachments WHERE feedback_id=?',
+        (id,),
+    ).fetchone()[0]
+    db.execute('DELETE FROM member_feedback_attachments WHERE feedback_id=?', (id,))
+    db.execute('DELETE FROM member_feedback WHERE id=?', (id,))
+    db.commit()
+    audit_log(
+        'member_feedback_delete',
+        f'Mitgliedsnachricht #{id} von {feedback["member_name"]} mit {attachment_count} Anlage(n) gelöscht',
+    )
+    flash('Mitgliedsnachricht und zugehörige Anlagen wurden gelöscht.', 'success')
+    return redirect(url_for('admin_member_feedback'))
+
+
+@app.route('/admin/member-feedback/attachments/<int:id>')
+@admin_required
+def admin_member_feedback_attachment(id):
+    row = get_db().execute("""
+        SELECT filename, mime_type, file_data
+        FROM member_feedback_attachments WHERE id=?
+    """, (id,)).fetchone()
+    if not row:
+        abort(404)
+    return send_file(
+        io.BytesIO(row['file_data']), mimetype=row['mime_type'],
+        download_name=row['filename'],
+        as_attachment=request.args.get('download') == '1',
+    )
+
+
+# === Native Mitglieder-API ===
+
+from api.mobile import create_mobile_api_blueprint
+
+app.register_blueprint(create_mobile_api_blueprint(
+    get_db=get_db,
+    get_real_ip=get_real_ip,
+    check_login_rate=_check_login_rate,
+    record_failed_login=_record_failed_login,
+    reset_login_attempts=_reset_login_attempts,
+    audit_log=audit_log,
+    get_member_stats=get_member_stats,
+    get_member_account_summary=get_member_account_summary,
+    get_invoice_carryovers=get_invoice_carryovers,
+    render_invoice_pdf=_invoice_pdf_response,
+    send_mobile_link_email=send_mobile_link_email,
+    mobile_link_url=lambda token: public_url_for('mobile_connect_landing') + '#token=' + token,
+    get_public_config=get_public_config,
+    send_member_feedback_email=send_member_feedback_email,
+    csrf=csrf,
+))
 
 
 # === Entry Point ===

@@ -95,7 +95,6 @@ def resolve_meter_code(label: str, conn: sqlite3.Connection) -> int:
             "INSERT OR IGNORE INTO meter_codes (code, label_de, direction) VALUES (?, ?, 'UNKNOWN')",
             (code, label),
         )
-        conn.commit()
 
     row = conn.execute("SELECT id FROM meter_codes WHERE code = ?", (code,)).fetchone()
     if row:
@@ -105,7 +104,6 @@ def resolve_meter_code(label: str, conn: sqlite3.Connection) -> int:
         "INSERT OR IGNORE INTO meter_codes (code, label_de, direction) VALUES (?, ?, 'UNKNOWN')",
         (code, label),
     )
-    conn.commit()
     return conn.execute("SELECT id FROM meter_codes WHERE code = ?", (code,)).fetchone()[0]
 
 
@@ -175,7 +173,12 @@ def parse_columns(ws) -> list:
     return columns
 
 
-def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool = False) -> int:
+def import_file(
+        filepath: str,
+        conn: sqlite3.Connection,
+        allow_duplicate: bool = False,
+        commit_progress: bool = True,
+        on_batch_created=None) -> int:
     """Importiert eine EDA-Excel-Datei."""
     filename = os.path.basename(filepath)
     print(f"\n{'='*60}")
@@ -210,7 +213,10 @@ def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool =
         VALUES (?, ?, ?, ?)
     """, (filename, info["report_code"], info["period_start"], info["period_end"]))
     batch_id = cursor.lastrowid
-    conn.commit()
+    if on_batch_created is not None:
+        on_batch_created(batch_id)
+    if commit_progress:
+        conn.commit()
 
     # Energiedaten-Blatt finden
     energy_sheet = None
@@ -229,9 +235,8 @@ def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool =
     data_columns = [c for c in columns if not c["is_total"]]
 
     if not data_columns:
-        print("  FEHLER: Keine Datenspalten erkannt!")
         wb.close()
-        return 0
+        raise ValueError("Keine Datenspalten erkannt.")
 
     unique_mps = set(c["metering_point_id"] for c in data_columns)
     print(f"  {len(data_columns)} Datenspalten, {len(unique_mps)} Zaehlpunkte")
@@ -242,7 +247,8 @@ def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool =
             INSERT OR IGNORE INTO metering_points (metering_point_id, energy_direction, first_seen)
             VALUES (?, ?, datetime('now'))
         """, (col["metering_point_id"], col["energy_direction"]))
-    conn.commit()
+    if commit_progress:
+        conn.commit()
 
     # MeterCode IDs cachen
     mc_cache = {}
@@ -318,7 +324,8 @@ def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool =
                  interval_minutes, meter_code_id, value_kwh, quality, is_estimated)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, batch_data)
-            conn.commit()
+            if commit_progress:
+                conn.commit()
             batch_data = []
             if count % 100000 == 0:
                 print(f"    ... {count:,} Werte")
@@ -330,7 +337,8 @@ def import_file(filepath: str, conn: sqlite3.Connection, allow_duplicate: bool =
              interval_minutes, meter_code_id, value_kwh, quality, is_estimated)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, batch_data)
-        conn.commit()
+        if commit_progress:
+            conn.commit()
 
     wb.close()
 
@@ -374,6 +382,7 @@ def main():
             count = import_file(str(f), conn)
             total += count
         except Exception as e:
+            conn.rollback()
             print(f"\n  FEHLER bei {f.name}: {e}")
             import traceback
             traceback.print_exc()

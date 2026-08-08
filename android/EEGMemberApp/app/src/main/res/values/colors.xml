@@ -1,0 +1,5 @@
+<resources>
+    <color name="eeg_green">#2E8F89</color>
+    <color name="eeg_green_dark">#17635F</color>
+    <color name="eeg_icon_background">#E8F4F3</color>
+</resources>

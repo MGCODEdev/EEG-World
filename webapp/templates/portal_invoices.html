@@ -17,7 +17,7 @@
                         <th class="text-end">Netto (€)</th>
                         <th>Status</th>
                         <th>Buchung</th>
-                        <th class="text-end">PDF</th>
+                        <th class="text-end">Aktionen</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -60,9 +60,17 @@
                         {% endif %}
                     </td>
                     <td class="text-end">
-                        <a href="{{ url_for('invoice_pdf', id=inv['id'], member_id=member_id) }}" class="btn btn-sm btn-outline-primary">
-                            <i class="bi bi-file-earmark-pdf"></i> Download
-                        </a>
+                        <div class="d-inline-flex gap-2 justify-content-end">
+                            <a href="{{ url_for('invoice_pdf', id=inv['id'], member_id=member_id) }}" class="btn btn-sm btn-outline-primary">
+                                <i class="bi bi-file-earmark-pdf"></i> Download
+                            </a>
+                            <form method="post" action="{{ url_for('portal_invoice_send', id=inv['id']) }}" class="d-inline">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn btn-sm btn-outline-success">
+                                    <i class="bi bi-envelope"></i> per E-Mail
+                                </button>
+                            </form>
+                        </div>
                     </td>
                 </tr>
                 {% else %}

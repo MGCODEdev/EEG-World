@@ -43,6 +43,7 @@
                 <thead>
                     <tr>
                         <th>Benutzername</th>
+                        <th>E-Mail-Adresse</th>
                         <th>Mitglied</th>
                         <th>Rolle</th>
                         <th>Einladung</th>
@@ -56,12 +57,33 @@
                     <td>
                         <i class="bi {% if u['is_admin'] %}bi-shield-check text-warning{% else %}bi-person text-muted{% endif %}"></i>
                         <strong>{{ u['username'] }}</strong>
-                        {% if u['email'] %}<br><small class="text-muted">{{ u['email'] }}</small>{% endif %}
+                    </td>
+                    <td style="min-width: 260px;">
+                        <form method="POST" action="{{ url_for('admin_user_email', id=u['id']) }}" class="d-flex gap-2 align-items-center">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="email" name="email" value="{{ u['email'] or '' }}" maxlength="254"
+                                   class="form-control form-control-sm" autocomplete="email"
+                                   aria-label="E-Mail-Adresse für {{ u['username'] }}"
+                                   placeholder="name@beispiel.at">
+                            <button type="submit" class="btn btn-sm btn-outline-primary" title="E-Mail-Adresse speichern"
+                                    aria-label="E-Mail-Adresse für {{ u['username'] }} speichern">
+                                <i class="bi bi-check-lg"></i>
+                            </button>
+                        </form>
                     </td>
                     <td>{{ u['member_name'] or '—' }}</td>
                     <td>
                         {% if u['role'] == 'admin' %}
                         <span class="badge bg-warning text-dark">Admin</span>
+                        <form method="POST" action="{{ url_for('admin_user_feedback_email', id=u['id']) }}" class="mt-2">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <input type="hidden" name="enabled" value="0">
+                            <label class="form-check small mb-0">
+                                <input class="form-check-input" type="checkbox" name="enabled" value="1"
+                                       {% if u['admin_feedback_email'] %}checked{% endif %} onchange="this.form.submit()">
+                                Mitgliedsnachrichten per Mail
+                            </label>
+                        </form>
                         {% else %}
                         <span class="badge bg-info">Teilnehmer</span>
                         {% endif %}
@@ -75,6 +97,17 @@
                     </td>
                     <td><small>{{ u['created_at']|localdate if u['created_at'] else '—' }}</small></td>
                     <td class="text-end">
+                        {% if u['member_id'] and not u['invite_token'] %}
+                        <form method="POST" action="{{ url_for('admin_user_mobile_link', id=u['id']) }}" class="d-inline">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-success" title="iPhone-App verbinden"><i class="bi bi-qr-code"></i></button>
+                        </form>
+                        <form method="POST" action="{{ url_for('admin_user_mobile_access_revoke', id=u['id']) }}" class="d-inline"
+                              onsubmit="return confirm('Alle App-Sitzungen dieses Benutzers widerrufen?')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="App-Zugänge widerrufen"><i class="bi bi-phone-x"></i></button>
+                        </form>
+                        {% endif %}
                         <button type="button" class="btn btn-sm btn-outline-primary" title="Einladungslink"
                                 data-bs-toggle="modal" data-bs-target="#inviteModal{{ u['id'] }}">
                             <i class="bi bi-link-45deg"></i>

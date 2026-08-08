@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}App-Nachrichten{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-1">App-Nachrichten</h1>
+        <p class="text-muted mb-0">Hinweise werden als native iOS-Mitteilung versendet – auch wenn die App geschlossen ist.</p>
+    </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <h2 class="h5 mb-3">Neue Nachricht</h2>
+        <form method="post" class="row g-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-md-8">
+                <label class="form-label" for="title">Titel</label>
+                <input class="form-control" id="title" name="title" maxlength="120" required>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label" for="level">Art</label>
+                <select class="form-select" id="level" name="level">
+                    <option value="info">Information</option>
+                    <option value="success">Erfolg</option>
+                    <option value="warning">Wichtig</option>
+                    <option value="critical">Kritisch</option>
+                </select>
+            </div>
+            <div class="col-12">
+                <label class="form-label" for="body">Nachricht</label>
+                <textarea class="form-control" id="body" name="body" rows="4" maxlength="2000" required></textarea>
+            </div>
+            <div class="col-md-6">
+                <label class="form-label" for="member_id">Empfänger</label>
+                <select class="form-select" id="member_id" name="member_id">
+                    <option value="">Alle aktiven Mitglieder</option>
+                    {% for member in members %}<option value="{{ member['id'] }}">{{ member['name'] }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label" for="expires_at">Anzeigen bis (optional)</label>
+                <input class="form-control" type="datetime-local" id="expires_at" name="expires_at">
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button class="btn btn-primary w-100" type="submit"><i class="bi bi-send"></i> Veröffentlichen</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card shadow-sm">
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead><tr><th>Titel</th><th>Empfänger</th><th>Art</th><th>Erstellt</th><th>Push</th><th>Gelesen</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+            {% for message in messages %}
+                <tr>
+                    <td><strong>{{ message['title'] }}</strong><div class="small text-muted">{{ message['body'] }}</div></td>
+                    <td>{{ message['member_name'] or 'Alle Mitglieder' }}</td>
+                    <td>{{ message['level'] }}</td>
+                    <td>{{ message['created_at'] }}</td>
+                    <td>{{ message['push_sent'] }}/{{ message['push_count'] }}</td>
+                    <td>{{ message['read_count'] }}</td>
+                    <td>{% if message['active'] %}<span class="badge bg-success">Aktiv</span>{% else %}<span class="badge bg-secondary">Beendet</span>{% endif %}</td>
+                    <td>
+                    {% if message['active'] %}
+                        <form method="post" action="{{ url_for('admin_mobile_message_deactivate', id=message['id']) }}">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button class="btn btn-sm btn-outline-danger" type="submit">Deaktivieren</button>
+                        </form>
+                    {% endif %}
+                    </td>
+                </tr>
+            {% else %}
+                <tr><td colspan="8" class="text-center text-muted py-4">Noch keine App-Nachrichten vorhanden.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
